@@ -5,6 +5,7 @@ import os
 import sys
 import json
 import time
+import fcntl
 import threading
 import subprocess
 from datetime import datetime, timezone, timedelta
@@ -26,7 +27,10 @@ from gi.repository import Gtk, GLib
 # ── Config ──────────────────────────────────────────────────────────────────
 
 API_BASE = "https://api.track.toggl.com/api/v9"
-STATE_FILE = Path.home() / ".local" / "share" / "toggl-tray" / "state.json"
+STATE_DIR = Path.home() / ".local" / "share" / "toggl-tray"
+STATE_FILE = STATE_DIR / "state.json"
+PENDING_FILE = STATE_DIR / "pending.json"
+LOCK_FILE = STATE_DIR / "toggl-tray.lock"
 ICON_SIZE = 64
 ICON_PADDING = 6  # transparent padding around the icon
 
@@ -93,7 +97,7 @@ def _api(method, path, json=None, params=None):
         )
         if r.status_code == 429:
             wait = int(r.headers.get("X-Toggl-Quota-Resets-In", 5))
-            _notify("Toggl", f"Rate limited — retrying in {wait}s")
+            _play_sound(SOUND_ERROR)
             time.sleep(min(wait, 30))
             continue
         r.raise_for_status()
@@ -168,7 +172,7 @@ def delete_entry(workspace_id, entry_id):
 # ── State persistence ──────────────────────────────────────────────────────
 
 def save_state():
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
@@ -178,6 +182,90 @@ def load_state():
             saved = json.loads(STATE_FILE.read_text())
             state.update(saved)
         except (json.JSONDecodeError, KeyError):
+            pass
+
+
+# ── Offline queue ──────────────────────────────────────────────────────────
+
+pending_lock = threading.Lock()
+
+
+def _load_pending():
+    if PENDING_FILE.exists():
+        try:
+            return json.loads(PENDING_FILE.read_text())
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return []
+
+
+def _save_pending(queue):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    PENDING_FILE.write_text(json.dumps(queue, indent=2))
+
+
+def queue_action(action, **kwargs):
+    """Queue an offline action for later sync."""
+    with pending_lock:
+        queue = _load_pending()
+        queue.append({"action": action, "ts": datetime.now(timezone.utc).isoformat(), **kwargs})
+        _save_pending(queue)
+
+
+def sync_pending():
+    """Try to sync all pending actions. Returns number of remaining."""
+    with pending_lock:
+        queue = _load_pending()
+        if not queue:
+            return 0
+        remaining = []
+        for item in queue:
+            try:
+                if item["action"] == "start":
+                    entry = start_entry(
+                        state["workspace_id"],
+                        description=item.get("description", ""),
+                        project_id=item.get("project_id"),
+                    )
+                    # Update the start time to what we recorded offline
+                    if item.get("start_time"):
+                        update_entry(state["workspace_id"], entry["id"],
+                                     {"start": item["start_time"]})
+                    # If we already stopped locally, stop this entry too
+                    if item.get("stop_time"):
+                        update_entry(state["workspace_id"], entry["id"],
+                                     {"stop": item["stop_time"], "duration": item.get("duration", 0)})
+                elif item["action"] == "stop":
+                    if item.get("entry_id"):
+                        stop_entry(state["workspace_id"], item["entry_id"])
+                    elif item.get("start_time") and item.get("stop_time"):
+                        # Entry was started+stopped offline, create complete entry
+                        start_dt = datetime.fromisoformat(item["start_time"])
+                        stop_dt = datetime.fromisoformat(item["stop_time"])
+                        dur = int((stop_dt - start_dt).total_seconds())
+                        api_post(f"/workspaces/{state['workspace_id']}/time_entries", {
+                            "created_with": "toggl-tray-linux",
+                            "description": item.get("description", ""),
+                            "start": item["start_time"],
+                            "stop": item["stop_time"],
+                            "duration": dur,
+                            "workspace_id": state["workspace_id"],
+                        })
+            except Exception:
+                remaining.append(item)
+        _save_pending(remaining)
+        return len(remaining)
+
+
+def sync_loop():
+    """Background thread: retry pending actions every 30s."""
+    while True:
+        time.sleep(30)
+        try:
+            left = sync_pending()
+            if left == 0 and PENDING_FILE.exists():
+                PENDING_FILE.unlink(missing_ok=True)
+        except Exception:
             pass
 
 
@@ -244,23 +332,28 @@ def get_tooltip():
 # ── Toggle action ───────────────────────────────────────────────────────────
 
 def toggle_tracking(*_args):
-    """Start or stop tracking."""
+    """Start or stop tracking. Falls back to offline queue on API failure."""
     global icon_ref
 
     if state["tracking"]:
         # Stop
+        now = datetime.now(timezone.utc).isoformat()
         try:
             if state["entry_id"] and state["workspace_id"]:
                 stop_entry(state["workspace_id"], state["entry_id"])
-            state["tracking"] = False
-            state["entry_id"] = None
-            state["start_time"] = None
-            save_state()
-            _notify("Toggl", "Tracking stopped")
-        except Exception as e:
-            _notify("Toggl Error", f"Failed to stop: {e}")
+        except Exception:
+            # Offline — queue the stop
+            queue_action("stop", entry_id=state.get("entry_id"),
+                         start_time=state.get("start_time"), stop_time=now,
+                         description=state.get("description", ""))
+        state["tracking"] = False
+        state["entry_id"] = None
+        state["start_time"] = None
+        save_state()
+        _play_sound(SOUND_STOP)
     else:
         # Start
+        now = datetime.now(timezone.utc)
         try:
             entry = start_entry(
                 state["workspace_id"],
@@ -270,10 +363,16 @@ def toggle_tracking(*_args):
             state["tracking"] = True
             state["entry_id"] = entry["id"]
             state["start_time"] = entry["start"]
-            save_state()
-            _notify("Toggl", "Tracking started")
-        except Exception as e:
-            _notify("Toggl Error", f"Failed to start: {e}")
+        except Exception:
+            # Offline — track locally, queue for sync
+            state["tracking"] = True
+            state["entry_id"] = None  # no remote ID yet
+            state["start_time"] = now.isoformat()
+            queue_action("start", start_time=now.isoformat(),
+                         description=state.get("description", ""),
+                         project_id=state.get("project_id"))
+        save_state()
+        _play_sound(SOUND_START)
 
     if icon_ref:
         icon_ref.icon = render_icon()
@@ -283,10 +382,15 @@ def toggle_tracking(*_args):
 
 # ── Notifications ───────────────────────────────────────────────────────────
 
-def _notify(title, body):
+SOUND_START = "/usr/share/sounds/freedesktop/stereo/bell.oga"
+SOUND_STOP = "/usr/share/sounds/freedesktop/stereo/complete.oga"
+SOUND_ERROR = "/usr/share/sounds/freedesktop/stereo/dialog-warning.oga"
+
+
+def _play_sound(path):
     try:
         subprocess.Popen(
-            ["notify-send", "-a", "Toggl", title, body],
+            ["paplay", path],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
     except FileNotFoundError:
@@ -502,9 +606,9 @@ def _on_edit_entry(parent_win, entry):
         if new_desc is not None:
             try:
                 update_entry(wid, eid, {"description": new_desc})
-                _notify("Toggl", f"Entry updated: {new_desc}")
+                _play_sound(SOUND_STOP)
             except Exception as e:
-                _notify("Toggl Error", f"Update failed: {e}")
+                _play_sound(SOUND_ERROR)
 
     threading.Thread(target=_do, daemon=True).start()
 
@@ -518,9 +622,9 @@ def _on_delete_entry(parent_win, entry):
         if _gtk_confirm("Delete Entry", f"Delete '{desc}'?"):
             try:
                 delete_entry(wid, eid)
-                _notify("Toggl", f"Entry deleted: {desc}")
+                _play_sound(SOUND_STOP)
             except Exception as e:
-                _notify("Toggl Error", f"Delete failed: {e}")
+                _play_sound(SOUND_ERROR)
 
     threading.Thread(target=_do, daemon=True).start()
 
@@ -634,6 +738,17 @@ def _init_workspace():
 def main():
     global icon_ref, api_token
 
+    # Single instance lock
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    lock_fp = open(LOCK_FILE, "w")
+    try:
+        fcntl.flock(lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("Another instance is already running.", file=sys.stderr)
+        sys.exit(1)
+    lock_fp.write(str(os.getpid()))
+    lock_fp.flush()
+
     # Init GTK for thread safety
     GLib.threads_init = lambda: None  # already init'd by import
     Gtk.init([])
@@ -653,6 +768,10 @@ def main():
     # Start update thread
     updater = threading.Thread(target=update_loop, daemon=True)
     updater.start()
+
+    # Start offline sync thread
+    syncer = threading.Thread(target=sync_loop, daemon=True)
+    syncer.start()
 
     # Create and run tray icon
     icon_ref = pystray.Icon("toggl-tray", render_icon(), get_tooltip(), build_menu())
