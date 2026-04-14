@@ -271,39 +271,59 @@ def sync_loop():
 
 # ── Icon rendering ──────────────────────────────────────────────────────────
 
-def _load_icon_base():
-    """Load and cache the base icon image."""
-    global _icon_active, _icon_inactive
-    if _icon_active is not None:
+_icon_path_active = None
+_icon_path_inactive = None
+
+
+def _init_icons():
+    """Pre-render active/inactive icons to temp PNGs for appindicator."""
+    global _icon_path_active, _icon_path_inactive
+    if _icon_path_active is not None:
         return
+
     icon_path = Path(__file__).parent / "toggl_icon.webp"
     img = Image.open(icon_path).convert("RGBA").resize((ICON_SIZE, ICON_SIZE), Image.LANCZOS)
-    _icon_active = img
-    # Greyed out: desaturate + reduce opacity
-    grey = img.convert("LA").convert("RGBA")
-    # Dim it slightly
-    r, g, b, a = grey.split()
+
+    # Greyed out: desaturate + dim
     from PIL import ImageEnhance
-    grey_rgb = Image.merge("RGB", (r, g, b))
-    grey_rgb = ImageEnhance.Brightness(grey_rgb).enhance(0.6)
+    grey = img.convert("LA").convert("RGBA")
+    r, g, b, a = grey.split()
+    grey_rgb = ImageEnhance.Brightness(Image.merge("RGB", (r, g, b))).enhance(0.6)
     r2, g2, b2 = grey_rgb.split()
-    _icon_inactive = Image.merge("RGBA", (r2, g2, b2, a))
+    inactive = Image.merge("RGBA", (r2, g2, b2, a))
 
+    # Add padding to both
+    def _pad(src):
+        inner = ICON_SIZE - 2 * ICON_PADDING
+        shrunk = src.resize((inner, inner), Image.LANCZOS)
+        padded = Image.new("RGBA", (ICON_SIZE, ICON_SIZE), (0, 0, 0, 0))
+        padded.paste(shrunk, (ICON_PADDING, ICON_PADDING))
+        return padded
 
-_icon_active = None
-_icon_inactive = None
+    icon_dir = STATE_DIR / "icons"
+    icon_dir.mkdir(parents=True, exist_ok=True)
+
+    _icon_path_active = str(icon_dir / "active.png")
+    _icon_path_inactive = str(icon_dir / "inactive.png")
+    _pad(img).save(_icon_path_active)
+    _pad(inactive).save(_icon_path_inactive)
 
 
 def render_icon():
-    """Return Toggl icon — colored when tracking, greyed when off."""
-    _load_icon_base()
-    src = _icon_active if state["tracking"] else _icon_inactive
-    # Add transparent padding so Cinnamon renders it smaller
-    inner = ICON_SIZE - 2 * ICON_PADDING
-    shrunk = src.resize((inner, inner), Image.LANCZOS)
-    padded = Image.new("RGBA", (ICON_SIZE, ICON_SIZE), (0, 0, 0, 0))
-    padded.paste(shrunk, (ICON_PADDING, ICON_PADDING))
-    return padded
+    """Return current icon as PIL image."""
+    _init_icons()
+    return Image.open(_icon_path_active if state["tracking"] else _icon_path_inactive)
+
+
+def update_tray_icon():
+    """Force appindicator to pick up the icon change."""
+    _init_icons()
+    if icon_ref and hasattr(icon_ref, '_appindicator'):
+        # Direct appindicator path update
+        path = _icon_path_active if state["tracking"] else _icon_path_inactive
+        icon_ref._appindicator.set_icon_full(path, "Toggl")
+    elif icon_ref:
+        update_tray_icon()
 
 
 # ── Elapsed time formatting ────────────────────────────────────────────────
@@ -375,7 +395,7 @@ def toggle_tracking(*_args):
         _play_sound(SOUND_START)
 
     if icon_ref:
-        icon_ref.icon = render_icon()
+        update_tray_icon()
         icon_ref.title = get_tooltip()
         icon_ref.menu = build_menu()
 
