@@ -41,6 +41,7 @@ def reset_state():
         "description": "",
     })
     toggl_tray.icon_ref = None
+    toggl_tray.rate_limited_until = 0.0
     yield
 
 
@@ -197,27 +198,39 @@ class TestSyncPending:
         assert toggl_tray.sync_pending() == 0
 
     @patch.object(toggl_tray, "start_entry", return_value={"id": "new_1"})
-    def test_sync_start_action(self, mock_start, tmp_state_dir):
+    def test_open_start_stays_pending(self, mock_start, tmp_state_dir):
         toggl_tray.queue_action("start", description="synced task")
         remaining = toggl_tray.sync_pending()
-        assert remaining == 0
-        mock_start.assert_called_once_with("ws_123", description="synced task", project_id=None)
+        assert remaining == 1
+        mock_start.assert_not_called()
 
-    @patch.object(toggl_tray, "start_entry", return_value={"id": "new_2"})
-    @patch.object(toggl_tray, "update_entry")
-    def test_sync_start_with_offline_times(self, mock_update, mock_start, tmp_state_dir):
+    @patch.object(toggl_tray, "api_post", return_value={"id": "new_2"})
+    def test_sync_start_stop_pair_creates_one_completed_entry(self, mock_post, tmp_state_dir):
         toggl_tray.queue_action("start", description="offline",
                                 start_time="2026-04-28T09:00:00+00:00")
+        toggl_tray.queue_action("stop", description="offline",
+                                stop_time="2026-04-28T10:00:00+00:00")
         toggl_tray.sync_pending()
-        mock_update.assert_called_once_with("ws_123", "new_2",
-                                            {"start": "2026-04-28T09:00:00+00:00"})
+        payload = mock_post.call_args[0][1]
+        assert payload["start"] == "2026-04-28T09:00:00+00:00"
+        assert payload["stop"] == "2026-04-28T10:00:00+00:00"
+        assert payload["duration"] == 3600
+        assert toggl_tray._load_pending() == []
 
-    @patch.object(toggl_tray, "stop_entry")
-    def test_sync_stop_with_entry_id(self, mock_stop, tmp_state_dir):
-        toggl_tray.queue_action("stop", entry_id="e_100")
+    @patch.object(toggl_tray, "update_entry")
+    def test_sync_stop_with_entry_id_preserves_stop_time(self, mock_update, tmp_state_dir):
+        toggl_tray.queue_action("stop", entry_id="e_100",
+                                start_time="2026-04-28T09:00:00+00:00",
+                                stop_time="2026-04-28T10:15:00+00:00",
+                                description="offline stop")
         remaining = toggl_tray.sync_pending()
         assert remaining == 0
-        mock_stop.assert_called_once_with("ws_123", "e_100")
+        mock_update.assert_called_once_with("ws_123", "e_100", {
+            "stop": "2026-04-28T10:15:00+00:00",
+            "start": "2026-04-28T09:00:00+00:00",
+            "duration": 4500,
+            "description": "offline stop",
+        })
 
     @patch.object(toggl_tray, "api_post", return_value={"id": "created"})
     def test_sync_stop_creates_complete_entry(self, mock_post, tmp_state_dir):
@@ -231,13 +244,71 @@ class TestSyncPending:
         assert call_data["duration"] == 5400  # 1.5 hours
         assert call_data["description"] == "completed offline"
 
-    @patch.object(toggl_tray, "start_entry", side_effect=Exception("network error"))
-    def test_failed_sync_keeps_in_queue(self, mock_start, tmp_state_dir):
-        toggl_tray.queue_action("start", description="will fail")
+    @patch.object(toggl_tray, "api_post", side_effect=Exception("network error"))
+    def test_failed_sync_keeps_in_queue(self, mock_post, tmp_state_dir):
+        toggl_tray.queue_action("start", description="will fail",
+                                start_time="2026-04-28T09:00:00+00:00")
+        toggl_tray.queue_action("stop", stop_time="2026-04-28T10:00:00+00:00")
         remaining = toggl_tray.sync_pending()
-        assert remaining == 1
+        assert remaining == 2
         queue = toggl_tray._load_pending()
         assert queue[0]["description"] == "will fail"
+
+    @patch.object(toggl_tray, "api_post", side_effect=toggl_tray.RateLimitedError(120))
+    def test_rate_limited_sync_stops_and_keeps_queue(self, mock_post, tmp_state_dir):
+        toggl_tray.queue_action("start", start_time="2026-04-28T09:00:00+00:00")
+        toggl_tray.queue_action("stop", stop_time="2026-04-28T10:00:00+00:00")
+        assert toggl_tray.sync_pending() == 2
+        assert toggl_tray.rate_limited_until > 0
+
+
+class TestPendingEntries:
+    def test_pending_as_entries_pairs_start_stop(self, tmp_state_dir):
+        toggl_tray.queue_action("start", description="draft",
+                                start_time="2026-04-28T09:00:00+00:00")
+        toggl_tray.queue_action("stop", stop_time="2026-04-28T10:30:00+00:00")
+        entries = toggl_tray._pending_as_entries(datetime(2026, 4, 28).date())
+        assert len(entries) == 1
+        assert entries[0]["_offline"] is True
+        assert entries[0]["duration"] == 5400
+        assert entries[0]["_pending_indexes"] == [0, 1]
+
+    def test_update_pending_entry_edits_queue(self, tmp_state_dir):
+        toggl_tray.queue_action("start", description="draft",
+                                start_time="2026-04-28T09:00:00+00:00")
+        toggl_tray.queue_action("stop", stop_time="2026-04-28T10:00:00+00:00")
+        entry = toggl_tray._pending_as_entries(datetime(2026, 4, 28).date())[0]
+        assert toggl_tray._update_pending_entry(entry, {
+            "description": "edited",
+            "start": "2026-04-28T09:15:00+00:00",
+            "stop": "2026-04-28T10:45:00+00:00",
+        })
+        queue = toggl_tray._load_pending()
+        assert queue[0]["description"] == "edited"
+        assert queue[0]["start_time"] == "2026-04-28T09:15:00+00:00"
+        assert queue[1]["description"] == "edited"
+        assert queue[1]["stop_time"] == "2026-04-28T10:45:00+00:00"
+
+    def test_delete_pending_local_entry_removes_queue_items(self, tmp_state_dir):
+        toggl_tray.queue_action("start", start_time="2026-04-28T09:00:00+00:00")
+        toggl_tray.queue_action("stop", stop_time="2026-04-28T10:00:00+00:00")
+        entry = toggl_tray._pending_as_entries(datetime(2026, 4, 28).date())[0]
+        assert toggl_tray._delete_pending_entry(entry)
+        assert toggl_tray._load_pending() == []
+
+    def test_delete_pending_remote_stop_queues_delete(self, tmp_state_dir):
+        toggl_tray.queue_action("stop", entry_id="e_100",
+                                start_time="2026-04-28T09:00:00+00:00",
+                                stop_time="2026-04-28T10:00:00+00:00")
+        entry = toggl_tray._pending_as_entries(datetime(2026, 4, 28).date())[0]
+        assert toggl_tray._delete_pending_entry(entry)
+        queue = toggl_tray._load_pending()
+        assert queue == [{
+            "action": "delete",
+            "ts": queue[0]["ts"],
+            "entry_id": "e_100",
+            "workspace_id": "ws_123",
+        }]
 
 
 # ── API wrapper ──────────────────────────────────────────────────────────────
@@ -263,34 +334,31 @@ class TestApiWrapper:
     @patch("toggl_tray.requests.request")
     @patch.object(toggl_tray, "api_token", "tok")
     @patch.object(toggl_tray, "_play_sound")
-    def test_api_429_retries(self, mock_sound, mock_req):
+    def test_api_429_defers_without_retrying(self, mock_sound, mock_req):
         rate_resp = MagicMock()
         rate_resp.status_code = 429
-        rate_resp.headers = {"X-Toggl-Quota-Resets-In": "1"}
+        rate_resp.headers = {"X-Toggl-Quota-Resets-In": "120"}
 
-        ok_resp = MagicMock()
-        ok_resp.status_code = 200
-        ok_resp.content = b'{"ok": true}'
-        ok_resp.json.return_value = {"ok": True}
-
-        mock_req.side_effect = [rate_resp, ok_resp]
-        result = toggl_tray._api("GET", "/test")
-        assert result == {"ok": True}
-        assert mock_req.call_count == 2
+        mock_req.return_value = rate_resp
+        with pytest.raises(toggl_tray.RateLimitedError) as exc:
+            toggl_tray._api("GET", "/test")
+        assert exc.value.retry_after == 120
+        assert mock_req.call_count == 1
         mock_sound.assert_called_once()
 
     @patch("toggl_tray.requests.request")
     @patch.object(toggl_tray, "api_token", "tok")
     @patch.object(toggl_tray, "_play_sound")
-    def test_api_429_exhausted(self, mock_sound, mock_req):
+    def test_api_429_bad_header_uses_default_retry_after(self, mock_sound, mock_req):
         rate_resp = MagicMock()
         rate_resp.status_code = 429
-        rate_resp.headers = {"X-Toggl-Quota-Resets-In": "1"}
+        rate_resp.headers = {"X-Toggl-Quota-Resets-In": "bad"}
         mock_req.return_value = rate_resp
 
-        with pytest.raises(Exception, match="Rate limited after 3 retries"):
+        with pytest.raises(toggl_tray.RateLimitedError) as exc:
             toggl_tray._api("GET", "/test")
-        assert mock_req.call_count == 3
+        assert exc.value.retry_after == toggl_tray.SYNC_INTERVAL_SECONDS
+        assert mock_req.call_count == 1
 
     @patch("toggl_tray.requests.request")
     @patch.object(toggl_tray, "api_token", "tok")
@@ -305,22 +373,21 @@ class TestApiWrapper:
 # ── toggle_tracking ──────────────────────────────────────────────────────────
 
 class TestToggleTracking:
-    @patch.object(toggl_tray, "_sync_cloud_state", return_value=True)
     @patch.object(toggl_tray, "start_entry", return_value={"id": "e1", "start": "2026-04-28T10:00:00+00:00"})
     @patch.object(toggl_tray, "save_state")
     @patch.object(toggl_tray, "_play_sound")
-    def test_start_tracking_online(self, mock_sound, mock_save, mock_start, mock_sync):
+    def test_start_tracking_online(self, mock_sound, mock_save, mock_start):
         toggl_tray.state["tracking"] = False
         toggl_tray.toggle_tracking()
         assert toggl_tray.state["tracking"] is True
         assert toggl_tray.state["entry_id"] == "e1"
         mock_sound.assert_called_once_with(toggl_tray.SOUND_START)
 
-    @patch.object(toggl_tray, "_sync_cloud_state", return_value=False)
+    @patch.object(toggl_tray, "start_entry", side_effect=Exception("offline"))
     @patch.object(toggl_tray, "save_state")
     @patch.object(toggl_tray, "_play_sound")
     @patch.object(toggl_tray, "queue_action")
-    def test_start_tracking_offline(self, mock_queue, mock_sound, mock_save, mock_sync):
+    def test_start_tracking_offline(self, mock_queue, mock_sound, mock_save, mock_start):
         toggl_tray.state["tracking"] = False
         toggl_tray.toggle_tracking()
         assert toggl_tray.state["tracking"] is True
@@ -328,11 +395,10 @@ class TestToggleTracking:
         mock_queue.assert_called_once()
         assert mock_queue.call_args[0][0] == "start"
 
-    @patch.object(toggl_tray, "_sync_cloud_state", return_value=True)
     @patch.object(toggl_tray, "stop_entry")
     @patch.object(toggl_tray, "save_state")
     @patch.object(toggl_tray, "_play_sound")
-    def test_stop_tracking_online(self, mock_sound, mock_save, mock_stop, mock_sync):
+    def test_stop_tracking_online(self, mock_sound, mock_save, mock_stop):
         toggl_tray.state["tracking"] = True
         toggl_tray.state["entry_id"] = "e1"
         toggl_tray.state["start_time"] = "2026-04-28T10:00:00+00:00"
@@ -341,11 +407,11 @@ class TestToggleTracking:
         assert toggl_tray.state["entry_id"] is None
         mock_sound.assert_called_once_with(toggl_tray.SOUND_STOP)
 
-    @patch.object(toggl_tray, "_sync_cloud_state", return_value=False)
+    @patch.object(toggl_tray, "stop_entry", side_effect=Exception("offline"))
     @patch.object(toggl_tray, "save_state")
     @patch.object(toggl_tray, "_play_sound")
     @patch.object(toggl_tray, "queue_action")
-    def test_stop_tracking_offline(self, mock_queue, mock_sound, mock_save, mock_sync):
+    def test_stop_tracking_offline(self, mock_queue, mock_sound, mock_save, mock_stop):
         toggl_tray.state["tracking"] = True
         toggl_tray.state["entry_id"] = "e1"
         toggl_tray.state["start_time"] = "2026-04-28T10:00:00+00:00"
@@ -353,18 +419,6 @@ class TestToggleTracking:
         assert toggl_tray.state["tracking"] is False
         mock_queue.assert_called_once()
         assert mock_queue.call_args[0][0] == "stop"
-
-    @patch.object(toggl_tray, "_sync_cloud_state", return_value=True)
-    @patch.object(toggl_tray, "stop_entry", side_effect=Exception("API error"))
-    @patch.object(toggl_tray, "save_state")
-    @patch.object(toggl_tray, "_play_sound")
-    def test_stop_api_error_plays_error_sound(self, mock_sound, mock_save, mock_stop, mock_sync):
-        toggl_tray.state["tracking"] = True
-        toggl_tray.state["entry_id"] = "e1"
-        toggl_tray.state["start_time"] = "2026-04-28T10:00:00+00:00"
-        toggl_tray.toggle_tracking()
-        assert toggl_tray.state["tracking"] is True  # state unchanged on error
-        mock_sound.assert_called_once_with(toggl_tray.SOUND_ERROR)
 
 
 # ── start_entry payload ─────────────────────────────────────────────────────
@@ -392,3 +446,16 @@ class TestStartEntryPayload:
         payload = mock_post.call_args[0][1]
         start = datetime.fromisoformat(payload["start"])
         assert start.tzinfo is not None  # must be timezone-aware
+
+
+class TestTrayIcon:
+    @patch.object(toggl_tray, "_init_icons")
+    @patch.object(toggl_tray, "render_icon", return_value="new-icon")
+    def test_update_tray_icon_fallback_sets_icon(self, mock_render, mock_init):
+        class DummyIcon:
+            pass
+
+        icon = DummyIcon()
+        toggl_tray.icon_ref = icon
+        toggl_tray.update_tray_icon()
+        assert icon.icon == "new-icon"

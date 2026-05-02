@@ -33,6 +33,7 @@ PENDING_FILE = STATE_DIR / "pending.json"
 LOCK_FILE = STATE_DIR / "toggl-tray.lock"
 ICON_SIZE = 64
 ICON_PADDING = 6  # transparent padding around the icon
+SYNC_INTERVAL_SECONDS = 300
 
 
 # ── State ───────────────────────────────────────────────────────────────────
@@ -48,6 +49,15 @@ state = {
 
 icon_ref = None
 api_token = None
+rate_limited_until = 0.0
+
+
+class RateLimitedError(Exception):
+    """Raised when Toggl asks us to wait before making more requests."""
+
+    def __init__(self, retry_after):
+        self.retry_after = retry_after
+        super().__init__(f"Rate limited for {retry_after} seconds")
 
 
 # ── API Token ───────────────────────────────────────────────────────────────
@@ -89,20 +99,22 @@ def _auth():
 
 
 def _api(method, path, json=None, params=None):
-    """Single API wrapper with 429 retry."""
-    for attempt in range(3):
-        r = requests.request(
-            method, f"{API_BASE}{path}",
-            auth=_auth(), json=json, params=params, timeout=10,
-        )
-        if r.status_code == 429:
-            wait = int(r.headers.get("X-Toggl-Quota-Resets-In", 5))
-            _play_sound(SOUND_ERROR)
-            time.sleep(min(wait, 30))
-            continue
-        r.raise_for_status()
-        return r.json() if r.content else None
-    raise Exception("Rate limited after 3 retries")
+    """Single API wrapper. 429s are deferred instead of retried inline."""
+    global rate_limited_until
+    r = requests.request(
+        method, f"{API_BASE}{path}",
+        auth=_auth(), json=json, params=params, timeout=10,
+    )
+    if r.status_code == 429:
+        try:
+            wait = int(r.headers.get("X-Toggl-Quota-Resets-In", SYNC_INTERVAL_SECONDS))
+        except ValueError:
+            wait = SYNC_INTERVAL_SECONDS
+        _play_sound(SOUND_ERROR)
+        rate_limited_until = time.monotonic() + max(wait, 1)
+        raise RateLimitedError(max(wait, 1))
+    r.raise_for_status()
+    return r.json() if r.content else None
 
 
 def api_get(path, **kw):
@@ -155,14 +167,21 @@ def stop_entry(workspace_id, entry_id):
 
 
 def fetch_entries_for_date(date_obj):
-    """Get time entries for a specific date."""
-    start = datetime(date_obj.year, date_obj.month, date_obj.day, tzinfo=timezone.utc)
-    params = {"start_date": start.isoformat(), "end_date": (start + timedelta(days=1)).isoformat()}
+    """Get time entries for a specific local date."""
+    if isinstance(date_obj, datetime):
+        date_obj = date_obj.date()
+    next_date = date_obj + timedelta(days=1)
+    start_local = datetime(date_obj.year, date_obj.month, date_obj.day).astimezone()
+    end_local = datetime(next_date.year, next_date.month, next_date.day).astimezone()
+    params = {
+        "start_date": start_local.astimezone(timezone.utc).isoformat(),
+        "end_date": end_local.astimezone(timezone.utc).isoformat(),
+    }
     return api_get("/me/time_entries", params=params) or []
 
 
 def fetch_today_entries():
-    return fetch_entries_for_date(datetime.now(timezone.utc))
+    return fetch_entries_for_date(datetime.now().date())
 
 
 def update_entry(workspace_id, entry_id, data):
@@ -192,6 +211,7 @@ def load_state():
 # ── Offline queue ──────────────────────────────────────────────────────────
 
 pending_lock = threading.Lock()
+toggle_lock = threading.Lock()
 
 
 def _load_pending():
@@ -210,67 +230,236 @@ def _save_pending(queue):
 
 def queue_action(action, **kwargs):
     """Queue an offline action for later sync."""
+    if "workspace_id" not in kwargs and state.get("workspace_id"):
+        kwargs["workspace_id"] = state["workspace_id"]
     with pending_lock:
         queue = _load_pending()
         queue.append({"action": action, "ts": datetime.now(timezone.utc).isoformat(), **kwargs})
         _save_pending(queue)
 
 
+def _parse_iso(value):
+    if not value:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _duration_seconds(start_time, stop_time):
+    start = _parse_iso(start_time)
+    stop = _parse_iso(stop_time)
+    if not start or not stop:
+        return None
+    return max(int((stop - start).total_seconds()), 0)
+
+
+def _entry_local_date(entry):
+    start = _parse_iso(entry.get("start"))
+    return start.astimezone().date() if start else None
+
+
+def _create_pending_op(indexes, start_time, stop_time, item, paired_item=None):
+    other = paired_item or {}
+    return {
+        "kind": "create",
+        "indexes": indexes,
+        "start_time": start_time,
+        "stop_time": stop_time,
+        "duration": _duration_seconds(start_time, stop_time),
+        "description": other.get("description", item.get("description", "")),
+        "project_id": other.get("project_id", item.get("project_id")),
+        "workspace_id": other.get("workspace_id", item.get("workspace_id", state.get("workspace_id"))),
+    }
+
+
+def _pending_operations(queue):
+    """Normalize raw pending events into sync/display operations."""
+    ops = []
+    open_start = None
+
+    for idx, item in enumerate(queue):
+        action = item.get("action")
+
+        if action == "start":
+            if open_start:
+                start_idx, start_item, start_time = open_start
+                ops.append({
+                    "kind": "open",
+                    "indexes": [start_idx],
+                    "start_time": start_time,
+                    "description": start_item.get("description", ""),
+                    "project_id": start_item.get("project_id"),
+                    "workspace_id": start_item.get("workspace_id", state.get("workspace_id")),
+                })
+
+            start_time = item.get("start_time") or item.get("ts")
+            if item.get("stop_time"):
+                ops.append(_create_pending_op([idx], start_time, item["stop_time"], item))
+                open_start = None
+            else:
+                open_start = (idx, item, start_time)
+
+        elif action == "stop":
+            stop_time = item.get("stop_time") or item.get("ts")
+            if item.get("entry_id"):
+                ops.append({
+                    "kind": "update_stop",
+                    "indexes": [idx],
+                    "entry_id": item["entry_id"],
+                    "start_time": item.get("start_time"),
+                    "stop_time": stop_time,
+                    "duration": _duration_seconds(item.get("start_time"), stop_time),
+                    "description": item.get("description"),
+                    "workspace_id": item.get("workspace_id", state.get("workspace_id")),
+                })
+            elif open_start:
+                start_idx, start_item, start_time = open_start
+                ops.append(_create_pending_op([start_idx, idx], start_time, stop_time, start_item, item))
+                open_start = None
+            elif item.get("start_time") and stop_time:
+                ops.append(_create_pending_op([idx], item["start_time"], stop_time, item))
+            else:
+                ops.append({"kind": "invalid", "indexes": [idx]})
+
+        elif action == "delete" and item.get("entry_id"):
+            ops.append({
+                "kind": "delete",
+                "indexes": [idx],
+                "entry_id": item["entry_id"],
+                "workspace_id": item.get("workspace_id", state.get("workspace_id")),
+            })
+        else:
+            ops.append({"kind": "invalid", "indexes": [idx]})
+
+    if open_start:
+        start_idx, start_item, start_time = open_start
+        ops.append({
+            "kind": "open",
+            "indexes": [start_idx],
+            "start_time": start_time,
+            "description": start_item.get("description", ""),
+            "project_id": start_item.get("project_id"),
+            "workspace_id": start_item.get("workspace_id", state.get("workspace_id")),
+        })
+
+    return ops
+
+
 def sync_pending():
     """Try to sync all pending actions. Returns number of remaining."""
+    global rate_limited_until
     with pending_lock:
         queue = _load_pending()
         if not queue:
             return 0
-        remaining = []
-        for item in queue:
+
+        synced_indexes = set()
+        for op in _pending_operations(queue):
+            if op["kind"] in {"open", "invalid"}:
+                continue
+
             try:
-                if item["action"] == "start":
-                    entry = start_entry(
-                        state["workspace_id"],
-                        description=item.get("description", ""),
-                        project_id=item.get("project_id"),
-                    )
-                    # Update the start time to what we recorded offline
-                    if item.get("start_time"):
-                        update_entry(state["workspace_id"], entry["id"],
-                                     {"start": item["start_time"]})
-                    # If we already stopped locally, stop this entry too
-                    if item.get("stop_time"):
-                        update_entry(state["workspace_id"], entry["id"],
-                                     {"stop": item["stop_time"], "duration": item.get("duration", 0)})
-                elif item["action"] == "stop":
-                    if item.get("entry_id"):
-                        stop_entry(state["workspace_id"], item["entry_id"])
-                    elif item.get("start_time") and item.get("stop_time"):
-                        # Entry was started+stopped offline, create complete entry
-                        start_dt = datetime.fromisoformat(item["start_time"])
-                        stop_dt = datetime.fromisoformat(item["stop_time"])
-                        dur = int((stop_dt - start_dt).total_seconds())
-                        api_post(f"/workspaces/{state['workspace_id']}/time_entries", {
-                            "created_with": "toggl-tray-linux",
-                            "description": item.get("description", ""),
-                            "start": item["start_time"],
-                            "stop": item["stop_time"],
-                            "duration": dur,
-                            "workspace_id": state["workspace_id"],
-                        })
+                workspace_id = op.get("workspace_id") or state.get("workspace_id")
+                if not workspace_id:
+                    raise RuntimeError("No workspace_id available for pending sync")
+
+                if op["kind"] == "create":
+                    payload = {
+                        "created_with": "toggl-tray-linux",
+                        "description": op.get("description", ""),
+                        "start": op["start_time"],
+                        "stop": op["stop_time"],
+                        "duration": op["duration"],
+                        "workspace_id": workspace_id,
+                    }
+                    if op.get("project_id"):
+                        payload["project_id"] = op["project_id"]
+                    api_post(f"/workspaces/{workspace_id}/time_entries", payload)
+                elif op["kind"] == "update_stop":
+                    data = {"stop": op["stop_time"]}
+                    if op.get("start_time"):
+                        data["start"] = op["start_time"]
+                    if op.get("duration") is not None:
+                        data["duration"] = op["duration"]
+                    if op.get("description") is not None:
+                        data["description"] = op["description"]
+                    update_entry(workspace_id, op["entry_id"], data)
+                elif op["kind"] == "delete":
+                    delete_entry(workspace_id, op["entry_id"])
+
+                synced_indexes.update(op["indexes"])
+            except RateLimitedError as e:
+                rate_limited_until = time.monotonic() + e.retry_after
+                break
             except Exception:
-                remaining.append(item)
+                break
+
+        remaining = [item for idx, item in enumerate(queue) if idx not in synced_indexes]
         _save_pending(remaining)
         return len(remaining)
 
 
 def sync_loop():
-    """Background thread: retry pending actions every 30s."""
+    """Background thread: retry pending actions without burning API quota."""
     while True:
-        time.sleep(30)
+        time.sleep(SYNC_INTERVAL_SECONDS)
         try:
+            if not _load_pending() or time.monotonic() < rate_limited_until:
+                continue
             left = sync_pending()
             if left == 0 and PENDING_FILE.exists():
                 PENDING_FILE.unlink(missing_ok=True)
+                _sync_cloud_state()
         except Exception:
             pass
+
+
+def _pending_as_entries(date_obj):
+    """Convert pending offline actions into entry-like dicts for display."""
+    queue = _load_pending()
+    if not queue:
+        return []
+
+    entries = []
+    for op in _pending_operations(queue):
+        if op["kind"] not in {"create", "open", "update_stop"}:
+            continue
+
+        start_time = op.get("start_time")
+        stop_time = op.get("stop_time")
+        if not start_time:
+            continue
+
+        duration = op.get("duration")
+        if stop_time is None:
+            duration = -1 * int(_parse_iso(start_time).timestamp())
+
+        entry_id = op.get("entry_id") or f"pending:{'-'.join(str(i) for i in op['indexes'])}"
+        entries.append({
+            "id": entry_id,
+            "start": start_time,
+            "stop": stop_time,
+            "duration": duration,
+            "description": op.get("description", ""),
+            "workspace_id": op.get("workspace_id") or state.get("workspace_id"),
+            "_offline": True,
+            "_pending_indexes": op["indexes"],
+            "_pending_kind": op["kind"],
+            "_remote_entry_id": op.get("entry_id"),
+        })
+
+    return [e for e in entries if _entry_local_date(e) == date_obj]
+
+
+def _merge_entries_with_pending(entries, pending_entries):
+    pending_remote_ids = {
+        entry.get("_remote_entry_id") for entry in pending_entries
+        if entry.get("_remote_entry_id")
+    }
+    visible_entries = [
+        entry for entry in entries
+        if entry.get("id") not in pending_remote_ids
+    ]
+    return visible_entries + pending_entries
 
 
 # ── Icon rendering ──────────────────────────────────────────────────────────
@@ -327,7 +516,7 @@ def update_tray_icon():
         path = _icon_path_active if state["tracking"] else _icon_path_inactive
         icon_ref._appindicator.set_icon_full(path, "Toggl")
     elif icon_ref:
-        update_tray_icon()
+        icon_ref.icon = render_icon()
 
 
 # ── Elapsed time formatting ────────────────────────────────────────────────
@@ -356,7 +545,10 @@ def get_tooltip():
 # ── Toggle action ───────────────────────────────────────────────────────────
 
 def _sync_cloud_state():
-    """Sync local state with cloud. Cloud is always truth. Returns True if online."""
+    """Sync local state with cloud, but skip if there are pending offline actions."""
+    global rate_limited_until
+    if _load_pending() or not api_token:
+        return
     try:
         current = fetch_current_entry()
         if current:
@@ -370,41 +562,43 @@ def _sync_cloud_state():
             state["entry_id"] = None
             state["start_time"] = None
         save_state()
-        return True
+    except RateLimitedError as e:
+        rate_limited_until = time.monotonic() + e.retry_after
     except Exception as e:
         print(f"Cloud sync failed: {e}", file=sys.stderr)
-        return False
 
 
 def toggle_tracking(*_args):
-    """Start or stop tracking. Cloud is source of truth — sync before acting."""
+    """Start or stop tracking locally, queuing failed cloud writes."""
     global icon_ref
 
-    online = _sync_cloud_state()
+    if not toggle_lock.acquire(blocking=False):
+        return
 
-    if state["tracking"]:
-        # Stop
-        now = datetime.now(timezone.utc).isoformat()
-        if online:
-            try:
-                stop_entry(state["workspace_id"], state["entry_id"])
-            except Exception as e:
-                print(f"Stop failed: {e}", file=sys.stderr)
-                _play_sound(SOUND_ERROR)
-                return
+    try:
+        if state["tracking"]:
+            # Stop
+            now = datetime.now(timezone.utc).isoformat()
+            if state["entry_id"] and state["workspace_id"]:
+                try:
+                    stop_entry(state["workspace_id"], state["entry_id"])
+                except Exception as e:
+                    print(f"Stop failed, queuing offline: {e}", file=sys.stderr)
+                    queue_action("stop", entry_id=state["entry_id"],
+                                 start_time=state.get("start_time"), stop_time=now,
+                                 description=state.get("description", ""))
+            else:
+                queue_action("stop", entry_id=state.get("entry_id"),
+                             start_time=state.get("start_time"), stop_time=now,
+                             description=state.get("description", ""))
+            state["tracking"] = False
+            state["entry_id"] = None
+            state["start_time"] = None
+            save_state()
+            _play_sound(SOUND_STOP)
         else:
-            queue_action("stop", entry_id=state.get("entry_id"),
-                         start_time=state.get("start_time"), stop_time=now,
-                         description=state.get("description", ""))
-        state["tracking"] = False
-        state["entry_id"] = None
-        state["start_time"] = None
-        save_state()
-        _play_sound(SOUND_STOP)
-    else:
-        # Start
-        now = datetime.now(timezone.utc)
-        if online:
+            # Start
+            now = datetime.now(timezone.utc)
             try:
                 entry = start_entry(
                     state["workspace_id"],
@@ -415,23 +609,22 @@ def toggle_tracking(*_args):
                 state["entry_id"] = entry["id"]
                 state["start_time"] = entry["start"]
             except Exception as e:
-                print(f"Start failed: {e}", file=sys.stderr)
-                _play_sound(SOUND_ERROR)
-                return
-        else:
-            state["tracking"] = True
-            state["entry_id"] = None
-            state["start_time"] = now.isoformat()
-            queue_action("start", start_time=now.isoformat(),
-                         description=state.get("description", ""),
-                         project_id=state.get("project_id"))
-        save_state()
-        _play_sound(SOUND_START)
+                print(f"Start failed, queuing offline: {e}", file=sys.stderr)
+                state["tracking"] = True
+                state["entry_id"] = None
+                state["start_time"] = now.isoformat()
+                queue_action("start", start_time=now.isoformat(),
+                             description=state.get("description", ""),
+                             project_id=state.get("project_id"))
+            save_state()
+            _play_sound(SOUND_START)
 
-    if icon_ref:
-        update_tray_icon()
-        icon_ref.title = get_tooltip()
-        icon_ref.menu = build_menu()
+        if icon_ref:
+            update_tray_icon()
+            icon_ref.title = get_tooltip()
+            icon_ref.menu = build_menu()
+    finally:
+        toggle_lock.release()
 
 
 # ── Notifications ───────────────────────────────────────────────────────────
@@ -625,6 +818,7 @@ def _show_entries_window():
                 entries = fetch_entries_for_date(date_obj)
             except Exception:
                 entries = []
+            entries = _merge_entries_with_pending(entries, _pending_as_entries(date_obj))
             sorted_entries = sorted(entries, key=lambda x: x.get("start", ""))
             ctx["entries"] = sorted_entries
             GLib.idle_add(_populate, sorted_entries, date_obj)
@@ -707,7 +901,9 @@ def _build_entry_row(entry, win, entries, listbox, ctx):
     time_label.set_xalign(0)
     hbox.pack_start(time_label, False, False, 0)
 
-    desc_label = Gtk.Label(label=desc)
+    offline = entry.get("_offline", False)
+    label_text = f"{'⏳ ' if offline else ''}{desc}"
+    desc_label = Gtk.Label(label=label_text)
     desc_label.set_xalign(0)
     desc_label.set_ellipsize(3)  # Pango.EllipsizeMode.END
     hbox.pack_start(desc_label, True, True, 0)
@@ -720,12 +916,84 @@ def _build_entry_row(entry, win, entries, listbox, ctx):
     return row
 
 
+def _update_pending_entry(entry, update):
+    indexes = set(entry.get("_pending_indexes", []))
+    if not indexes:
+        return False
+
+    with pending_lock:
+        queue = _load_pending()
+        if any(idx >= len(queue) for idx in indexes):
+            return False
+
+        for idx in indexes:
+            item = queue[idx]
+            action = item.get("action")
+
+            if "description" in update:
+                item["description"] = update["description"]
+            if "start" in update and (action == "start" or "start_time" in item or len(indexes) == 1):
+                item["start_time"] = update["start"]
+            if "stop" in update and (action == "stop" or "stop_time" in item or (len(indexes) == 1 and action == "start")):
+                item["stop_time"] = update["stop"]
+
+        _save_pending(queue)
+        return True
+
+
+def _delete_pending_entry(entry):
+    indexes = set(entry.get("_pending_indexes", []))
+    if not indexes:
+        return False
+
+    with pending_lock:
+        queue = _load_pending()
+        if any(idx >= len(queue) for idx in indexes):
+            return False
+
+        remaining = [item for idx, item in enumerate(queue) if idx not in indexes]
+        remote_id = entry.get("_remote_entry_id")
+        if remote_id:
+            remaining.append({
+                "action": "delete",
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "entry_id": remote_id,
+                "workspace_id": entry.get("workspace_id") or state.get("workspace_id"),
+            })
+        _save_pending(remaining)
+
+    if entry.get("_pending_kind") == "open" and state.get("start_time") == entry.get("start"):
+        state["tracking"] = False
+        state["entry_id"] = None
+        state["start_time"] = None
+        save_state()
+    return True
+
+
 def _on_edit_entry(entry, parent_win, entries, listbox, ctx):
     """Open edit dialog for a time entry — description, start, stop times."""
     def _do():
         result = _gtk_edit_entry_dialog(entry)
         if result is None:
             return
+        if entry.get("_offline"):
+            if result == "delete":
+                desc = entry.get("description", "(no description)")
+                if _gtk_confirm("Delete Entry", f"Delete '{desc}'?"):
+                    if _delete_pending_entry(entry):
+                        _play_sound(SOUND_STOP)
+                        _refresh_entries(ctx["date"], entries, listbox, parent_win, ctx)
+                    else:
+                        _play_sound(SOUND_ERROR)
+                return
+
+            if _update_pending_entry(entry, result):
+                _play_sound(SOUND_STOP)
+                _refresh_entries(ctx["date"], entries, listbox, parent_win, ctx)
+            else:
+                _play_sound(SOUND_ERROR)
+            return
+
         if result == "delete":
             wid = entry.get("workspace_id", state["workspace_id"])
             desc = entry.get("description", "(no description)")
@@ -754,7 +1022,8 @@ def _refresh_entries(date_obj, old_entries, listbox, win, ctx):
     try:
         new_entries = fetch_entries_for_date(date_obj)
     except Exception:
-        return
+        new_entries = []
+    new_entries = _merge_entries_with_pending(new_entries, _pending_as_entries(date_obj))
     sorted_entries = sorted(new_entries, key=lambda x: x.get("start", ""))
     old_entries.clear()
     old_entries.extend(sorted_entries)
@@ -964,13 +1233,20 @@ def update_loop():
 
 def _init_workspace():
     """Fetch workspace and project info, sync running entry."""
-    global api_token
+    global api_token, rate_limited_until
     if not api_token:
         return False
+    has_pending = bool(_load_pending())
+    if has_pending and state.get("workspace_id"):
+        return True
 
     try:
         me = fetch_me()
         state["workspace_id"] = me["default_workspace_id"]
+
+        if has_pending:
+            save_state()
+            return True
 
         # Check for running entry
         current = fetch_current_entry()
@@ -987,6 +1263,9 @@ def _init_workspace():
 
         save_state()
         return True
+    except RateLimitedError as e:
+        rate_limited_until = time.monotonic() + e.retry_after
+        return False
     except Exception as e:
         print(f"Init failed: {e}", file=sys.stderr)
         return False
