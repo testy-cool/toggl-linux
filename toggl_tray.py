@@ -151,14 +151,18 @@ def start_entry(workspace_id, description="", project_id=None):
 
 def stop_entry(workspace_id, entry_id):
     """Stop a running entry by PATCHing it."""
-    return api_patch(f"/workspaces/{workspace_id}/time_entries/{entry_id}/stop", {})
+    return _api("PATCH", f"/workspaces/{workspace_id}/time_entries/{entry_id}/stop")
+
+
+def fetch_entries_for_date(date_obj):
+    """Get time entries for a specific date."""
+    start = datetime(date_obj.year, date_obj.month, date_obj.day, tzinfo=timezone.utc)
+    params = {"start_date": start.isoformat(), "end_date": (start + timedelta(days=1)).isoformat()}
+    return api_get("/me/time_entries", params=params) or []
 
 
 def fetch_today_entries():
-    """Get today's time entries."""
-    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    params = {"start_date": today.isoformat(), "end_date": (today + timedelta(days=1)).isoformat()}
-    return api_get("/me/time_entries", params=params) or []
+    return fetch_entries_for_date(datetime.now(timezone.utc))
 
 
 def update_entry(workspace_id, entry_id, data):
@@ -351,18 +355,44 @@ def get_tooltip():
 
 # ── Toggle action ───────────────────────────────────────────────────────────
 
+def _sync_cloud_state():
+    """Sync local state with cloud. Cloud is always truth. Returns True if online."""
+    try:
+        current = fetch_current_entry()
+        if current:
+            state["tracking"] = True
+            state["entry_id"] = current["id"]
+            state["start_time"] = current["start"]
+            state["description"] = current.get("description", "")
+            state["project_id"] = current.get("project_id")
+        else:
+            state["tracking"] = False
+            state["entry_id"] = None
+            state["start_time"] = None
+        save_state()
+        return True
+    except Exception as e:
+        print(f"Cloud sync failed: {e}", file=sys.stderr)
+        return False
+
+
 def toggle_tracking(*_args):
-    """Start or stop tracking. Falls back to offline queue on API failure."""
+    """Start or stop tracking. Cloud is source of truth — sync before acting."""
     global icon_ref
+
+    online = _sync_cloud_state()
 
     if state["tracking"]:
         # Stop
         now = datetime.now(timezone.utc).isoformat()
-        try:
-            if state["entry_id"] and state["workspace_id"]:
+        if online:
+            try:
                 stop_entry(state["workspace_id"], state["entry_id"])
-        except Exception:
-            # Offline — queue the stop
+            except Exception as e:
+                print(f"Stop failed: {e}", file=sys.stderr)
+                _play_sound(SOUND_ERROR)
+                return
+        else:
             queue_action("stop", entry_id=state.get("entry_id"),
                          start_time=state.get("start_time"), stop_time=now,
                          description=state.get("description", ""))
@@ -374,19 +404,23 @@ def toggle_tracking(*_args):
     else:
         # Start
         now = datetime.now(timezone.utc)
-        try:
-            entry = start_entry(
-                state["workspace_id"],
-                description=state.get("description", ""),
-                project_id=state.get("project_id"),
-            )
+        if online:
+            try:
+                entry = start_entry(
+                    state["workspace_id"],
+                    description=state.get("description", ""),
+                    project_id=state.get("project_id"),
+                )
+                state["tracking"] = True
+                state["entry_id"] = entry["id"]
+                state["start_time"] = entry["start"]
+            except Exception as e:
+                print(f"Start failed: {e}", file=sys.stderr)
+                _play_sound(SOUND_ERROR)
+                return
+        else:
             state["tracking"] = True
-            state["entry_id"] = entry["id"]
-            state["start_time"] = entry["start"]
-        except Exception:
-            # Offline — track locally, queue for sync
-            state["tracking"] = True
-            state["entry_id"] = None  # no remote ID yet
+            state["entry_id"] = None
             state["start_time"] = now.isoformat()
             queue_action("start", start_time=now.isoformat(),
                          description=state.get("description", ""),
@@ -536,117 +570,320 @@ def on_set_description(icon, item):
 
 
 def on_view_today(icon, item):
-    def _do():
-        try:
-            entries = fetch_today_entries()
-        except Exception as e:
-            _gtk_message("Error", f"Failed to fetch entries: {e}")
-            return
+    GLib.idle_add(_show_entries_window)
 
-        if not entries:
-            _gtk_message("Today's Entries", "No entries today.")
-            return
+
+def _show_entries_window():
+    """Show entries window with day navigation."""
+    win = Gtk.Window(title="Entries")
+    win.set_default_size(420, 420)
+    win.set_keep_above(True)
+
+    ctx = {"date": datetime.now().date(), "entries": []}
+
+    vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+    vbox.set_margin_start(10)
+    vbox.set_margin_end(10)
+    vbox.set_margin_top(10)
+    vbox.set_margin_bottom(10)
+
+    # Day navigation bar
+    nav_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+    prev_btn = Gtk.Button(label="<")
+    next_btn = Gtk.Button(label=">")
+    today_btn = Gtk.Button(label="Today")
+    header_label = Gtk.Label()
+    header_label.set_hexpand(True)
+
+    nav_box.pack_start(prev_btn, False, False, 0)
+    nav_box.pack_start(header_label, True, True, 0)
+    nav_box.pack_start(today_btn, False, False, 0)
+    nav_box.pack_start(next_btn, False, False, 0)
+    vbox.pack_start(nav_box, False, False, 4)
+
+    scroll = Gtk.ScrolledWindow()
+    scroll.set_vexpand(True)
+    listbox = Gtk.ListBox()
+    listbox.set_selection_mode(Gtk.SelectionMode.NONE)
+    scroll.add(listbox)
+    vbox.pack_start(scroll, True, True, 0)
+
+    empty_label = Gtk.Label(label="No entries")
+    empty_label.set_sensitive(False)
+    vbox.pack_start(empty_label, True, True, 0)
+
+    def load_date(date_obj):
+        ctx["date"] = date_obj
+        header_label.set_markup(f"<b>Loading...</b>")
+        for child in listbox.get_children():
+            listbox.remove(child)
+        empty_label.hide()
+        next_btn.set_sensitive(date_obj < datetime.now().date())
+
+        def _fetch():
+            try:
+                entries = fetch_entries_for_date(date_obj)
+            except Exception:
+                entries = []
+            sorted_entries = sorted(entries, key=lambda x: x.get("start", ""))
+            ctx["entries"] = sorted_entries
+            GLib.idle_add(_populate, sorted_entries, date_obj)
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _populate(entries, date_obj):
+        for child in listbox.get_children():
+            listbox.remove(child)
 
         total_secs = 0
-        lines = []
-        for e in sorted(entries, key=lambda x: x.get("start", "")):
-            start = datetime.fromisoformat(e["start"]).astimezone()
-            desc = e.get("description") or "(no description)"
+        for e in entries:
             dur = e.get("duration", 0)
             if dur < 0:
-                # Running entry
                 dur = int(time.time()) + dur
-                running = " ⏵"
-            else:
-                running = ""
             total_secs += max(dur, 0)
-            h, rem = divmod(dur, 3600)
-            m, s = divmod(rem, 60)
-            lines.append(f"  {start.strftime('%H:%M')}  {h}:{m:02d}:{s:02d}{running}  {desc}")
 
         th, trem = divmod(total_secs, 3600)
-        tm, ts = divmod(trem, 60)
-        header = f"Today — {th}:{tm:02d}:{ts:02d} total\n{'─' * 50}\n"
-        _show_entries_window(header + "\n".join(lines), entries)
+        tm, _ = divmod(trem, 60)
+
+        today = datetime.now().date()
+        if date_obj == today:
+            day_str = "Today"
+        elif date_obj == today - timedelta(days=1):
+            day_str = "Yesterday"
+        else:
+            day_str = date_obj.strftime("%a %b %d")
+
+        header_label.set_markup(f"<b>{day_str} — {th}:{tm:02d} total</b>")
+
+        if not entries:
+            empty_label.show()
+        else:
+            empty_label.hide()
+            for entry in entries:
+                row = _build_entry_row(entry, win, ctx["entries"], listbox, ctx)
+                listbox.add(row)
+
+        listbox.show_all()
+
+    prev_btn.connect("clicked", lambda b: load_date(ctx["date"] - timedelta(days=1)))
+    next_btn.connect("clicked", lambda b: load_date(ctx["date"] + timedelta(days=1)))
+    today_btn.connect("clicked", lambda b: load_date(datetime.now().date()))
+
+    win.add(vbox)
+    win.show_all()
+    load_date(ctx["date"])
+
+
+def _build_entry_row(entry, win, entries, listbox, ctx):
+    """Build a single clickable row for an entry."""
+    start_dt = datetime.fromisoformat(entry["start"]).astimezone()
+    dur = entry.get("duration", 0)
+    running = dur < 0
+    if running:
+        dur = int(time.time()) + dur
+    h, rem = divmod(max(dur, 0), 3600)
+    m, s = divmod(rem, 60)
+    desc = entry.get("description") or "(no description)"
+
+    stop_str = "now" if running else ""
+    if not running and entry.get("stop"):
+        stop_dt = datetime.fromisoformat(entry["stop"]).astimezone()
+        stop_str = stop_dt.strftime("%H:%M")
+
+    row = Gtk.ListBoxRow()
+    row.set_activatable(True)
+    hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+    hbox.set_margin_start(6)
+    hbox.set_margin_end(6)
+    hbox.set_margin_top(4)
+    hbox.set_margin_bottom(4)
+
+    time_label = Gtk.Label()
+    running_marker = " ⏵" if running else ""
+    time_label.set_markup(
+        f"<tt>{start_dt.strftime('%H:%M')}–{stop_str}</tt>"
+        f"  <small>({h}:{m:02d}:{s:02d}{running_marker})</small>"
+    )
+    time_label.set_xalign(0)
+    hbox.pack_start(time_label, False, False, 0)
+
+    desc_label = Gtk.Label(label=desc)
+    desc_label.set_xalign(0)
+    desc_label.set_ellipsize(3)  # Pango.EllipsizeMode.END
+    hbox.pack_start(desc_label, True, True, 0)
+
+    edit_btn = Gtk.Button(label="Edit")
+    edit_btn.connect("clicked", lambda b: _on_edit_entry(entry, win, entries, listbox, ctx))
+    hbox.pack_end(edit_btn, False, False, 0)
+
+    row.add(hbox)
+    return row
+
+
+def _on_edit_entry(entry, parent_win, entries, listbox, ctx):
+    """Open edit dialog for a time entry — description, start, stop times."""
+    def _do():
+        result = _gtk_edit_entry_dialog(entry)
+        if result is None:
+            return
+        if result == "delete":
+            wid = entry.get("workspace_id", state["workspace_id"])
+            desc = entry.get("description", "(no description)")
+            if _gtk_confirm("Delete Entry", f"Delete '{desc}'?"):
+                try:
+                    delete_entry(wid, entry["id"])
+                    _play_sound(SOUND_STOP)
+                    _refresh_entries(ctx["date"], entries, listbox, parent_win, ctx)
+                except Exception:
+                    _play_sound(SOUND_ERROR)
+            return
+
+        wid = entry.get("workspace_id", state["workspace_id"])
+        try:
+            update_entry(wid, entry["id"], result)
+            _play_sound(SOUND_STOP)
+            _refresh_entries(ctx["date"], entries, listbox, parent_win, ctx)
+        except Exception:
+            _play_sound(SOUND_ERROR)
 
     threading.Thread(target=_do, daemon=True).start()
 
 
-def _show_entries_window(text, entries):
-    """Show today's entries in a GTK window with edit/delete buttons."""
+def _refresh_entries(date_obj, old_entries, listbox, win, ctx):
+    """Re-fetch entries for the given date and rebuild the listbox."""
+    try:
+        new_entries = fetch_entries_for_date(date_obj)
+    except Exception:
+        return
+    sorted_entries = sorted(new_entries, key=lambda x: x.get("start", ""))
+    old_entries.clear()
+    old_entries.extend(sorted_entries)
+    ctx["entries"] = sorted_entries
+    GLib.idle_add(_rebuild_listbox, listbox, sorted_entries, win, old_entries, ctx)
+
+
+def _rebuild_listbox(listbox, entries, win, entries_ref, ctx):
+    for child in listbox.get_children():
+        listbox.remove(child)
+    for entry in entries:
+        row = _build_entry_row(entry, win, entries_ref, listbox, ctx)
+        listbox.add(row)
+    listbox.show_all()
+
+
+def _gtk_edit_entry_dialog(entry):
+    """Dialog with description, start time, stop time fields. Returns update dict or 'delete' or None."""
+    result = {"value": None}
     done = threading.Event()
 
+    start_dt = datetime.fromisoformat(entry["start"]).astimezone()
+    dur = entry.get("duration", 0)
+    running = dur < 0
+    stop_text = ""
+    if not running and entry.get("stop"):
+        stop_dt = datetime.fromisoformat(entry["stop"]).astimezone()
+        stop_text = stop_dt.strftime("%H:%M")
+
     def run():
-        win = Gtk.Window(title="Today's Entries")
-        win.set_default_size(500, 400)
-        win.set_keep_above(True)
+        dialog = Gtk.Dialog(title="Edit Entry", modal=True)
+        dialog.set_keep_above(True)
+        dialog.set_resizable(False)
+        dialog.add_buttons(
+            "Delete", Gtk.ResponseType.REJECT,
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_OK, Gtk.ResponseType.OK,
+        )
+        dialog.set_default_response(Gtk.ResponseType.OK)
 
-        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        vbox.set_margin_start(12)
-        vbox.set_margin_end(12)
-        vbox.set_margin_top(12)
-        vbox.set_margin_bottom(12)
+        del_btn = dialog.get_widget_for_response(Gtk.ResponseType.REJECT)
+        if del_btn:
+            style_ctx = del_btn.get_style_context()
+            style_ctx.add_class("destructive-action")
 
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_vexpand(True)
+        box = dialog.get_content_area()
+        box.set_spacing(8)
+        box.set_margin_start(16)
+        box.set_margin_end(16)
+        box.set_margin_top(12)
+        box.set_margin_bottom(8)
 
-        textview = Gtk.TextView()
-        textview.set_editable(False)
-        textview.set_monospace(True)
-        textview.get_buffer().set_text(text)
-        scroll.add(textview)
-        vbox.pack_start(scroll, True, True, 0)
+        grid = Gtk.Grid(column_spacing=10, row_spacing=8)
 
-        # Edit last entry button
-        if entries:
-            hbox = Gtk.Box(spacing=8)
-            edit_btn = Gtk.Button(label="Edit Last Entry")
-            edit_btn.connect("clicked", lambda b: _on_edit_entry(win, entries[-1]))
-            hbox.pack_start(edit_btn, False, False, 0)
+        grid.attach(Gtk.Label(label="Description:", xalign=0), 0, 0, 1, 1)
+        desc_entry = Gtk.Entry()
+        desc_entry.set_text(entry.get("description", ""))
+        desc_entry.set_hexpand(True)
+        desc_entry.set_activates_default(True)
+        grid.attach(desc_entry, 1, 0, 1, 1)
 
-            del_btn = Gtk.Button(label="Delete Last Entry")
-            del_btn.connect("clicked", lambda b: _on_delete_entry(win, entries[-1]))
-            hbox.pack_start(del_btn, False, False, 0)
-            vbox.pack_start(hbox, False, False, 0)
+        grid.attach(Gtk.Label(label="Start (HH:MM):", xalign=0), 0, 1, 1, 1)
+        start_entry = Gtk.Entry()
+        start_entry.set_text(start_dt.strftime("%H:%M"))
+        start_entry.set_max_length(5)
+        start_entry.set_width_chars(7)
+        grid.attach(start_entry, 1, 1, 1, 1)
 
-        win.add(vbox)
-        win.connect("destroy", lambda w: done.set())
-        win.show_all()
+        grid.attach(Gtk.Label(label="Stop (HH:MM):", xalign=0), 0, 2, 1, 1)
+        stop_entry = Gtk.Entry()
+        if running:
+            stop_entry.set_text("running")
+            stop_entry.set_sensitive(False)
+        else:
+            stop_entry.set_text(stop_text)
+        stop_entry.set_max_length(7)
+        stop_entry.set_width_chars(7)
+        grid.attach(stop_entry, 1, 2, 1, 1)
+
+        box.add(grid)
+        dialog.show_all()
+        resp = dialog.run()
+
+        if resp == Gtk.ResponseType.REJECT:
+            result["value"] = "delete"
+        elif resp == Gtk.ResponseType.OK:
+            update = {}
+            new_desc = desc_entry.get_text().strip()
+            if new_desc != entry.get("description", ""):
+                update["description"] = new_desc
+
+            new_start_str = start_entry.get_text().strip()
+            orig_start_str = start_dt.strftime("%H:%M")
+            if new_start_str != orig_start_str:
+                parsed = _parse_hhmm(new_start_str, start_dt)
+                if parsed:
+                    update["start"] = parsed.isoformat()
+
+            if not running:
+                new_stop_str = stop_entry.get_text().strip()
+                if new_stop_str != stop_text:
+                    base = datetime.fromisoformat(entry["stop"]).astimezone() if entry.get("stop") else start_dt
+                    parsed = _parse_hhmm(new_stop_str, base)
+                    if parsed:
+                        update["stop"] = parsed.isoformat()
+
+            if update:
+                result["value"] = update
+
+        dialog.destroy()
+        while Gtk.events_pending():
+            Gtk.main_iteration_do(False)
+        done.set()
 
     GLib.idle_add(run)
+    done.wait()
+    return result["value"]
 
 
-def _on_edit_entry(parent_win, entry):
-    def _do():
-        eid = entry["id"]
-        wid = entry.get("workspace_id", state["workspace_id"])
-        desc = entry.get("description", "")
-
-        new_desc = _gtk_input_dialog("Edit Entry", "Description:", default=desc)
-        if new_desc is not None:
-            try:
-                update_entry(wid, eid, {"description": new_desc})
-                _play_sound(SOUND_STOP)
-            except Exception as e:
-                _play_sound(SOUND_ERROR)
-
-    threading.Thread(target=_do, daemon=True).start()
-
-
-def _on_delete_entry(parent_win, entry):
-    def _do():
-        eid = entry["id"]
-        wid = entry.get("workspace_id", state["workspace_id"])
-        desc = entry.get("description", "(no description)")
-
-        if _gtk_confirm("Delete Entry", f"Delete '{desc}'?"):
-            try:
-                delete_entry(wid, eid)
-                _play_sound(SOUND_STOP)
-            except Exception as e:
-                _play_sound(SOUND_ERROR)
-
-    threading.Thread(target=_do, daemon=True).start()
+def _parse_hhmm(text, reference_dt):
+    """Parse 'HH:MM' into a datetime using reference_dt's date and timezone."""
+    try:
+        parts = text.split(":")
+        h, m = int(parts[0]), int(parts[1])
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            return None
+        return reference_dt.replace(hour=h, minute=m, second=0, microsecond=0)
+    except (ValueError, IndexError):
+        return None
 
 
 def on_set_token(icon, item):
