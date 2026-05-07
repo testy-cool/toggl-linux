@@ -352,9 +352,22 @@ def sync_pending():
         if not queue:
             return 0
 
+        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+        fresh_queue = []
+        for item in queue:
+            ts = _parse_iso(item.get("ts"))
+            if ts and ts < cutoff:
+                print(f"Dropping expired pending item: {item.get('action')} from {item.get('ts')}", file=sys.stderr)
+            else:
+                fresh_queue.append(item)
+        queue = fresh_queue
+
         synced_indexes = set()
         for op in _pending_operations(queue):
-            if op["kind"] in {"open", "invalid"}:
+            if op["kind"] == "invalid":
+                synced_indexes.update(op["indexes"])
+                continue
+            if op["kind"] == "open":
                 continue
 
             try:
@@ -384,14 +397,29 @@ def sync_pending():
                         data["description"] = op["description"]
                     update_entry(workspace_id, op["entry_id"], data)
                 elif op["kind"] == "delete":
-                    delete_entry(workspace_id, op["entry_id"])
+                    try:
+                        delete_entry(workspace_id, op["entry_id"])
+                    except requests.exceptions.HTTPError as e:
+                        if e.response is not None and e.response.status_code in (404, 410):
+                            pass
+                        else:
+                            raise
 
                 synced_indexes.update(op["indexes"])
             except RateLimitedError as e:
                 rate_limited_until = time.monotonic() + e.retry_after
                 break
-            except Exception:
-                break
+            except requests.exceptions.HTTPError as e:
+                status = e.response.status_code if e.response is not None else 0
+                if 400 <= status < 500:
+                    synced_indexes.update(op["indexes"])
+                    print(f"Dropping permanently failed pending item (HTTP {status}): {op.get('kind')}", file=sys.stderr)
+                else:
+                    print(f"Pending sync server error ({op.get('kind')}): {e}", file=sys.stderr)
+                    continue
+            except Exception as e:
+                print(f"Pending sync error ({op.get('kind')}): {e}", file=sys.stderr)
+                continue
 
         remaining = [item for idx, item in enumerate(queue) if idx not in synced_indexes]
         _save_pending(remaining)
@@ -399,16 +427,18 @@ def sync_pending():
 
 
 def sync_loop():
-    """Background thread: retry pending actions without burning API quota."""
+    """Background thread: retry pending actions and sync cloud state."""
     while True:
         time.sleep(SYNC_INTERVAL_SECONDS)
         try:
-            if not _load_pending() or time.monotonic() < rate_limited_until:
+            if time.monotonic() < rate_limited_until:
                 continue
-            left = sync_pending()
-            if left == 0 and PENDING_FILE.exists():
-                PENDING_FILE.unlink(missing_ok=True)
-                _sync_cloud_state()
+            pending = _load_pending()
+            if pending:
+                left = sync_pending()
+                if left == 0 and PENDING_FILE.exists():
+                    PENDING_FILE.unlink(missing_ok=True)
+            _sync_cloud_state()
         except Exception:
             pass
 
@@ -545,9 +575,12 @@ def get_tooltip():
 # ── Toggle action ───────────────────────────────────────────────────────────
 
 def _sync_cloud_state():
-    """Sync local state with cloud, but skip if there are pending offline actions."""
+    """Sync local state with cloud. Skip if pending start/stop would conflict."""
     global rate_limited_until
-    if _load_pending() or not api_token:
+    if not api_token:
+        return
+    pending = _load_pending()
+    if any(item.get("action") in ("start", "stop") for item in pending):
         return
     try:
         current = fetch_current_entry()
@@ -584,6 +617,7 @@ def toggle_tracking(*_args):
                     stop_entry(state["workspace_id"], state["entry_id"])
                 except Exception as e:
                     print(f"Stop failed, queuing offline: {e}", file=sys.stderr)
+                    _notify("Offline — stop queued locally")
                     queue_action("stop", entry_id=state["entry_id"],
                                  start_time=state.get("start_time"), stop_time=now,
                                  description=state.get("description", ""))
@@ -610,6 +644,7 @@ def toggle_tracking(*_args):
                 state["start_time"] = entry["start"]
             except Exception as e:
                 print(f"Start failed, queuing offline: {e}", file=sys.stderr)
+                _notify("Offline — start queued locally")
                 state["tracking"] = True
                 state["entry_id"] = None
                 state["start_time"] = now.isoformat()
@@ -618,6 +653,8 @@ def toggle_tracking(*_args):
                              project_id=state.get("project_id"))
             save_state()
             _play_sound(SOUND_START)
+            if not state.get("description"):
+                _notify("Tracking with no description — right-click to set one")
 
         if icon_ref:
             update_tray_icon()
@@ -632,6 +669,16 @@ def toggle_tracking(*_args):
 SOUND_START = "/usr/share/sounds/freedesktop/stereo/bell.oga"
 SOUND_STOP = "/usr/share/sounds/freedesktop/stereo/complete.oga"
 SOUND_ERROR = "/usr/share/sounds/freedesktop/stereo/dialog-warning.oga"
+
+
+def _notify(body):
+    try:
+        subprocess.Popen(
+            ["notify-send", "-a", "Toggl Tray", "Toggl Tray", body],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
 
 
 def _play_sound(path):
@@ -1176,9 +1223,11 @@ def on_quit(icon, item):
 
 def build_menu():
     toggle_label = "Stop tracking" if state["tracking"] else "Start tracking"
+    desc = state.get("description", "")
+    desc_label = f"Description: {desc}" if desc else "Set description..."
     return pystray.Menu(
         pystray.MenuItem(toggle_label, on_toggle, default=True),
-        pystray.MenuItem("Set description...", on_set_description),
+        pystray.MenuItem(desc_label, on_set_description),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Today's entries", on_view_today),
         pystray.Menu.SEPARATOR,
@@ -1236,15 +1285,19 @@ def _init_workspace():
     global api_token, rate_limited_until
     if not api_token:
         return False
-    has_pending = bool(_load_pending())
-    if has_pending and state.get("workspace_id"):
+    pending = _load_pending()
+    has_conflicting_pending = any(
+        item.get("action") in ("start", "stop") for item in pending
+    )
+    if has_conflicting_pending and state.get("workspace_id"):
         return True
 
     try:
-        me = fetch_me()
-        state["workspace_id"] = me["default_workspace_id"]
+        if not state.get("workspace_id"):
+            me = fetch_me()
+            state["workspace_id"] = me["default_workspace_id"]
 
-        if has_pending:
+        if has_conflicting_pending:
             save_state()
             return True
 
@@ -1260,6 +1313,17 @@ def _init_workspace():
             state["tracking"] = False
             state["entry_id"] = None
             state["start_time"] = None
+            if not state.get("description"):
+                try:
+                    recent = api_get("/me/time_entries")
+                    if recent and isinstance(recent, list) and len(recent) > 0:
+                        last = recent[0]
+                        if last.get("description"):
+                            state["description"] = last["description"]
+                        if last.get("project_id") and not state.get("project_id"):
+                            state["project_id"] = last["project_id"]
+                except Exception:
+                    pass
 
         save_state()
         return True

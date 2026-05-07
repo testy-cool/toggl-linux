@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
+import requests
 
 # Patch heavy imports before importing the module
 import sys
@@ -260,6 +261,55 @@ class TestSyncPending:
         toggl_tray.queue_action("stop", stop_time="2026-04-28T10:00:00+00:00")
         assert toggl_tray.sync_pending() == 2
         assert toggl_tray.rate_limited_until > 0
+
+    @patch.object(toggl_tray, "delete_entry")
+    def test_delete_404_treated_as_success(self, mock_delete, tmp_state_dir):
+        resp = MagicMock()
+        resp.status_code = 404
+        mock_delete.side_effect = requests.exceptions.HTTPError(response=resp)
+        toggl_tray.queue_action("delete", entry_id="gone_entry",
+                                workspace_id="ws_123")
+        remaining = toggl_tray.sync_pending()
+        assert remaining == 0
+
+    @patch.object(toggl_tray, "api_post")
+    def test_failed_item_does_not_block_others(self, mock_post, tmp_state_dir):
+        error_resp = MagicMock()
+        error_resp.status_code = 500
+        mock_post.side_effect = [
+            requests.exceptions.HTTPError(response=error_resp),
+            {"id": "ok"},
+        ]
+        toggl_tray.queue_action("start", description="will fail",
+                                start_time="2026-04-28T09:00:00+00:00")
+        toggl_tray.queue_action("stop", stop_time="2026-04-28T10:00:00+00:00")
+        toggl_tray.queue_action("start", description="will succeed",
+                                start_time="2026-04-28T11:00:00+00:00")
+        toggl_tray.queue_action("stop", stop_time="2026-04-28T12:00:00+00:00")
+        remaining = toggl_tray.sync_pending()
+        assert remaining == 2
+        queue = toggl_tray._load_pending()
+        assert queue[0]["description"] == "will fail"
+
+    @patch.object(toggl_tray, "api_post")
+    def test_4xx_client_error_drops_item(self, mock_post, tmp_state_dir):
+        error_resp = MagicMock()
+        error_resp.status_code = 400
+        mock_post.side_effect = requests.exceptions.HTTPError(response=error_resp)
+        toggl_tray.queue_action("start", description="bad payload",
+                                start_time="2026-04-28T09:00:00+00:00")
+        toggl_tray.queue_action("stop", stop_time="2026-04-28T10:00:00+00:00")
+        remaining = toggl_tray.sync_pending()
+        assert remaining == 0
+
+    def test_expired_items_dropped(self, tmp_state_dir):
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+        toggl_tray._save_pending([{
+            "action": "delete", "ts": old_ts,
+            "entry_id": "ancient", "workspace_id": "ws_123",
+        }])
+        remaining = toggl_tray.sync_pending()
+        assert remaining == 0
 
 
 class TestPendingEntries:
