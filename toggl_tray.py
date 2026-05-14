@@ -6,6 +6,8 @@ import sys
 import json
 import time
 import fcntl
+import argparse
+import shutil
 import threading
 import subprocess
 from datetime import datetime, timezone, timedelta
@@ -31,9 +33,14 @@ STATE_DIR = Path.home() / ".local" / "share" / "toggl-tray"
 STATE_FILE = STATE_DIR / "state.json"
 PENDING_FILE = STATE_DIR / "pending.json"
 LOCK_FILE = STATE_DIR / "toggl-tray.lock"
+APPLICATIONS_DIR = Path.home() / ".local" / "share" / "applications"
+DESKTOP_FILE = APPLICATIONS_DIR / "toggl-tray.desktop"
+AUTOSTART_DIR = Path.home() / ".config" / "autostart"
+AUTOSTART_FILE = AUTOSTART_DIR / "toggl-tray.desktop"
 ICON_SIZE = 64
 ICON_PADDING = 6  # transparent padding around the icon
 SYNC_INTERVAL_SECONDS = 300
+NOTIFY_REPEAT_SECONDS = 3600
 
 
 # ── State ───────────────────────────────────────────────────────────────────
@@ -147,13 +154,27 @@ def fetch_current_entry():
     return data if data else None
 
 
-def start_entry(workspace_id, description="", project_id=None):
-    now = datetime.now(timezone.utc)
+def _coerce_datetime(value):
+    if value is None:
+        dt = datetime.now(timezone.utc)
+    elif isinstance(value, datetime):
+        dt = value
+    else:
+        dt = _parse_iso(value)
+    if dt is None:
+        dt = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def start_entry(workspace_id, description="", project_id=None, start_time=None):
+    start = _coerce_datetime(start_time)
     payload = {
         "created_with": "toggl-tray-linux",
         "description": description,
-        "start": now.isoformat(),
-        "duration": -1 * int(now.timestamp()),
+        "start": start.isoformat(),
+        "duration": -1 * int(start.timestamp()),
         "workspace_id": workspace_id,
     }
     if project_id:
@@ -212,6 +233,7 @@ def load_state():
 
 pending_lock = threading.Lock()
 toggle_lock = threading.Lock()
+state_lock = threading.Lock()
 
 
 def _load_pending():
@@ -368,6 +390,46 @@ def sync_pending():
                 synced_indexes.update(op["indexes"])
                 continue
             if op["kind"] == "open":
+                workspace_id = op.get("workspace_id") or state.get("workspace_id")
+                if not workspace_id:
+                    continue
+                try:
+                    current = fetch_current_entry()
+                    if current:
+                        with state_lock:
+                            state["tracking"] = True
+                            state["entry_id"] = current["id"]
+                            state["start_time"] = current["start"]
+                            state["description"] = current.get("description", "")
+                            state["project_id"] = current.get("project_id")
+                            save_state()
+                    else:
+                        entry = start_entry(
+                            workspace_id,
+                            description=op.get("description", ""),
+                            project_id=op.get("project_id"),
+                            start_time=op.get("start_time"),
+                        )
+                        with state_lock:
+                            state["tracking"] = True
+                            state["entry_id"] = entry["id"]
+                            state["start_time"] = entry.get("start", op.get("start_time"))
+                            state["description"] = op.get("description", "")
+                            state["project_id"] = op.get("project_id")
+                            save_state()
+                    synced_indexes.update(op["indexes"])
+                except RateLimitedError as e:
+                    rate_limited_until = time.monotonic() + e.retry_after
+                    break
+                except requests.exceptions.HTTPError as e:
+                    status = e.response.status_code if e.response is not None else 0
+                    if 400 <= status < 500:
+                        synced_indexes.update(op["indexes"])
+                        print(f"Dropping permanently failed open start (HTTP {status})", file=sys.stderr)
+                    else:
+                        print(f"Pending sync error (open start): {e}", file=sys.stderr)
+                except Exception as e:
+                    print(f"Pending sync error (open start): {e}", file=sys.stderr)
                 continue
 
             try:
@@ -426,6 +488,25 @@ def sync_pending():
         return len(remaining)
 
 
+_consecutive_sync_failures = 0
+_sync_failure_notified = False
+
+
+def _record_sync_success():
+    global _consecutive_sync_failures, _sync_failure_notified
+    _consecutive_sync_failures = 0
+    _sync_failure_notified = False
+
+
+def _record_sync_failure(error):
+    global _consecutive_sync_failures, _sync_failure_notified
+    _consecutive_sync_failures += 1
+    print(f"Sync loop error: {error}", file=sys.stderr)
+    if _consecutive_sync_failures >= 3 and not _sync_failure_notified:
+        _notify("Toggl sync failing — check your connection")
+        _sync_failure_notified = True
+
+
 def sync_loop():
     """Background thread: retry pending actions and sync cloud state."""
     while True:
@@ -439,11 +520,40 @@ def sync_loop():
                 if left == 0 and PENDING_FILE.exists():
                     PENDING_FILE.unlink(missing_ok=True)
             _sync_cloud_state()
-        except Exception:
-            pass
+            _health_check()
+            _record_sync_success()
+        except Exception as e:
+            _record_sync_failure(e)
 
 
-def _pending_as_entries(date_obj):
+def _health_check():
+    """Detect and recover from tracking-without-cloud-backing."""
+    with state_lock:
+        tracking = state["tracking"]
+        entry_id = state["entry_id"]
+    if not tracking or entry_id is not None:
+        return
+    if _load_pending():
+        return
+    try:
+        current = fetch_current_entry()
+        with state_lock:
+            if current:
+                state["entry_id"] = current["id"]
+                state["start_time"] = current["start"]
+                save_state()
+            else:
+                state["tracking"] = False
+                state["entry_id"] = None
+                state["start_time"] = None
+                save_state()
+                _notify("Timer stopped — was running locally but not on Toggl")
+                _play_sound(SOUND_ERROR)
+    except Exception:
+        pass
+
+
+def _pending_as_entries(date_obj=None):
     """Convert pending offline actions into entry-like dicts for display."""
     queue = _load_pending()
     if not queue:
@@ -477,6 +587,8 @@ def _pending_as_entries(date_obj):
             "_remote_entry_id": op.get("entry_id"),
         })
 
+    if date_obj is None:
+        return entries
     return [e for e in entries if _entry_local_date(e) == date_obj]
 
 
@@ -584,17 +696,18 @@ def _sync_cloud_state():
         return
     try:
         current = fetch_current_entry()
-        if current:
-            state["tracking"] = True
-            state["entry_id"] = current["id"]
-            state["start_time"] = current["start"]
-            state["description"] = current.get("description", "")
-            state["project_id"] = current.get("project_id")
-        else:
-            state["tracking"] = False
-            state["entry_id"] = None
-            state["start_time"] = None
-        save_state()
+        with state_lock:
+            if current:
+                state["tracking"] = True
+                state["entry_id"] = current["id"]
+                state["start_time"] = current["start"]
+                state["description"] = current.get("description", "")
+                state["project_id"] = current.get("project_id")
+            else:
+                state["tracking"] = False
+                state["entry_id"] = None
+                state["start_time"] = None
+            save_state()
     except RateLimitedError as e:
         rate_limited_until = time.monotonic() + e.retry_after
     except Exception as e:
@@ -609,51 +722,63 @@ def toggle_tracking(*_args):
         return
 
     try:
-        if state["tracking"]:
+        with state_lock:
+            is_tracking = state["tracking"]
+            entry_id = state["entry_id"]
+            workspace_id = state["workspace_id"]
+            description = state.get("description", "")
+            project_id = state.get("project_id")
+            start_time = state.get("start_time")
+
+        if is_tracking:
             # Stop
             now = datetime.now(timezone.utc).isoformat()
-            if state["entry_id"] and state["workspace_id"]:
+            if entry_id and workspace_id:
                 try:
-                    stop_entry(state["workspace_id"], state["entry_id"])
+                    stop_entry(workspace_id, entry_id)
                 except Exception as e:
                     print(f"Stop failed, queuing offline: {e}", file=sys.stderr)
                     _notify("Offline — stop queued locally")
-                    queue_action("stop", entry_id=state["entry_id"],
-                                 start_time=state.get("start_time"), stop_time=now,
-                                 description=state.get("description", ""))
+                    queue_action("stop", entry_id=entry_id,
+                                 start_time=start_time, stop_time=now,
+                                 description=description)
             else:
-                queue_action("stop", entry_id=state.get("entry_id"),
-                             start_time=state.get("start_time"), stop_time=now,
-                             description=state.get("description", ""))
-            state["tracking"] = False
-            state["entry_id"] = None
-            state["start_time"] = None
-            save_state()
+                queue_action("stop", entry_id=entry_id,
+                             start_time=start_time, stop_time=now,
+                             description=description)
+            with state_lock:
+                state["tracking"] = False
+                state["entry_id"] = None
+                state["start_time"] = None
+                save_state()
             _play_sound(SOUND_STOP)
         else:
             # Start
             now = datetime.now(timezone.utc)
             try:
                 entry = start_entry(
-                    state["workspace_id"],
-                    description=state.get("description", ""),
-                    project_id=state.get("project_id"),
+                    workspace_id,
+                    description=description,
+                    project_id=project_id,
                 )
-                state["tracking"] = True
-                state["entry_id"] = entry["id"]
-                state["start_time"] = entry["start"]
+                with state_lock:
+                    state["tracking"] = True
+                    state["entry_id"] = entry["id"]
+                    state["start_time"] = entry["start"]
+                    save_state()
             except Exception as e:
                 print(f"Start failed, queuing offline: {e}", file=sys.stderr)
                 _notify("Offline — start queued locally")
-                state["tracking"] = True
-                state["entry_id"] = None
-                state["start_time"] = now.isoformat()
+                with state_lock:
+                    state["tracking"] = True
+                    state["entry_id"] = None
+                    state["start_time"] = now.isoformat()
+                    save_state()
                 queue_action("start", start_time=now.isoformat(),
-                             description=state.get("description", ""),
-                             project_id=state.get("project_id"))
-            save_state()
+                             description=description,
+                             project_id=project_id)
             _play_sound(SOUND_START)
-            if not state.get("description"):
+            if not description:
                 _notify("Tracking with no description — right-click to set one")
 
         if icon_ref:
@@ -670,8 +795,21 @@ SOUND_START = "/usr/share/sounds/freedesktop/stereo/bell.oga"
 SOUND_STOP = "/usr/share/sounds/freedesktop/stereo/complete.oga"
 SOUND_ERROR = "/usr/share/sounds/freedesktop/stereo/dialog-warning.oga"
 
+_last_notification_at = {}
+
+
+def _notification_allowed(body, now=None):
+    now = time.monotonic() if now is None else now
+    previous = _last_notification_at.get(body)
+    if previous is not None and now - previous < NOTIFY_REPEAT_SECONDS:
+        return False
+    _last_notification_at[body] = now
+    return True
+
 
 def _notify(body):
+    if not _notification_allowed(body):
+        return
     try:
         subprocess.Popen(
             ["notify-send", "-a", "Toggl Tray", "Toggl Tray", body],
@@ -1278,7 +1416,438 @@ def update_loop():
             icon_ref.title = get_tooltip()
 
 
+# ── Command-line recovery tools ─────────────────────────────────────────────
+
+def _format_duration(seconds):
+    seconds = max(int(seconds or 0), 0)
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}"
+
+
+def _entry_duration_seconds(entry):
+    duration = entry.get("duration", 0) or 0
+    if duration < 0:
+        duration = int(time.time()) + duration
+    return max(int(duration), 0)
+
+
+def _format_local_dt(value):
+    dt = _coerce_datetime(value).astimezone()
+    return dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def _format_entry_line(entry):
+    start_dt = _coerce_datetime(entry.get("start")).astimezone()
+    stop_text = "running"
+    if entry.get("stop"):
+        stop_text = _coerce_datetime(entry["stop"]).astimezone().strftime("%H:%M")
+    source = "local pending" if entry.get("_offline") else "toggl"
+    desc = entry.get("description") or "(no description)"
+    return (
+        f"{start_dt.strftime('%Y-%m-%d %H:%M')} - {stop_text:<7} "
+        f"{_format_duration(_entry_duration_seconds(entry)):>9}  "
+        f"[{source}] {desc}"
+    )
+
+
+def _print_entries(entries):
+    sorted_entries = sorted(entries, key=lambda item: item.get("start", ""))
+    total = sum(_entry_duration_seconds(entry) for entry in sorted_entries)
+    for entry in sorted_entries:
+        print(_format_entry_line(entry))
+    print(f"Total: {_format_duration(total)}")
+
+
+def _parse_cli_date(value):
+    if not value:
+        return datetime.now().date()
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        print(f"Invalid date '{value}'. Use YYYY-MM-DD.", file=sys.stderr)
+        return None
+
+
+def _load_cli_runtime(fetch_workspace=False):
+    global api_token
+    load_state()
+    api_token = get_api_token()
+    if fetch_workspace and api_token and not state.get("workspace_id"):
+        try:
+            me = fetch_me()
+            state["workspace_id"] = me["default_workspace_id"]
+            save_state()
+        except Exception as e:
+            print(f"Could not fetch workspace: {e}", file=sys.stderr)
+
+
+def _cli_status(_args):
+    _load_cli_runtime()
+    print(f"State file: {STATE_FILE}")
+    print(f"Pending file: {PENDING_FILE}")
+    print(f"API token: {'yes' if api_token else 'no'}")
+    print(f"Workspace: {state.get('workspace_id') or '(unknown)'}")
+    print(f"Tracking: {'yes' if state.get('tracking') else 'no'}")
+    if state.get("tracking") and state.get("start_time"):
+        print(f"Started: {_format_local_dt(state['start_time'])}")
+        start = _coerce_datetime(state["start_time"]).astimezone(timezone.utc)
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        print(f"Elapsed: {_format_duration(elapsed)}")
+    if state.get("entry_id"):
+        print(f"Toggl entry id: {state['entry_id']}")
+    elif state.get("tracking"):
+        print("Toggl entry id: none (local/offline timer)")
+
+    raw_pending = _load_pending()
+    pending_entries = _pending_as_entries()
+    print(f"Pending queue: {len(raw_pending)} action(s), {len(pending_entries)} visible entries")
+    if pending_entries:
+        print("")
+        _print_entries(pending_entries)
+    return 0
+
+
+def _cli_entries(args):
+    date_obj = _parse_cli_date(args.date)
+    if date_obj is None:
+        return 2
+    _load_cli_runtime()
+    pending_entries = _pending_as_entries(date_obj)
+    entries = []
+    if not args.local_only:
+        if api_token:
+            try:
+                entries = fetch_entries_for_date(date_obj)
+            except Exception as e:
+                print(f"Could not fetch Toggl entries; showing local pending only: {e}", file=sys.stderr)
+        else:
+            print("No API token; showing local pending only.", file=sys.stderr)
+    entries = _merge_entries_with_pending(entries, pending_entries)
+    if not entries:
+        print(f"No entries for {date_obj.isoformat()}.")
+        if _load_pending():
+            print("There are pending actions, but none start on that local date.")
+        return 0
+    _print_entries(entries)
+    return 0
+
+
+def _cli_start(args):
+    _load_cli_runtime(fetch_workspace=True)
+    open_pending = [op for op in _pending_operations(_load_pending()) if op.get("kind") == "open"]
+    if state.get("tracking") or open_pending:
+        if not state.get("tracking") and open_pending:
+            op = open_pending[-1]
+            state["tracking"] = True
+            state["entry_id"] = None
+            state["start_time"] = op.get("start_time")
+            state["description"] = op.get("description", state.get("description", ""))
+            save_state()
+        print("Already tracking.")
+        if state.get("start_time"):
+            print(f"Started: {_format_local_dt(state['start_time'])}")
+        return 0
+
+    if args.description:
+        state["description"] = " ".join(args.description).strip()
+    description = state.get("description", "")
+    project_id = state.get("project_id")
+    workspace_id = state.get("workspace_id")
+    now = datetime.now(timezone.utc).isoformat()
+
+    entry = None
+    if api_token and workspace_id:
+        try:
+            entry = start_entry(workspace_id, description=description, project_id=project_id, start_time=now)
+        except Exception as e:
+            print(f"Could not start on Toggl; queued locally: {e}", file=sys.stderr)
+    elif not api_token:
+        print("No API token; queued locally.", file=sys.stderr)
+    else:
+        print("No workspace id; queued locally.", file=sys.stderr)
+
+    if entry:
+        state["tracking"] = True
+        state["entry_id"] = entry["id"]
+        state["start_time"] = entry.get("start", now)
+        save_state()
+        print(f"Started on Toggl at {_format_local_dt(state['start_time'])}.")
+    else:
+        state["tracking"] = True
+        state["entry_id"] = None
+        state["start_time"] = now
+        save_state()
+        queue_action("start", start_time=now, description=description, project_id=project_id)
+        print(f"Started locally at {_format_local_dt(now)}.")
+    return 0
+
+
+def _cli_stop(_args):
+    _load_cli_runtime()
+    if not state.get("tracking"):
+        open_pending = [op for op in _pending_operations(_load_pending()) if op.get("kind") == "open"]
+        if not open_pending:
+            print("Not tracking.")
+            return 0
+        op = open_pending[-1]
+        now = datetime.now(timezone.utc).isoformat()
+        queue_action(
+            "stop",
+            start_time=op.get("start_time"),
+            stop_time=now,
+            description=op.get("description", ""),
+            workspace_id=op.get("workspace_id"),
+        )
+        print(f"Stopped open local pending entry at {_format_local_dt(now)}.")
+        return 0
+
+    now = datetime.now(timezone.utc).isoformat()
+    entry_id = state.get("entry_id")
+    workspace_id = state.get("workspace_id")
+    start_time = state.get("start_time")
+    description = state.get("description", "")
+
+    stopped_on_toggl = False
+    if api_token and entry_id and workspace_id:
+        try:
+            stop_entry(workspace_id, entry_id)
+            stopped_on_toggl = True
+        except Exception as e:
+            print(f"Could not stop on Toggl; queued locally: {e}", file=sys.stderr)
+
+    if not stopped_on_toggl:
+        queue_action(
+            "stop",
+            entry_id=entry_id,
+            start_time=start_time,
+            stop_time=now,
+            description=description,
+        )
+
+    state["tracking"] = False
+    state["entry_id"] = None
+    state["start_time"] = None
+    save_state()
+    target = "on Toggl" if stopped_on_toggl else "locally"
+    print(f"Stopped {target} at {_format_local_dt(now)}.")
+    return 0
+
+
+def _cli_set_start(args):
+    _load_cli_runtime()
+    reference = state.get("start_time")
+    pending_entries = [entry for entry in _pending_as_entries() if entry.get("_pending_kind") == "open"]
+    if not reference and pending_entries:
+        reference = pending_entries[-1].get("start")
+    reference_dt = _coerce_datetime(reference).astimezone()
+    new_start = _parse_hhmm(args.time, reference_dt)
+    if not new_start:
+        print(f"Invalid time '{args.time}'. Use HH:MM.", file=sys.stderr)
+        return 2
+    new_start_iso = new_start.isoformat()
+
+    updated = False
+    if pending_entries:
+        updated = _update_pending_entry(pending_entries[-1], {"start": new_start_iso}) or updated
+
+    if state.get("tracking"):
+        state["start_time"] = new_start_iso
+        save_state()
+        updated = True
+
+    if state.get("entry_id") and state.get("workspace_id") and api_token:
+        try:
+            update_entry(state["workspace_id"], state["entry_id"], {
+                "start": new_start_iso,
+                "duration": -int(new_start.timestamp()),
+            })
+        except Exception as e:
+            print(f"Could not update Toggl start time: {e}", file=sys.stderr)
+
+    if not updated:
+        print("No running local timer found.")
+        return 1
+    print(f"Start time set to {_format_local_dt(new_start_iso)}.")
+    return 0
+
+
+def _cli_sync(_args):
+    _load_cli_runtime(fetch_workspace=True)
+    if not api_token:
+        print("No API token; cannot sync pending entries.", file=sys.stderr)
+        return 2
+    remaining = sync_pending()
+    if remaining == 0 and PENDING_FILE.exists():
+        PENDING_FILE.unlink(missing_ok=True)
+    _sync_cloud_state()
+    print(f"Sync complete. Pending actions remaining: {remaining}")
+    return 0
+
+
+def _desktop_quote(value):
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _launcher_python():
+    repo_python = Path(__file__).resolve().parent / ".venv" / "bin" / "python"
+    if repo_python.exists():
+        return repo_python
+    return Path(sys.executable).resolve()
+
+
+def _launcher_icon():
+    try:
+        _init_icons()
+        return Path(_icon_path_inactive)
+    except Exception:
+        return Path(__file__).resolve().parent / "toggl_icon.webp"
+
+
+def _desktop_entry_text(autostart=False):
+    script = Path(__file__).resolve()
+    exec_cmd = f"{_desktop_quote(_launcher_python())} {_desktop_quote(script)} run"
+    lines = [
+        "[Desktop Entry]",
+        "Type=Application",
+        "Name=Toggl Tray",
+        "Comment=Toggl Track tray timer",
+        f"Exec={exec_cmd}",
+        f"Icon={_launcher_icon()}",
+        "Terminal=false",
+        "StartupNotify=false",
+        "Categories=Utility;",
+        "Keywords=Toggl;Track;Timer;Time;",
+    ]
+    if autostart:
+        lines.append("X-GNOME-Autostart-enabled=true")
+    return "\n".join(lines) + "\n"
+
+
+def _write_desktop_file(path, autostart=False):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_desktop_entry_text(autostart=autostart))
+    path.chmod(0o755)
+    return path
+
+
+def _refresh_desktop_database():
+    updater = shutil.which("update-desktop-database")
+    if updater:
+        subprocess.run(
+            [updater, str(APPLICATIONS_DIR)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+        )
+
+
+def _cli_install_app(args):
+    app_file = _write_desktop_file(DESKTOP_FILE)
+    print(f"Installed app launcher: {app_file}")
+    if args.autostart:
+        autostart_file = _write_desktop_file(AUTOSTART_FILE, autostart=True)
+        print(f"Installed autostart launcher: {autostart_file}")
+    _refresh_desktop_database()
+    print("Look for 'Toggl Tray' in the app launcher.")
+    return 0
+
+
+def _cli_uninstall_app(_args):
+    removed = []
+    for path in (DESKTOP_FILE, AUTOSTART_FILE):
+        if path.exists():
+            path.unlink()
+            removed.append(path)
+    _refresh_desktop_database()
+    if removed:
+        for path in removed:
+            print(f"Removed: {path}")
+    else:
+        print("No Toggl Tray desktop launchers were installed.")
+    return 0
+
+
+def _build_cli_parser():
+    parser = argparse.ArgumentParser(
+        prog="toggl_tray.py",
+        description="Run the Toggl tray app or inspect/recover local tracking state.",
+    )
+    sub = parser.add_subparsers(dest="command")
+    sub.add_parser("run", help="run the tray app")
+    sub.add_parser("status", help="show local state and pending queue")
+
+    entries = sub.add_parser("entries", aliases=["today"], help="show entries for a local date")
+    entries.add_argument("date", nargs="?", help="local date, YYYY-MM-DD (default: today)")
+    entries.add_argument("--local-only", action="store_true", help="only show pending local entries")
+
+    local = sub.add_parser("local", help="show pending local entries for a date")
+    local.add_argument("date", nargs="?", help="local date, YYYY-MM-DD (default: today)")
+    local.set_defaults(local_only=True)
+
+    start = sub.add_parser("start", help="start tracking from the terminal")
+    start.add_argument("description", nargs="*", help="optional description")
+
+    sub.add_parser("stop", help="stop tracking from the terminal")
+    set_start = sub.add_parser("set-start", help="set current timer start time, HH:MM local")
+    set_start.add_argument("time", help="new local start time, HH:MM")
+    sub.add_parser("sync", help="try to sync pending local entries now")
+    install_app = sub.add_parser("install-app", help="install desktop app launcher")
+    install_app.add_argument("--autostart", action="store_true", help="also start Toggl Tray on login")
+    sub.add_parser("uninstall-app", help="remove desktop app launcher")
+    return parser
+
+
+def _run_cli(argv):
+    if not argv:
+        return None
+    parser = _build_cli_parser()
+    args = parser.parse_args(argv)
+    if args.command == "run":
+        return None
+    if args.command == "status":
+        return _cli_status(args)
+    if args.command in ("entries", "today", "local"):
+        if args.command == "local":
+            args.local_only = True
+        return _cli_entries(args)
+    if args.command == "start":
+        return _cli_start(args)
+    if args.command == "stop":
+        return _cli_stop(args)
+    if args.command == "set-start":
+        return _cli_set_start(args)
+    if args.command == "sync":
+        return _cli_sync(args)
+    if args.command == "install-app":
+        return _cli_install_app(args)
+    if args.command == "uninstall-app":
+        return _cli_uninstall_app(args)
+    parser.print_help()
+    return 2
+
+
 # ── Init ────────────────────────────────────────────────────────────────────
+
+def _acquire_instance_lock():
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    lock_fp = open(LOCK_FILE, "a+")
+    try:
+        fcntl.flock(lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock_fp.seek(0)
+        pid = lock_fp.read().strip()
+        detail = f" (PID {pid})" if pid else ""
+        print(f"Another instance is already running{detail}.", file=sys.stderr)
+        print(f"If that process is gone, remove {LOCK_FILE} and start again.", file=sys.stderr)
+        sys.exit(1)
+    lock_fp.seek(0)
+    lock_fp.truncate()
+    lock_fp.write(str(os.getpid()))
+    lock_fp.flush()
+    return lock_fp
+
 
 def _init_workspace():
     """Fetch workspace and project info, sync running entry."""
@@ -1338,16 +1907,12 @@ def _init_workspace():
 def main():
     global icon_ref, api_token
 
+    cli_result = _run_cli(sys.argv[1:])
+    if cli_result is not None:
+        return cli_result
+
     # Single instance lock
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    lock_fp = open(LOCK_FILE, "w")
-    try:
-        fcntl.flock(lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        print("Another instance is already running.", file=sys.stderr)
-        sys.exit(1)
-    lock_fp.write(str(os.getpid()))
-    lock_fp.flush()
+    lock_fp = _acquire_instance_lock()
 
     # Init GTK for thread safety
     GLib.threads_init = lambda: None  # already init'd by import
@@ -1376,7 +1941,9 @@ def main():
     # Create and run tray icon
     icon_ref = pystray.Icon("toggl-tray", render_icon(), get_tooltip(), build_menu())
     icon_ref.run()
+    lock_fp.close()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

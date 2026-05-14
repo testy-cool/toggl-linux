@@ -43,6 +43,9 @@ def reset_state():
     })
     toggl_tray.icon_ref = None
     toggl_tray.rate_limited_until = 0.0
+    toggl_tray._consecutive_sync_failures = 0
+    toggl_tray._sync_failure_notified = False
+    toggl_tray._last_notification_at.clear()
     yield
 
 
@@ -198,12 +201,44 @@ class TestSyncPending:
     def test_empty_queue_returns_zero(self, tmp_state_dir):
         assert toggl_tray.sync_pending() == 0
 
-    @patch.object(toggl_tray, "start_entry", return_value={"id": "new_1"})
-    def test_open_start_stays_pending(self, mock_start, tmp_state_dir):
-        toggl_tray.queue_action("start", description="synced task")
+    @patch.object(toggl_tray, "fetch_current_entry", return_value=None)
+    @patch.object(toggl_tray, "start_entry", return_value={"id": "new_1", "start": "2026-05-11T08:00:00+00:00"})
+    @patch.object(toggl_tray, "save_state")
+    def test_open_start_synced_to_cloud(self, mock_save, mock_start, mock_fetch, tmp_state_dir):
+        toggl_tray.state["tracking"] = True
+        toggl_tray.queue_action("start", description="synced task",
+                                start_time="2026-05-11T08:00:00+00:00")
+        remaining = toggl_tray.sync_pending()
+        assert remaining == 0
+        mock_start.assert_called_once_with(
+            "ws_123",
+            description="synced task",
+            project_id=None,
+            start_time="2026-05-11T08:00:00+00:00",
+        )
+        assert toggl_tray.state["entry_id"] == "new_1"
+        assert toggl_tray.state["start_time"] == "2026-05-11T08:00:00+00:00"
+
+    @patch.object(toggl_tray, "fetch_current_entry", return_value={
+        "id": "cloud_1", "start": "2026-05-11T09:00:00+00:00",
+        "description": "from cloud", "project_id": None,
+    })
+    @patch.object(toggl_tray, "save_state")
+    def test_open_start_adopts_cloud_entry(self, mock_save, mock_fetch, tmp_state_dir):
+        toggl_tray.state["tracking"] = True
+        toggl_tray.queue_action("start", description="local task")
+        remaining = toggl_tray.sync_pending()
+        assert remaining == 0
+        assert toggl_tray.state["tracking"] is True
+        assert toggl_tray.state["entry_id"] == "cloud_1"
+        assert toggl_tray.state["start_time"] == "2026-05-11T09:00:00+00:00"
+
+    @patch.object(toggl_tray, "fetch_current_entry", side_effect=Exception("network down"))
+    def test_open_start_stays_pending_on_api_failure(self, mock_fetch, tmp_state_dir):
+        toggl_tray.state["tracking"] = True
+        toggl_tray.queue_action("start", description="will retry")
         remaining = toggl_tray.sync_pending()
         assert remaining == 1
-        mock_start.assert_not_called()
 
     @patch.object(toggl_tray, "api_post", return_value={"id": "new_2"})
     def test_sync_start_stop_pair_creates_one_completed_entry(self, mock_post, tmp_state_dir):
@@ -497,6 +532,14 @@ class TestStartEntryPayload:
         start = datetime.fromisoformat(payload["start"])
         assert start.tzinfo is not None  # must be timezone-aware
 
+    @patch.object(toggl_tray, "api_post", return_value={"id": "x"})
+    def test_start_preserves_supplied_start_time(self, mock_post):
+        start_time = "2026-04-28T09:00:00+00:00"
+        toggl_tray.start_entry("ws_1", start_time=start_time)
+        payload = mock_post.call_args[0][1]
+        assert payload["start"] == start_time
+        assert payload["duration"] == -int(datetime.fromisoformat(start_time).timestamp())
+
 
 class TestTrayIcon:
     @patch.object(toggl_tray, "_init_icons")
@@ -509,3 +552,110 @@ class TestTrayIcon:
         toggl_tray.icon_ref = icon
         toggl_tray.update_tray_icon()
         assert icon.icon == "new-icon"
+
+
+# ── Notification throttling ─────────────────────────────────────────────────
+
+class TestNotificationThrottling:
+    def test_same_notification_is_throttled(self):
+        assert toggl_tray._notification_allowed("same", now=100.0) is True
+        assert toggl_tray._notification_allowed("same", now=101.0) is False
+        assert toggl_tray._notification_allowed("same", now=3701.0) is True
+
+    @patch.object(toggl_tray, "_notify")
+    def test_sync_failure_notifies_once_until_success(self, mock_notify):
+        toggl_tray._record_sync_failure(Exception("down 1"))
+        toggl_tray._record_sync_failure(Exception("down 2"))
+        toggl_tray._record_sync_failure(Exception("down 3"))
+        toggl_tray._record_sync_failure(Exception("down 4"))
+        assert mock_notify.call_count == 1
+
+        toggl_tray._record_sync_success()
+        toggl_tray._record_sync_failure(Exception("down 5"))
+        toggl_tray._record_sync_failure(Exception("down 6"))
+        toggl_tray._record_sync_failure(Exception("down 7"))
+        assert mock_notify.call_count == 2
+
+
+# ── CLI recovery helpers ────────────────────────────────────────────────────
+
+class TestCliRecovery:
+    @patch.object(toggl_tray, "get_api_token", return_value=None)
+    def test_set_start_updates_running_pending_entry(self, mock_token, tmp_state_dir):
+        toggl_tray.state["tracking"] = True
+        toggl_tray.state["start_time"] = "2026-04-28T09:00:00+00:00"
+        toggl_tray.save_state()
+        toggl_tray.queue_action("start", start_time="2026-04-28T09:00:00+00:00")
+
+        args = type("Args", (), {"time": "08:30"})()
+        assert toggl_tray._cli_set_start(args) == 0
+        assert "08:30:00" in toggl_tray.state["start_time"]
+        queue = toggl_tray._load_pending()
+        assert "08:30:00" in queue[0]["start_time"]
+
+
+class TestDesktopInstall:
+    def test_desktop_entry_uses_repo_script(self, tmp_state_dir):
+        text = toggl_tray._desktop_entry_text()
+        assert "Name=Toggl Tray" in text
+        assert "toggl_tray.py" in text
+        assert " run" in text
+        assert "Terminal=false" in text
+
+    def test_write_desktop_file(self, tmp_path, tmp_state_dir):
+        path = tmp_path / "toggl-tray.desktop"
+        toggl_tray._write_desktop_file(path)
+        text = path.read_text()
+        assert text.startswith("[Desktop Entry]")
+        assert path.stat().st_mode & 0o111
+
+
+# ── Health check ────────────────────────────────────────────────────────────
+
+class TestHealthCheck:
+    @patch.object(toggl_tray, "_load_pending", return_value=[])
+    @patch.object(toggl_tray, "fetch_current_entry", return_value={
+        "id": "cloud_1", "start": "2026-05-11T09:00:00+00:00",
+        "description": "", "project_id": None,
+    })
+    @patch.object(toggl_tray, "save_state")
+    def test_recovers_entry_id_from_cloud(self, mock_save, mock_fetch, mock_pending):
+        toggl_tray.state["tracking"] = True
+        toggl_tray.state["entry_id"] = None
+        toggl_tray._health_check()
+        assert toggl_tray.state["entry_id"] == "cloud_1"
+        assert toggl_tray.state["start_time"] == "2026-05-11T09:00:00+00:00"
+
+    @patch.object(toggl_tray, "_load_pending", return_value=[])
+    @patch.object(toggl_tray, "fetch_current_entry", return_value=None)
+    @patch.object(toggl_tray, "save_state")
+    @patch.object(toggl_tray, "_notify")
+    @patch.object(toggl_tray, "_play_sound")
+    def test_stops_phantom_local_timer(self, mock_sound, mock_notify, mock_save, mock_fetch, mock_pending):
+        toggl_tray.state["tracking"] = True
+        toggl_tray.state["entry_id"] = None
+        toggl_tray._health_check()
+        assert toggl_tray.state["tracking"] is False
+        mock_notify.assert_called_once()
+        mock_sound.assert_called_once_with(toggl_tray.SOUND_ERROR)
+
+    @patch.object(toggl_tray, "fetch_current_entry")
+    def test_skips_when_entry_id_present(self, mock_fetch):
+        toggl_tray.state["tracking"] = True
+        toggl_tray.state["entry_id"] = "e1"
+        toggl_tray._health_check()
+        mock_fetch.assert_not_called()
+
+    @patch.object(toggl_tray, "fetch_current_entry")
+    def test_skips_when_not_tracking(self, mock_fetch):
+        toggl_tray.state["tracking"] = False
+        toggl_tray._health_check()
+        mock_fetch.assert_not_called()
+
+    @patch.object(toggl_tray, "fetch_current_entry")
+    @patch.object(toggl_tray, "_load_pending", return_value=[{"action": "start"}])
+    def test_skips_when_pending_items_exist(self, mock_pending, mock_fetch):
+        toggl_tray.state["tracking"] = True
+        toggl_tray.state["entry_id"] = None
+        toggl_tray._health_check()
+        mock_fetch.assert_not_called()

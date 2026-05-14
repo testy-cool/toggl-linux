@@ -107,24 +107,38 @@ python3 toggl_tray.py
 | **Edit/delete entries** | From the "Today's entries" window |
 | **Check elapsed time** | Hover over the tray icon |
 
-## Autostart on Login
+### Terminal recovery commands
 
-Create `~/.config/autostart/toggl-tray.desktop`:
+These do not need the tray window to be visible:
 
-```ini
-[Desktop Entry]
-Type=Application
-Name=Toggl Tray
-Exec=/path/to/toggl-linux/.venv/bin/python /path/to/toggl-linux/toggl_tray.py
-Hidden=false
-X-GNOME-Autostart-enabled=true
+```bash
+python3 toggl_tray.py status          # show current state and local pending entries
+python3 toggl_tray.py local           # list today's local/offline entries
+python3 toggl_tray.py entries         # list today's Toggl + local entries
+python3 toggl_tray.py start "Task"    # start tracking from a terminal
+python3 toggl_tray.py stop            # stop tracking from a terminal
+python3 toggl_tray.py set-start 09:00 # correct the current timer start time
+python3 toggl_tray.py sync            # push pending local entries to Toggl now
+python3 toggl_tray.py install-app     # add Toggl Tray to your app launcher
 ```
 
-Replace `/path/to/toggl-linux` with the actual path where you cloned the repo.
+## Autostart on Login
+
+To make the app searchable from your desktop app launcher:
+
+```bash
+python3 toggl_tray.py install-app
+```
+
+To also start it automatically on login:
+
+```bash
+python3 toggl_tray.py install-app --autostart
+```
 
 ## How It Works
 
-- **One file** (`toggl_tray.py`, ~700 lines) — no complex project structure
+- **One file** (`toggl_tray.py`) — no complex project structure
 - Talks to [Toggl Track API v9](https://engineering.toggl.com/docs/track/) using basic auth
 - Global hotkey uses X11 `XGrabKey` — the key is grabbed at the X server level, so no other app sees `Ctrl+Shift+T`
 - If the API is unreachable (no internet, rate limited), actions are queued locally and synced automatically every 30 seconds
@@ -157,7 +171,11 @@ The free plan allows **30 API requests per hour**. This app only calls the API w
 - Another app may have already grabbed that key combo.
 
 **"Another instance is already running"**
-- Delete the stale lock file: `rm ~/.local/share/toggl-tray/toggl-tray.lock`
+- The message includes the PID from the lock file. If that process is gone, remove the lock file: `rm ~/.local/share/toggl-tray/toggl-tray.lock`
+
+**Tray entries are empty but tracking looks active**
+- Run `python3 toggl_tray.py status`. Local/offline entries are shown from `~/.local/share/toggl-tray/pending.json`.
+- Run `python3 toggl_tray.py local` to list only local pending entries for today.
 
 **No sound on toggle**
 - Sounds use `paplay` (PulseAudio). Make sure it's installed: `sudo apt install pulseaudio-utils`
