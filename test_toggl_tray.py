@@ -31,24 +31,25 @@ import toggl_tray
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
-def reset_state():
+def reset_state(tmp_path):
     """Reset global state before each test."""
-    toggl_tray.state.update({
-        "tracking": False,
-        "entry_id": None,
-        "start_time": None,
-        "workspace_id": "ws_123",
-        "project_id": None,
-        "description": "",
-    })
-    toggl_tray.icon_ref = None
-    toggl_tray.api_token = "tok"
-    toggl_tray.rate_limited_until = 0.0
-    toggl_tray._last_cloud_poll_at = 0.0
-    toggl_tray._consecutive_sync_failures = 0
-    toggl_tray._sync_failure_notified = False
-    toggl_tray._last_notification_at.clear()
-    yield
+    with patch.object(toggl_tray, "LEDGER_FILE", tmp_path / "events.jsonl"):
+        toggl_tray.state.update({
+            "tracking": False,
+            "entry_id": None,
+            "start_time": None,
+            "workspace_id": "ws_123",
+            "project_id": None,
+            "description": "",
+        })
+        toggl_tray.icon_ref = None
+        toggl_tray.api_token = "tok"
+        toggl_tray.rate_limited_until = 0.0
+        toggl_tray._last_cloud_poll_at = 0.0
+        toggl_tray._consecutive_sync_failures = 0
+        toggl_tray._sync_failure_notified = False
+        toggl_tray._last_notification_at.clear()
+        yield
 
 
 @pytest.fixture
@@ -56,7 +57,8 @@ def tmp_state_dir(tmp_path):
     """Redirect state/pending files to tmp dir."""
     with patch.object(toggl_tray, "STATE_DIR", tmp_path), \
          patch.object(toggl_tray, "STATE_FILE", tmp_path / "state.json"), \
-         patch.object(toggl_tray, "PENDING_FILE", tmp_path / "pending.json"):
+         patch.object(toggl_tray, "PENDING_FILE", tmp_path / "pending.json"), \
+         patch.object(toggl_tray, "LEDGER_FILE", tmp_path / "events.jsonl"):
         yield tmp_path
 
 
@@ -165,6 +167,33 @@ class TestStatePersistence:
             toggl_tray.save_state()
             assert (nested / "state.json").exists()
 
+    def test_save_state_writes_backup_and_recovers_from_corrupt_primary(self, tmp_state_dir):
+        toggl_tray.state["description"] = "first"
+        toggl_tray.save_state()
+        toggl_tray.state["description"] = "second"
+        toggl_tray.save_state()
+
+        backup = tmp_state_dir / "state.json.bak"
+        assert backup.exists()
+        assert json.loads(backup.read_text())["description"] == "first"
+
+        (tmp_state_dir / "state.json").write_text("broken")
+        toggl_tray.state["description"] = ""
+        toggl_tray.load_state()
+        assert toggl_tray.state["description"] == "first"
+
+    def test_save_state_does_not_overwrite_good_backup_with_corrupt_primary(self, tmp_state_dir):
+        toggl_tray.state["description"] = "good backup"
+        toggl_tray.save_state()
+        (tmp_state_dir / "state.json.bak").write_text((tmp_state_dir / "state.json").read_text())
+        (tmp_state_dir / "state.json").write_text("broken")
+
+        toggl_tray.state["description"] = "new primary"
+        toggl_tray.save_state()
+
+        assert json.loads((tmp_state_dir / "state.json.bak").read_text())["description"] == "good backup"
+        assert json.loads((tmp_state_dir / "state.json").read_text())["description"] == "new primary"
+
 
 # ── Offline queue ────────────────────────────────────────────────────────────
 
@@ -197,6 +226,42 @@ class TestOfflineQueue:
         toggl_tray._save_pending(items)
         loaded = toggl_tray._load_pending()
         assert loaded == items
+
+    def test_load_pending_recovers_from_backup(self, tmp_state_dir):
+        toggl_tray._save_pending([{"action": "start", "description": "first"}])
+        toggl_tray._save_pending([{"action": "start", "description": "second"}])
+        (tmp_state_dir / "pending.json").write_text("broken")
+        loaded = toggl_tray._load_pending()
+        assert loaded == [{"action": "start", "description": "first"}]
+
+
+class TestEventLedger:
+    def test_append_event_writes_jsonl_record(self, tmp_state_dir):
+        toggl_tray._append_event("toggle_requested", source="test")
+        lines = (tmp_state_dir / "events.jsonl").read_text().splitlines()
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["event"] == "toggle_requested"
+        assert record["source"] == "test"
+        assert "ts" in record
+
+    def test_queue_action_records_pending_event(self, tmp_state_dir):
+        toggl_tray.queue_action("start", description="ledger task")
+        events = toggl_tray._read_ledger_events()
+        assert events[-1]["event"] == "pending_queued"
+        assert events[-1]["action"] == "start"
+        assert events[-1]["description"] == "ledger task"
+
+    @patch.object(toggl_tray, "start_entry", return_value={"id": "e1", "start": "2026-04-28T10:00:00+00:00"})
+    @patch.object(toggl_tray, "_play_sound")
+    def test_toggle_tracking_records_request_before_api(self, mock_sound, mock_start, tmp_state_dir):
+        toggl_tray.state["tracking"] = False
+        toggl_tray.toggle_tracking()
+        events = toggl_tray._read_ledger_events()
+        assert events[0]["event"] == "toggle_requested"
+        assert events[0]["was_tracking"] is False
+        assert events[-1]["event"] == "toggle_started"
+        assert events[-1]["entry_id"] == "e1"
 
 
 class TestSyncPending:
@@ -713,6 +778,84 @@ class TestCliRecovery:
         assert "08:30:00" in toggl_tray.state["start_time"]
         queue = toggl_tray._load_pending()
         assert "08:30:00" in queue[0]["start_time"]
+
+    @patch.object(toggl_tray, "get_api_token", return_value="tok")
+    @patch.object(toggl_tray, "fetch_current_entry", return_value={
+        "id": "cloud_1",
+        "start": "2026-04-28T10:00:00+00:00",
+        "description": "cloud task",
+    })
+    def test_doctor_reports_local_and_cloud_health(self, mock_current, mock_token, capsys, tmp_state_dir):
+        toggl_tray.state["tracking"] = True
+        toggl_tray.state["entry_id"] = "local_1"
+        toggl_tray.state["start_time"] = "2026-04-28T09:00:00+00:00"
+        toggl_tray.save_state()
+        toggl_tray.queue_action("start", description="pending task")
+        toggl_tray._append_event("toggle_requested")
+
+        args = type("Args", (), {"cloud": True})()
+        assert toggl_tray._cli_doctor(args) == 0
+        out = capsys.readouterr().out
+        assert "API token: yes" in out
+        assert "Tracking: yes" in out
+        assert "Pending actions: 1" in out
+        assert "Ledger events: 2" in out
+        assert "Cloud current: yes (cloud_1)" in out
+
+    @patch.object(toggl_tray, "get_api_token", return_value=None)
+    def test_doctor_without_cloud_does_not_fetch_current(self, mock_token, capsys, tmp_state_dir):
+        args = type("Args", (), {"cloud": False})()
+        assert toggl_tray._cli_doctor(args) == 0
+        out = capsys.readouterr().out
+        assert "Cloud current: skipped (use --cloud)" in out
+
+    @patch.object(toggl_tray, "get_api_token", return_value="tok")
+    @patch.object(toggl_tray, "fetch_entries_for_date")
+    def test_audit_reports_daily_totals_blank_descriptions_and_gaps(
+        self, mock_fetch, mock_token, capsys, tmp_state_dir
+    ):
+        mock_fetch.return_value = [
+            {
+                "id": "one",
+                "start": "2026-04-28T09:00:00+00:00",
+                "stop": "2026-04-28T10:00:00+00:00",
+                "duration": 3600,
+                "description": "",
+            },
+            {
+                "id": "two",
+                "start": "2026-04-28T13:30:00+00:00",
+                "stop": "2026-04-28T14:00:00+00:00",
+                "duration": 1800,
+                "description": "work",
+            },
+        ]
+        toggl_tray.queue_action("start", description="local",
+                                start_time="2026-04-28T15:00:00+00:00")
+        toggl_tray.queue_action("stop", description="local",
+                                stop_time="2026-04-28T16:00:00+00:00")
+
+        args = type("Args", (), {
+            "date_from": "2026-04-28",
+            "date_to": "2026-04-28",
+            "local_only": False,
+            "gap_minutes": 120,
+        })()
+        assert toggl_tray._cli_audit(args) == 0
+        out = capsys.readouterr().out
+        assert "2026-04-28: 2:30:00 total, 3 entries, 1 blank, 1 local pending, 1 large gaps" in out
+        assert "Total: 2:30:00" in out
+
+    @patch.object(toggl_tray, "get_api_token", return_value=None)
+    def test_audit_rejects_reversed_range(self, mock_token, capsys, tmp_state_dir):
+        args = type("Args", (), {
+            "date_from": "2026-04-29",
+            "date_to": "2026-04-28",
+            "local_only": True,
+            "gap_minutes": 120,
+        })()
+        assert toggl_tray._cli_audit(args) == 2
+        assert "Start date must be before or equal to end date." in capsys.readouterr().err
 
 
 class TestDesktopInstall:

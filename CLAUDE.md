@@ -19,6 +19,8 @@ System tray Toggl Track timer for Linux Mint (Cinnamon/X11).
 
 - State: `~/.local/share/toggl-tray/state.json` (tracking status, entry_id, workspace_id)
 - Offline queue: `~/.local/share/toggl-tray/pending.json` (actions queued when API unreachable)
+- Event ledger: `~/.local/share/toggl-tray/events.jsonl` (append-only toggle/start/stop/pending audit trail)
+- Backups: `state.json.bak` and `pending.json.bak` are maintained during atomic writes
 - Icons: `~/.local/share/toggl-tray/icons/` (pre-rendered active/inactive PNGs)
 
 ## API Token
@@ -52,6 +54,15 @@ System tray Toggl Track timer for Linux Mint (Cinnamon/X11).
 - **Health check every sync cycle.** If tracking=True but entry_id=None with no pending items, the app tries to recover from cloud. If cloud has nothing running, it stops the local timer and notifies the user.
 - **Sync failure notifications.** After 3 consecutive sync failures, the user gets a notification to check their connection.
 - **Thread-safe state.** A `state_lock` protects all state mutations from race conditions between the sync thread and user-triggered toggles.
+- **Atomic local writes.** `state.json` and `pending.json` write via temp-file + rename and fall back to `.bak` on corrupt primary JSON.
+- **Append-only event ledger.** Toggle/CLI start/stop requests and pending queue writes append JSONL records before or alongside cloud writes.
+
+## Diagnostics
+
+- `python toggl_tray.py doctor` checks local state, token presence, pending queue, ledger count, and rate-limit status without spending Toggl requests.
+- `python toggl_tray.py doctor --cloud` also checks Toggl's current timer and spends one API request.
+- `python toggl_tray.py audit YYYY-MM-DD YYYY-MM-DD` summarizes daily totals, blank descriptions, local pending entries, and gaps larger than 120 minutes.
+- `python toggl_tray.py audit YYYY-MM-DD YYYY-MM-DD --local-only` avoids Toggl API calls and audits only pending local entries.
 
 ## Tests
 
@@ -60,4 +71,4 @@ source .venv/bin/activate
 python -m pytest test_toggl_tray.py -v
 ```
 
-Tests mock Xlib, GTK, and pystray at import time. Covers: elapsed_str, tooltip, state persistence, offline queue, sync_pending (including open-start sync, cloud adoption, 404 handling, 4xx preservation, error isolation, no-expiry behavior), API retry logic, toggle_tracking (online + offline/auth paths), start_entry payload, hotkey failure notification, rate-budgeted sync cycles, health check (recovery, phantom timer detection, skip conditions).
+Tests mock Xlib, GTK, and pystray at import time. Covers: elapsed_str, tooltip, state persistence, atomic JSON backups, event ledger, offline queue, sync_pending (including open-start sync, cloud adoption, 404 handling, 4xx preservation, error isolation, no-expiry behavior), API retry logic, toggle_tracking (online + offline/auth paths), start_entry payload, doctor/audit CLI diagnostics, hotkey failure notification, rate-budgeted sync cycles, health check (recovery, phantom timer detection, skip conditions).

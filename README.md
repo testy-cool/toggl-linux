@@ -115,6 +115,10 @@ These do not need the tray window to be visible:
 python3 toggl_tray.py status          # show current state and local pending entries
 python3 toggl_tray.py local           # list today's local/offline entries
 python3 toggl_tray.py entries         # list today's Toggl + local entries
+python3 toggl_tray.py doctor          # inspect local state, token, pending queue, and ledger
+python3 toggl_tray.py doctor --cloud  # also check Toggl's current timer (uses one API request)
+python3 toggl_tray.py audit 2026-05-01 2026-05-31
+                                     # summarize totals, blanks, local pending entries, and large gaps
 python3 toggl_tray.py start "Task"    # start tracking from a terminal
 python3 toggl_tray.py stop            # stop tracking from a terminal
 python3 toggl_tray.py set-start 09:00 # correct the current timer start time
@@ -144,6 +148,9 @@ python3 toggl_tray.py install-app --autostart
 - If the API is unreachable, auth is missing, or Toggl rate-limits requests, start/stop actions are saved locally and retried
 - Pending local actions sync every 5 minutes; idle cloud polling is limited to once per hour to preserve the free-plan request budget
 - State is saved to `~/.local/share/toggl-tray/state.json`
+- Pending writes are saved to `~/.local/share/toggl-tray/pending.json`
+- Every toggle/start/stop/pending action is appended to `~/.local/share/toggl-tray/events.jsonl`
+- `state.json` and `pending.json` use atomic writes and keep `.bak` backups for recovery
 
 ## Dependencies
 
@@ -188,8 +195,14 @@ Pending billable entries are not expired or garbage-collected automatically.
 
 **Nothing is being tracked**
 - Run `python3 toggl_tray.py status` to check whether a local timer or pending queue exists.
+- Run `python3 toggl_tray.py doctor` for state file, pending file, token, ledger, and rate-limit health.
 - Run `python3 toggl_tray.py entries` to check today's Toggl entries.
 - If both are empty, the hotkey likely did not reach the app. Use the tray menu or `python3 toggl_tray.py start "Task"` until the hotkey notification/conflict is resolved.
+
+**Need to review missing time**
+- Run `python3 toggl_tray.py audit 2026-05-01 2026-05-31`.
+- The audit shows per-day totals, blank descriptions, local pending entries, and large gaps.
+- Use `--local-only` to inspect only unsynced local entries without spending API requests.
 
 **No sound on toggle**
 - Sounds use `paplay` (PulseAudio). Make sure it's installed: `sudo apt install pulseaudio-utils`

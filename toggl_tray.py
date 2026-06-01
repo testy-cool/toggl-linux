@@ -32,6 +32,7 @@ API_BASE = "https://api.track.toggl.com/api/v9"
 STATE_DIR = Path.home() / ".local" / "share" / "toggl-tray"
 STATE_FILE = STATE_DIR / "state.json"
 PENDING_FILE = STATE_DIR / "pending.json"
+LEDGER_FILE = STATE_DIR / "events.jsonl"
 LOCK_FILE = STATE_DIR / "toggl-tray.lock"
 APPLICATIONS_DIR = Path.home() / ".local" / "share" / "applications"
 DESKTOP_FILE = APPLICATIONS_DIR / "toggl-tray.desktop"
@@ -225,20 +226,73 @@ def delete_entry(workspace_id, entry_id):
     return api_delete(f"/workspaces/{workspace_id}/time_entries/{entry_id}")
 
 
-# ── State persistence ──────────────────────────────────────────────────────
+# ── Local persistence ──────────────────────────────────────────────────────
+
+def _backup_path(path):
+    return path.with_name(path.name + ".bak")
+
+
+def _atomic_write_text(path, text, backup=True):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    if backup and path.exists():
+        try:
+            existing = path.read_text()
+            json.loads(existing)
+            _backup_path(path).write_text(existing)
+        except (json.JSONDecodeError, OSError):
+            pass
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
+def _load_json_with_backup(path, default):
+    for candidate in (path, _backup_path(path)):
+        if candidate.exists():
+            try:
+                return json.loads(candidate.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue
+    return default
+
+
+def _append_event(event, **data):
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "event": event,
+        **data,
+    }
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with LEDGER_FILE.open("a") as fp:
+        fp.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def _read_ledger_events(limit=None):
+    if not LEDGER_FILE.exists():
+        return []
+    events = []
+    try:
+        lines = LEDGER_FILE.read_text().splitlines()
+    except OSError:
+        return []
+    if limit is not None:
+        lines = lines[-limit:]
+    for line in lines:
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return events
+
 
 def save_state():
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(state, indent=2))
+    _atomic_write_text(STATE_FILE, json.dumps(state, indent=2))
 
 
 def load_state():
-    if STATE_FILE.exists():
-        try:
-            saved = json.loads(STATE_FILE.read_text())
-            state.update(saved)
-        except (json.JSONDecodeError, KeyError):
-            pass
+    saved = _load_json_with_backup(STATE_FILE, None)
+    if isinstance(saved, dict):
+        state.update(saved)
 
 
 # ── Offline queue ──────────────────────────────────────────────────────────
@@ -249,17 +303,12 @@ state_lock = threading.Lock()
 
 
 def _load_pending():
-    if PENDING_FILE.exists():
-        try:
-            return json.loads(PENDING_FILE.read_text())
-        except (json.JSONDecodeError, KeyError):
-            pass
-    return []
+    pending = _load_json_with_backup(PENDING_FILE, [])
+    return pending if isinstance(pending, list) else []
 
 
 def _save_pending(queue):
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    PENDING_FILE.write_text(json.dumps(queue, indent=2))
+    _atomic_write_text(PENDING_FILE, json.dumps(queue, indent=2))
 
 
 def queue_action(action, **kwargs):
@@ -268,7 +317,9 @@ def queue_action(action, **kwargs):
         kwargs["workspace_id"] = state["workspace_id"]
     with pending_lock:
         queue = _load_pending()
-        queue.append({"action": action, "ts": datetime.now(timezone.utc).isoformat(), **kwargs})
+        item = {"action": action, "ts": datetime.now(timezone.utc).isoformat(), **kwargs}
+        queue.append(item)
+        _append_event("pending_queued", **item)
         _save_pending(queue)
 
 
@@ -774,6 +825,14 @@ def toggle_tracking(*_args):
             description = state.get("description", "")
             project_id = state.get("project_id")
             start_time = state.get("start_time")
+        _append_event(
+            "toggle_requested",
+            source="tray",
+            was_tracking=is_tracking,
+            entry_id=entry_id,
+            workspace_id=workspace_id,
+            description=description,
+        )
 
         if is_tracking:
             # Stop
@@ -803,6 +862,7 @@ def toggle_tracking(*_args):
                 state["entry_id"] = None
                 state["start_time"] = None
                 save_state()
+            _append_event("toggle_stopped", source="tray", entry_id=entry_id, stop_time=now)
             _play_sound(SOUND_STOP)
         else:
             # Start
@@ -830,6 +890,13 @@ def toggle_tracking(*_args):
                     state["entry_id"] = entry["id"]
                     state["start_time"] = entry["start"]
                     save_state()
+                _append_event(
+                    "toggle_started",
+                    source="tray",
+                    entry_id=entry["id"],
+                    start_time=entry["start"],
+                    mode="cloud",
+                )
             else:
                 with state_lock:
                     state["tracking"] = True
@@ -839,6 +906,13 @@ def toggle_tracking(*_args):
                 queue_action("start", start_time=now.isoformat(),
                              description=description,
                              project_id=project_id)
+                _append_event(
+                    "toggle_started",
+                    source="tray",
+                    entry_id=None,
+                    start_time=now.isoformat(),
+                    mode="local",
+                )
             _play_sound(SOUND_START)
             if not description:
                 _notify("Tracking with no description — right-click to set one")
@@ -1559,6 +1633,22 @@ def _parse_cli_date(value):
         return None
 
 
+def _file_json_status(path):
+    if not path.exists():
+        return "missing"
+    try:
+        json.loads(path.read_text())
+        return "ok"
+    except (json.JSONDecodeError, OSError):
+        if _backup_path(path).exists():
+            try:
+                json.loads(_backup_path(path).read_text())
+                return "corrupt (backup ok)"
+            except (json.JSONDecodeError, OSError):
+                pass
+        return "corrupt"
+
+
 def _load_cli_runtime(fetch_workspace=False):
     global api_token
     load_state()
@@ -1598,6 +1688,48 @@ def _cli_status(_args):
     return 0
 
 
+def _cli_doctor(args):
+    _load_cli_runtime()
+    pending = _load_pending()
+    pending_entries = _pending_as_entries()
+    ledger_events = _read_ledger_events()
+    rate_limit_left = max(int(rate_limited_until - time.monotonic()), 0)
+
+    print("Toggl Tray Doctor")
+    print(f"State file: {STATE_FILE} ({_file_json_status(STATE_FILE)})")
+    print(f"Pending file: {PENDING_FILE} ({_file_json_status(PENDING_FILE)})")
+    print(f"Ledger file: {LEDGER_FILE} ({'ok' if LEDGER_FILE.exists() else 'missing'})")
+    print(f"API token: {'yes' if api_token else 'no'}")
+    print(f"Workspace: {state.get('workspace_id') or '(unknown)'}")
+    print(f"Tracking: {'yes' if state.get('tracking') else 'no'}")
+    if state.get("start_time"):
+        print(f"Started: {_format_local_dt(state['start_time'])}")
+    if state.get("entry_id"):
+        print(f"Toggl entry id: {state['entry_id']}")
+    elif state.get("tracking"):
+        print("Toggl entry id: none (local/offline timer)")
+    print(f"Pending actions: {len(pending)}")
+    print(f"Pending visible entries: {len(pending_entries)}")
+    print(f"Ledger events: {len(ledger_events)}")
+    print(f"Rate limit: {'active for ' + str(rate_limit_left) + 's' if rate_limit_left else 'inactive'}")
+
+    if args.cloud:
+        if not api_token:
+            print("Cloud current: skipped (no API token)")
+        else:
+            try:
+                current = fetch_current_entry()
+                if current:
+                    print(f"Cloud current: yes ({current.get('id')})")
+                else:
+                    print("Cloud current: no")
+            except Exception as e:
+                print(f"Cloud current: error ({e})")
+    else:
+        print("Cloud current: skipped (use --cloud)")
+    return 0
+
+
 def _cli_entries(args):
     date_obj = _parse_cli_date(args.date)
     if date_obj is None:
@@ -1623,8 +1755,71 @@ def _cli_entries(args):
     return 0
 
 
+def _date_range(start, end):
+    date_obj = start
+    while date_obj <= end:
+        yield date_obj
+        date_obj = date_obj + timedelta(days=1)
+
+
+def _entry_gap_count(entries, threshold_minutes):
+    complete = []
+    for entry in entries:
+        if not entry.get("start") or not entry.get("stop"):
+            continue
+        complete.append(entry)
+    complete.sort(key=lambda item: item.get("start", ""))
+    gaps = 0
+    threshold_seconds = threshold_minutes * 60
+    for prev, current in zip(complete, complete[1:]):
+        prev_stop = _coerce_datetime(prev["stop"])
+        current_start = _coerce_datetime(current["start"])
+        if (current_start - prev_stop).total_seconds() > threshold_seconds:
+            gaps += 1
+    return gaps
+
+
+def _cli_audit(args):
+    start = _parse_cli_date(args.date_from)
+    end = _parse_cli_date(args.date_to)
+    if start is None or end is None:
+        return 2
+    if start > end:
+        print("Start date must be before or equal to end date.", file=sys.stderr)
+        return 2
+
+    _load_cli_runtime()
+    grand_total = 0
+    print(f"Audit {start.isoformat()}..{end.isoformat()}")
+    for date_obj in _date_range(start, end):
+        pending_entries = _pending_as_entries(date_obj)
+        entries = []
+        if not args.local_only and api_token:
+            try:
+                entries = fetch_entries_for_date(date_obj)
+            except Exception as e:
+                print(f"Could not fetch Toggl entries for {date_obj.isoformat()}: {e}", file=sys.stderr)
+        elif not args.local_only and not api_token:
+            print("No API token; auditing local pending entries only.", file=sys.stderr)
+
+        merged = _merge_entries_with_pending(entries, pending_entries)
+        total = sum(_entry_duration_seconds(entry) for entry in merged)
+        blank = sum(1 for entry in merged if not entry.get("description"))
+        local_count = sum(1 for entry in merged if entry.get("_offline"))
+        gap_count = _entry_gap_count(merged, args.gap_minutes)
+        grand_total += total
+        print(
+            f"{date_obj.isoformat()}: {_format_duration(total)} total, "
+            f"{len(merged)} entries, {blank} blank, {local_count} local pending, "
+            f"{gap_count} large gaps"
+        )
+    print(f"Total: {_format_duration(grand_total)}")
+    return 0
+
+
 def _cli_start(args):
     _load_cli_runtime(fetch_workspace=True)
+    _append_event("cli_start_requested", description=" ".join(args.description).strip())
     open_pending = [op for op in _pending_operations(_load_pending()) if op.get("kind") == "open"]
     if state.get("tracking") or open_pending:
         if not state.get("tracking") and open_pending:
@@ -1662,6 +1857,7 @@ def _cli_start(args):
         state["entry_id"] = entry["id"]
         state["start_time"] = entry.get("start", now)
         save_state()
+        _append_event("cli_started", entry_id=entry["id"], start_time=state["start_time"], mode="cloud")
         print(f"Started on Toggl at {_format_local_dt(state['start_time'])}.")
     else:
         state["tracking"] = True
@@ -1669,12 +1865,14 @@ def _cli_start(args):
         state["start_time"] = now
         save_state()
         queue_action("start", start_time=now, description=description, project_id=project_id)
+        _append_event("cli_started", entry_id=None, start_time=now, mode="local")
         print(f"Started locally at {_format_local_dt(now)}.")
     return 0
 
 
 def _cli_stop(_args):
     _load_cli_runtime()
+    _append_event("cli_stop_requested", was_tracking=state.get("tracking"))
     if not state.get("tracking"):
         open_pending = [op for op in _pending_operations(_load_pending()) if op.get("kind") == "open"]
         if not open_pending:
@@ -1719,6 +1917,12 @@ def _cli_stop(_args):
     state["entry_id"] = None
     state["start_time"] = None
     save_state()
+    _append_event(
+        "cli_stopped",
+        entry_id=entry_id,
+        stop_time=now,
+        mode="cloud" if stopped_on_toggl else "local",
+    )
     target = "on Toggl" if stopped_on_toggl else "locally"
     print(f"Stopped {target} at {_format_local_dt(now)}.")
     return 0
@@ -1867,10 +2071,18 @@ def _build_cli_parser():
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("run", help="run the tray app")
     sub.add_parser("status", help="show local state and pending queue")
+    doctor = sub.add_parser("doctor", help="diagnose local state, pending queue, token, and optional cloud state")
+    doctor.add_argument("--cloud", action="store_true", help="spend one API request to check Toggl's current timer")
 
     entries = sub.add_parser("entries", aliases=["today"], help="show entries for a local date")
     entries.add_argument("date", nargs="?", help="local date, YYYY-MM-DD (default: today)")
     entries.add_argument("--local-only", action="store_true", help="only show pending local entries")
+
+    audit = sub.add_parser("audit", help="summarize entries, blanks, local pending work, and large gaps")
+    audit.add_argument("date_from", help="start local date, YYYY-MM-DD")
+    audit.add_argument("date_to", nargs="?", help="end local date, YYYY-MM-DD (default: start date)")
+    audit.add_argument("--local-only", action="store_true", help="only audit pending local entries")
+    audit.add_argument("--gap-minutes", type=int, default=120, help="count gaps larger than this many minutes")
 
     local = sub.add_parser("local", help="show pending local entries for a date")
     local.add_argument("date", nargs="?", help="local date, YYYY-MM-DD (default: today)")
@@ -1898,6 +2110,12 @@ def _run_cli(argv):
         return None
     if args.command == "status":
         return _cli_status(args)
+    if args.command == "doctor":
+        return _cli_doctor(args)
+    if args.command == "audit":
+        if args.date_to is None:
+            args.date_to = args.date_from
+        return _cli_audit(args)
     if args.command in ("entries", "today", "local"):
         if args.command == "local":
             args.local_only = True
