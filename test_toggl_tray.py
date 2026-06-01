@@ -33,7 +33,8 @@ import toggl_tray
 @pytest.fixture(autouse=True)
 def reset_state(tmp_path):
     """Reset global state before each test."""
-    with patch.object(toggl_tray, "LEDGER_FILE", tmp_path / "events.jsonl"):
+    with patch.object(toggl_tray, "LEDGER_FILE", tmp_path / "events.jsonl"), \
+         patch.object(toggl_tray, "REQUEST_BUDGET_FILE", tmp_path / "request_budget.json", create=True):
         toggl_tray.state.update({
             "tracking": False,
             "entry_id": None,
@@ -49,6 +50,8 @@ def reset_state(tmp_path):
         toggl_tray._consecutive_sync_failures = 0
         toggl_tray._sync_failure_notified = False
         toggl_tray._last_notification_at.clear()
+        if hasattr(toggl_tray, "_request_budget_lock"):
+            toggl_tray._request_budget_lock = toggl_tray.threading.Lock()
         yield
 
 
@@ -58,7 +61,8 @@ def tmp_state_dir(tmp_path):
     with patch.object(toggl_tray, "STATE_DIR", tmp_path), \
          patch.object(toggl_tray, "STATE_FILE", tmp_path / "state.json"), \
          patch.object(toggl_tray, "PENDING_FILE", tmp_path / "pending.json"), \
-         patch.object(toggl_tray, "LEDGER_FILE", tmp_path / "events.jsonl"):
+         patch.object(toggl_tray, "LEDGER_FILE", tmp_path / "events.jsonl"), \
+         patch.object(toggl_tray, "REQUEST_BUDGET_FILE", tmp_path / "request_budget.json", create=True):
         yield tmp_path
 
 
@@ -264,6 +268,33 @@ class TestEventLedger:
         assert events[-1]["entry_id"] == "e1"
 
 
+class TestRequestBudget:
+    def test_api_records_request_attempt(self, tmp_state_dir):
+        response = MagicMock()
+        response.status_code = 200
+        response.content = b"{}"
+        response.json.return_value = {}
+
+        with patch.object(toggl_tray.requests, "request", return_value=response), \
+             patch.object(toggl_tray.time, "time", return_value=1000.0):
+            toggl_tray._api("GET", "/me")
+
+        assert toggl_tray._load_request_timestamps(now=1000.0) == [1000.0]
+        assert toggl_tray._request_budget_status(now=1000.0) == {
+            "used": 1,
+            "remaining": 29,
+            "limit": 30,
+        }
+
+    def test_request_budget_prunes_old_attempts_when_recording(self, tmp_state_dir):
+        (tmp_state_dir / "request_budget.json").write_text(json.dumps([999.0, 4500.0, 4599.0]))
+
+        toggl_tray._record_api_request(now=4600.0)
+
+        assert toggl_tray._load_request_timestamps(now=4600.0) == [4500.0, 4599.0, 4600.0]
+        assert toggl_tray._request_budget_status(now=4600.0)["remaining"] == 27
+
+
 class TestSyncPending:
     def test_empty_queue_returns_zero(self, tmp_state_dir):
         assert toggl_tray.sync_pending() == 0
@@ -304,18 +335,47 @@ class TestSyncPending:
         assert toggl_tray.state["start_time"] == "2026-05-11T08:00:00+00:00"
 
     @patch.object(toggl_tray, "fetch_current_entry", return_value={
-        "id": "cloud_1", "start": "2026-05-11T09:00:00+00:00",
-        "description": "from cloud", "project_id": None,
+        "id": "cloud_1", "start": "2026-05-11T09:02:00+00:00",
+        "description": "local task", "project_id": None,
     })
     @patch.object(toggl_tray, "save_state")
     def test_open_start_adopts_cloud_entry(self, mock_save, mock_fetch, tmp_state_dir):
         toggl_tray.state["tracking"] = True
-        toggl_tray.queue_action("start", description="local task")
+        toggl_tray.queue_action("start", description="local task",
+                                start_time="2026-05-11T09:00:00+00:00")
         remaining = toggl_tray.sync_pending()
         assert remaining == 0
         assert toggl_tray.state["tracking"] is True
         assert toggl_tray.state["entry_id"] == "cloud_1"
-        assert toggl_tray.state["start_time"] == "2026-05-11T09:00:00+00:00"
+        assert toggl_tray.state["start_time"] == "2026-05-11T09:02:00+00:00"
+
+    @patch.object(toggl_tray, "fetch_current_entry", return_value={
+        "id": "cloud_1", "start": "2026-05-11T09:00:00+00:00",
+        "description": "unrelated cloud task", "project_id": None,
+    })
+    @patch.object(toggl_tray, "start_entry")
+    @patch.object(toggl_tray, "save_state")
+    @patch.object(toggl_tray, "_notify")
+    def test_open_start_keeps_pending_when_cloud_current_does_not_match(
+        self, mock_notify, mock_save, mock_start, mock_fetch, tmp_state_dir
+    ):
+        toggl_tray.state["tracking"] = True
+        toggl_tray.state["entry_id"] = None
+        toggl_tray.state["start_time"] = "2026-05-11T08:00:00+00:00"
+        toggl_tray.queue_action("start", description="local task",
+                                start_time="2026-05-11T08:00:00+00:00")
+
+        remaining = toggl_tray.sync_pending()
+
+        assert remaining == 1
+        assert toggl_tray.state["entry_id"] is None
+        assert toggl_tray.state["start_time"] == "2026-05-11T08:00:00+00:00"
+        assert toggl_tray._load_pending()[0]["description"] == "local task"
+        mock_start.assert_not_called()
+        mock_save.assert_not_called()
+        mock_notify.assert_called_once_with("Toggl conflict — local start kept pending")
+        assert toggl_tray._read_ledger_events()[-1]["event"] == "sync_conflict"
+
 
     @patch.object(toggl_tray, "fetch_current_entry", side_effect=Exception("network down"))
     def test_open_start_stays_pending_on_api_failure(self, mock_fetch, tmp_state_dir):
@@ -792,14 +852,17 @@ class TestCliRecovery:
         toggl_tray.save_state()
         toggl_tray.queue_action("start", description="pending task")
         toggl_tray._append_event("toggle_requested")
+        toggl_tray._record_api_request(now=1000.0)
 
         args = type("Args", (), {"cloud": True})()
-        assert toggl_tray._cli_doctor(args) == 0
+        with patch.object(toggl_tray.time, "time", return_value=1000.0):
+            assert toggl_tray._cli_doctor(args) == 0
         out = capsys.readouterr().out
         assert "API token: yes" in out
         assert "Tracking: yes" in out
         assert "Pending actions: 1" in out
         assert "Ledger events: 2" in out
+        assert "Request budget: 1/30 used, 29 remaining" in out
         assert "Cloud current: yes (cloud_1)" in out
 
     @patch.object(toggl_tray, "get_api_token", return_value=None)
@@ -872,6 +935,17 @@ class TestDesktopInstall:
         text = path.read_text()
         assert text.startswith("[Desktop Entry]")
         assert path.stat().st_mode & 0o111
+
+
+class TestTrayMenu:
+    def test_menu_exposes_diagnostics_actions(self):
+        toggl_tray.pystray.MenuItem.reset_mock()
+
+        toggl_tray.build_menu()
+
+        labels = [call.args[0] for call in toggl_tray.pystray.MenuItem.call_args_list]
+        assert "Doctor" in labels
+        assert "Audit today" in labels
 
 
 # ── Health check ────────────────────────────────────────────────────────────
@@ -963,6 +1037,20 @@ class TestSyncCycle:
         toggl_tray._last_cloud_poll_at = 0.0
         toggl_tray._run_sync_cycle(now=999999.0)
         mock_sync.assert_called_once()
+        mock_cloud.assert_not_called()
+        mock_health.assert_called_once()
+        mock_success.assert_called_once()
+
+    @patch.object(toggl_tray, "_load_pending", return_value=[])
+    @patch.object(toggl_tray, "_sync_cloud_state")
+    @patch.object(toggl_tray, "_health_check")
+    @patch.object(toggl_tray, "_record_sync_success")
+    def test_idle_cycle_keeps_reserved_budget_for_user_actions(
+        self, mock_success, mock_health, mock_cloud, mock_pending
+    ):
+        toggl_tray._last_cloud_poll_at = 0.0
+        with patch.object(toggl_tray, "_request_budget_remaining", return_value=6, create=True):
+            toggl_tray._run_sync_cycle(now=999999.0)
         mock_cloud.assert_not_called()
         mock_health.assert_called_once()
         mock_success.assert_called_once()

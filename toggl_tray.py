@@ -6,8 +6,10 @@ import sys
 import json
 import time
 import fcntl
+import io
 import argparse
 import shutil
+import contextlib
 import threading
 import subprocess
 from datetime import datetime, timezone, timedelta
@@ -33,6 +35,7 @@ STATE_DIR = Path.home() / ".local" / "share" / "toggl-tray"
 STATE_FILE = STATE_DIR / "state.json"
 PENDING_FILE = STATE_DIR / "pending.json"
 LEDGER_FILE = STATE_DIR / "events.jsonl"
+REQUEST_BUDGET_FILE = STATE_DIR / "request_budget.json"
 LOCK_FILE = STATE_DIR / "toggl-tray.lock"
 APPLICATIONS_DIR = Path.home() / ".local" / "share" / "applications"
 DESKTOP_FILE = APPLICATIONS_DIR / "toggl-tray.desktop"
@@ -45,6 +48,12 @@ CLOUD_POLL_INTERVAL_SECONDS = 3600
 NOTIFY_REPEAT_SECONDS = 3600
 NO_TOKEN_SYNC_MESSAGE = "No Toggl API token — pending entries cannot sync"
 AUTH_FAILED_SYNC_MESSAGE = "Toggl auth failed — pending entries kept locally"
+REQUEST_BUDGET_LIMIT = 30
+REQUEST_BUDGET_WINDOW_SECONDS = 3600
+REQUEST_BUDGET_BACKGROUND_RESERVE = 6
+REQUEST_BUDGET_SYNC_MESSAGE = "Toggl request budget exhausted — pending sync paused"
+SYNC_CONFLICT_MESSAGE = "Toggl conflict — local start kept pending"
+OPEN_START_MATCH_TOLERANCE_SECONDS = 300
 
 
 # ── State ───────────────────────────────────────────────────────────────────
@@ -61,6 +70,7 @@ state = {
 icon_ref = None
 api_token = None
 rate_limited_until = 0.0
+_request_budget_lock = threading.Lock()
 
 
 class RateLimitedError(Exception):
@@ -110,6 +120,59 @@ def store_api_token(token):
         return False
 
 
+# ── Local Toggl request budget ──────────────────────────────────────────────
+
+def _load_request_timestamps(now=None):
+    """Return locally recorded Toggl request attempts inside the current window."""
+    now = time.time() if now is None else float(now)
+    cutoff = now - REQUEST_BUDGET_WINDOW_SECONDS
+    raw = _load_json_with_backup(REQUEST_BUDGET_FILE, [])
+    if not isinstance(raw, list):
+        return []
+
+    timestamps = []
+    for value in raw:
+        try:
+            ts = float(value)
+        except (TypeError, ValueError):
+            continue
+        if cutoff <= ts <= now + 60:
+            timestamps.append(ts)
+    return timestamps
+
+
+def _save_request_timestamps(timestamps):
+    _atomic_write_text(REQUEST_BUDGET_FILE, json.dumps(timestamps, indent=2))
+
+
+def _record_api_request(now=None):
+    """Record an attempted Toggl HTTP request for local budget visibility."""
+    now = time.time() if now is None else float(now)
+    with _request_budget_lock:
+        timestamps = _load_request_timestamps(now=now)
+        timestamps.append(now)
+        _save_request_timestamps(timestamps)
+        return len(timestamps)
+
+
+def _request_budget_status(now=None):
+    timestamps = _load_request_timestamps(now=now)
+    used = len(timestamps)
+    return {
+        "used": used,
+        "remaining": max(REQUEST_BUDGET_LIMIT - used, 0),
+        "limit": REQUEST_BUDGET_LIMIT,
+    }
+
+
+def _request_budget_remaining(now=None):
+    return _request_budget_status(now=now)["remaining"]
+
+
+def _request_budget_exhausted():
+    return _request_budget_remaining() <= 0
+
+
 # ── Toggl API ───────────────────────────────────────────────────────────────
 
 def _auth():
@@ -121,6 +184,7 @@ def _api(method, path, json=None, params=None):
     global rate_limited_until
     if not api_token:
         raise MissingApiTokenError("No Toggl API token configured")
+    _record_api_request()
     r = requests.request(
         method, f"{API_BASE}{path}",
         auth=_auth(), json=json, params=params, timeout=10,
@@ -443,6 +507,40 @@ def _pending_operations(queue):
     return ops
 
 
+def _cloud_entry_matches_pending_open_start(current, op):
+    """Return True only when a cloud running entry is plausibly our pending start."""
+    if not current:
+        return False
+    if (current.get("description") or "") != (op.get("description") or ""):
+        return False
+    if current.get("project_id") != op.get("project_id"):
+        return False
+
+    cloud_start = _parse_iso(current.get("start"))
+    pending_start = _parse_iso(op.get("start_time"))
+    if not cloud_start or not pending_start:
+        return False
+    return abs((cloud_start - pending_start).total_seconds()) <= OPEN_START_MATCH_TOLERANCE_SECONDS
+
+
+def _report_open_start_conflict(current, op):
+    _notify(SYNC_CONFLICT_MESSAGE)
+    _append_event(
+        "sync_conflict",
+        kind="open_start",
+        pending_start=op.get("start_time"),
+        pending_description=op.get("description", ""),
+        cloud_entry_id=current.get("id"),
+        cloud_start=current.get("start"),
+        cloud_description=current.get("description", ""),
+    )
+    print(
+        "Pending open start kept because Toggl already has a different running entry "
+        f"({current.get('id')}).",
+        file=sys.stderr,
+    )
+
+
 def sync_pending():
     """Try to sync all pending actions. Returns number of remaining."""
     global rate_limited_until
@@ -466,13 +564,17 @@ def sync_pending():
                 try:
                     current = fetch_current_entry()
                     if current:
-                        with state_lock:
-                            state["tracking"] = True
-                            state["entry_id"] = current["id"]
-                            state["start_time"] = current["start"]
-                            state["description"] = current.get("description", "")
-                            state["project_id"] = current.get("project_id")
-                            save_state()
+                        if _cloud_entry_matches_pending_open_start(current, op):
+                            with state_lock:
+                                state["tracking"] = True
+                                state["entry_id"] = current["id"]
+                                state["start_time"] = current["start"]
+                                state["description"] = current.get("description", "")
+                                state["project_id"] = current.get("project_id")
+                                save_state()
+                            synced_indexes.update(op["indexes"])
+                        else:
+                            _report_open_start_conflict(current, op)
                     else:
                         entry = start_entry(
                             workspace_id,
@@ -487,7 +589,7 @@ def sync_pending():
                             state["description"] = op.get("description", "")
                             state["project_id"] = op.get("project_id")
                             save_state()
-                    synced_indexes.update(op["indexes"])
+                        synced_indexes.update(op["indexes"])
                 except RateLimitedError as e:
                     rate_limited_until = time.monotonic() + e.retry_after
                     break
@@ -585,12 +687,16 @@ def _run_sync_cycle(now=None):
 
     pending = _load_pending()
     if pending:
-        left = sync_pending()
-        if left == 0 and PENDING_FILE.exists():
-            PENDING_FILE.unlink(missing_ok=True)
+        if _request_budget_exhausted():
+            _notify(REQUEST_BUDGET_SYNC_MESSAGE)
+        else:
+            left = sync_pending()
+            if left == 0 and PENDING_FILE.exists():
+                PENDING_FILE.unlink(missing_ok=True)
     elif api_token and now - _last_cloud_poll_at >= CLOUD_POLL_INTERVAL_SECONDS:
-        _sync_cloud_state()
-        _last_cloud_poll_at = now
+        if _request_budget_remaining() > REQUEST_BUDGET_BACKGROUND_RESERVE:
+            _sync_cloud_state()
+            _last_cloud_poll_at = now
 
     _health_check()
     _record_sync_success()
@@ -609,6 +715,8 @@ def sync_loop():
 def _health_check():
     """Detect and recover from tracking-without-cloud-backing."""
     if not api_token:
+        return
+    if _request_budget_remaining() <= REQUEST_BUDGET_BACKGROUND_RESERVE:
         return
     with state_lock:
         tracking = state["tracking"]
@@ -805,6 +913,8 @@ def _local_save_reason(action):
         return f"No Toggl API token — {action} saved locally"
     if _rate_limit_active():
         return f"Toggl rate limit active — {action} saved locally"
+    if _request_budget_exhausted():
+        return f"Toggl request budget exhausted — {action} saved locally"
     if not state.get("workspace_id"):
         return f"No Toggl workspace yet — {action} saved locally"
     return f"Offline — {action} queued locally"
@@ -837,7 +947,11 @@ def toggle_tracking(*_args):
         if is_tracking:
             # Stop
             now = datetime.now(timezone.utc).isoformat()
-            if entry_id and workspace_id and api_token and not _rate_limit_active():
+            if (
+                entry_id and workspace_id and api_token
+                and not _rate_limit_active()
+                and not _request_budget_exhausted()
+            ):
                 try:
                     stop_entry(workspace_id, entry_id)
                 except RateLimitedError:
@@ -868,7 +982,7 @@ def toggle_tracking(*_args):
             # Start
             now = datetime.now(timezone.utc)
             entry = None
-            if api_token and workspace_id and not _rate_limit_active():
+            if api_token and workspace_id and not _rate_limit_active() and not _request_budget_exhausted():
                 try:
                     entry = start_entry(
                         workspace_id,
@@ -1085,6 +1199,48 @@ def on_set_description(icon, item):
 
 def on_view_today(icon, item):
     GLib.idle_add(_show_entries_window)
+
+
+def _capture_cli_output(func, args):
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        code = func(args)
+    parts = [text.strip() for text in (stdout.getvalue(), stderr.getvalue()) if text.strip()]
+    text = "\n\n".join(parts)
+    if code not in (0, None):
+        text = f"{text}\n\nExit code: {code}" if text else f"Exit code: {code}"
+    return text or "No output."
+
+
+def on_doctor(icon, item):
+    def _do():
+        try:
+            args = type("Args", (), {"cloud": False})()
+            text = _capture_cli_output(_cli_doctor, args)
+        except Exception as e:
+            text = f"Doctor failed: {e}"
+        _gtk_message("Toggl Doctor", text)
+
+    threading.Thread(target=_do, daemon=True).start()
+
+
+def on_audit_today(icon, item):
+    def _do():
+        try:
+            today = datetime.now().date().isoformat()
+            args = type("Args", (), {
+                "date_from": today,
+                "date_to": today,
+                "local_only": False,
+                "gap_minutes": 120,
+            })()
+            text = _capture_cli_output(_cli_audit, args)
+        except Exception as e:
+            text = f"Audit failed: {e}"
+        _gtk_message("Toggl Audit Today", text)
+
+    threading.Thread(target=_do, daemon=True).start()
 
 
 def _show_entries_window():
@@ -1504,6 +1660,8 @@ def build_menu():
         pystray.MenuItem(desc_label, on_set_description),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Today's entries", on_view_today),
+        pystray.MenuItem("Doctor", on_doctor),
+        pystray.MenuItem("Audit today", on_audit_today),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Set API token...", on_set_token),
         pystray.MenuItem("Quit", on_quit),
@@ -1694,6 +1852,7 @@ def _cli_doctor(args):
     pending_entries = _pending_as_entries()
     ledger_events = _read_ledger_events()
     rate_limit_left = max(int(rate_limited_until - time.monotonic()), 0)
+    request_budget = _request_budget_status()
 
     print("Toggl Tray Doctor")
     print(f"State file: {STATE_FILE} ({_file_json_status(STATE_FILE)})")
@@ -1712,6 +1871,10 @@ def _cli_doctor(args):
     print(f"Pending visible entries: {len(pending_entries)}")
     print(f"Ledger events: {len(ledger_events)}")
     print(f"Rate limit: {'active for ' + str(rate_limit_left) + 's' if rate_limit_left else 'inactive'}")
+    print(
+        f"Request budget: {request_budget['used']}/{request_budget['limit']} used, "
+        f"{request_budget['remaining']} remaining"
+    )
 
     if args.cloud:
         if not api_token:

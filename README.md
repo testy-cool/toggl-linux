@@ -23,6 +23,7 @@ The tray icon shows the Toggl logo in **pink when tracking** and **grey when sto
 - **Single instance** — launching twice won't create duplicate icons
 - **Sound feedback** — subtle system sounds on toggle (no popup notifications)
 - **View today's entries** — right-click menu shows your timesheet
+- **Doctor and audit diagnostics** — tray menu and terminal checks for missing/pending time
 - **Edit & delete** — modify entries directly from the tray menu
 - **Persists across restarts** — remembers state and running timers
 - **Rate limit handling** — respects Toggl's API limits (30 req/hr on free plan)
@@ -104,6 +105,7 @@ python3 toggl_tray.py
 | **Start/stop tracking** | `Ctrl+Shift+T` (anywhere on your desktop) |
 | **Set description** | Right-click tray icon > "Set description..." |
 | **View today's entries** | Right-click tray icon > "Today's entries" |
+| **Run diagnostics** | Right-click tray icon > "Doctor" or "Audit today" |
 | **Edit/delete entries** | From the "Today's entries" window |
 | **Check elapsed time** | Hover over the tray icon |
 
@@ -150,6 +152,7 @@ python3 toggl_tray.py install-app --autostart
 - State is saved to `~/.local/share/toggl-tray/state.json`
 - Pending writes are saved to `~/.local/share/toggl-tray/pending.json`
 - Every toggle/start/stop/pending action is appended to `~/.local/share/toggl-tray/events.jsonl`
+- Recent Toggl request attempts are tracked in `~/.local/share/toggl-tray/request_budget.json`
 - `state.json` and `pending.json` use atomic writes and keep `.bak` backups for recovery
 
 ## Dependencies
@@ -169,6 +172,7 @@ All installed via pip — no compiled extensions needed:
 Toggl documents the free-plan quota as **30 API requests/hour** for user-specific endpoints and **30 requests/hour/user/organization** for organization-scoped endpoints. The app preserves that budget by:
 
 - Prioritizing user actions and pending local start/stop sync over background cloud polling
+- Tracking local request attempts and reserving the last few requests for explicit user actions
 - Retrying pending local entries every 5 minutes when there is something to sync
 - Polling Toggl's current timer at most once per hour while idle
 - Keeping billable pending start/stop data locally after auth errors, 4xx errors, 5xx errors, network failures, and rate limits
