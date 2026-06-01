@@ -42,7 +42,9 @@ def reset_state():
         "description": "",
     })
     toggl_tray.icon_ref = None
+    toggl_tray.api_token = "tok"
     toggl_tray.rate_limited_until = 0.0
+    toggl_tray._last_cloud_poll_at = 0.0
     toggl_tray._consecutive_sync_failures = 0
     toggl_tray._sync_failure_notified = False
     toggl_tray._last_notification_at.clear()
@@ -201,6 +203,23 @@ class TestSyncPending:
     def test_empty_queue_returns_zero(self, tmp_state_dir):
         assert toggl_tray.sync_pending() == 0
 
+    @patch.object(toggl_tray, "api_token", None)
+    @patch.object(toggl_tray, "api_post")
+    @patch.object(toggl_tray, "_notify")
+    def test_sync_without_token_preserves_queue_without_api_calls(
+        self, mock_notify, mock_post, tmp_state_dir
+    ):
+        toggl_tray.queue_action("start", description="offline",
+                                start_time="2026-04-28T09:00:00+00:00")
+        toggl_tray.queue_action("stop", stop_time="2026-04-28T10:00:00+00:00")
+
+        remaining = toggl_tray.sync_pending()
+
+        assert remaining == 2
+        mock_post.assert_not_called()
+        mock_notify.assert_called_once_with("No Toggl API token — pending entries cannot sync")
+        assert len(toggl_tray._load_pending()) == 2
+
     @patch.object(toggl_tray, "fetch_current_entry", return_value=None)
     @patch.object(toggl_tray, "start_entry", return_value={"id": "new_1", "start": "2026-05-11T08:00:00+00:00"})
     @patch.object(toggl_tray, "save_state")
@@ -327,7 +346,7 @@ class TestSyncPending:
         assert queue[0]["description"] == "will fail"
 
     @patch.object(toggl_tray, "api_post")
-    def test_4xx_client_error_drops_item(self, mock_post, tmp_state_dir):
+    def test_4xx_client_error_keeps_billable_item(self, mock_post, tmp_state_dir):
         error_resp = MagicMock()
         error_resp.status_code = 400
         mock_post.side_effect = requests.exceptions.HTTPError(response=error_resp)
@@ -335,16 +354,39 @@ class TestSyncPending:
                                 start_time="2026-04-28T09:00:00+00:00")
         toggl_tray.queue_action("stop", stop_time="2026-04-28T10:00:00+00:00")
         remaining = toggl_tray.sync_pending()
-        assert remaining == 0
+        assert remaining == 2
+        assert len(toggl_tray._load_pending()) == 2
 
-    def test_expired_items_dropped(self, tmp_state_dir):
+    @patch.object(toggl_tray, "delete_entry", side_effect=Exception("offline"))
+    def test_old_items_are_not_expired(self, mock_delete, tmp_state_dir):
         old_ts = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
         toggl_tray._save_pending([{
             "action": "delete", "ts": old_ts,
             "entry_id": "ancient", "workspace_id": "ws_123",
         }])
         remaining = toggl_tray.sync_pending()
+        assert remaining == 1
+        assert len(toggl_tray._load_pending()) == 1
+
+    @patch.object(toggl_tray, "api_post", return_value={"id": "recreated"})
+    @patch.object(toggl_tray, "update_entry")
+    def test_missing_remote_stop_recreates_completed_entry(self, mock_update, mock_post, tmp_state_dir):
+        error_resp = MagicMock()
+        error_resp.status_code = 404
+        mock_update.side_effect = requests.exceptions.HTTPError(response=error_resp)
+        toggl_tray.queue_action("stop", entry_id="missing_remote",
+                                start_time="2026-04-28T09:00:00+00:00",
+                                stop_time="2026-04-28T10:00:00+00:00",
+                                description="recreate me")
+
+        remaining = toggl_tray.sync_pending()
+
         assert remaining == 0
+        payload = mock_post.call_args[0][1]
+        assert payload["start"] == "2026-04-28T09:00:00+00:00"
+        assert payload["stop"] == "2026-04-28T10:00:00+00:00"
+        assert payload["duration"] == 3600
+        assert payload["description"] == "recreate me"
 
 
 class TestPendingEntries:
@@ -399,6 +441,21 @@ class TestPendingEntries:
 # ── API wrapper ──────────────────────────────────────────────────────────────
 
 class TestApiWrapper:
+    @patch.dict("toggl_tray.os.environ", {}, clear=True)
+    @patch("toggl_tray.subprocess.run")
+    def test_get_api_token_falls_back_to_legacy_keyring_key(self, mock_run):
+        missing = MagicMock(returncode=1, stdout="")
+        legacy = MagicMock(returncode=0, stdout="legacy_token\n")
+        mock_run.side_effect = [missing, legacy]
+
+        assert toggl_tray.get_api_token() == "legacy_token"
+        assert mock_run.call_args_list[0][0][0] == [
+            "secret-tool", "lookup", "service", "toggl", "username", "api_token",
+        ]
+        assert mock_run.call_args_list[1][0][0] == [
+            "secret-tool", "lookup", "application", "toggl-tray",
+        ]
+
     @patch.object(toggl_tray, "api_token", "test_token")
     def test_auth_returns_basic_auth(self):
         auth = toggl_tray._auth()
@@ -458,6 +515,23 @@ class TestApiWrapper:
 # ── toggle_tracking ──────────────────────────────────────────────────────────
 
 class TestToggleTracking:
+    @patch.object(toggl_tray, "api_token", None)
+    @patch.object(toggl_tray, "start_entry")
+    @patch.object(toggl_tray, "save_state")
+    @patch.object(toggl_tray, "_notify")
+    @patch.object(toggl_tray, "_play_sound")
+    @patch.object(toggl_tray, "queue_action")
+    def test_start_without_token_queues_without_api_call(
+        self, mock_queue, mock_sound, mock_notify, mock_save, mock_start
+    ):
+        toggl_tray.state["tracking"] = False
+        toggl_tray.toggle_tracking()
+        assert toggl_tray.state["tracking"] is True
+        assert toggl_tray.state["entry_id"] is None
+        mock_start.assert_not_called()
+        mock_queue.assert_called_once()
+        mock_notify.assert_any_call("No Toggl API token — start saved locally")
+
     @patch.object(toggl_tray, "start_entry", return_value={"id": "e1", "start": "2026-04-28T10:00:00+00:00"})
     @patch.object(toggl_tray, "save_state")
     @patch.object(toggl_tray, "_play_sound")
@@ -467,6 +541,24 @@ class TestToggleTracking:
         assert toggl_tray.state["tracking"] is True
         assert toggl_tray.state["entry_id"] == "e1"
         mock_sound.assert_called_once_with(toggl_tray.SOUND_START)
+
+    @patch.object(toggl_tray, "api_token", None)
+    @patch.object(toggl_tray, "stop_entry")
+    @patch.object(toggl_tray, "save_state")
+    @patch.object(toggl_tray, "_notify")
+    @patch.object(toggl_tray, "_play_sound")
+    @patch.object(toggl_tray, "queue_action")
+    def test_stop_without_token_queues_without_api_call(
+        self, mock_queue, mock_sound, mock_notify, mock_save, mock_stop
+    ):
+        toggl_tray.state["tracking"] = True
+        toggl_tray.state["entry_id"] = "e1"
+        toggl_tray.state["start_time"] = "2026-04-28T10:00:00+00:00"
+        toggl_tray.toggle_tracking()
+        assert toggl_tray.state["tracking"] is False
+        mock_stop.assert_not_called()
+        mock_queue.assert_called_once()
+        mock_notify.assert_any_call("No Toggl API token — stop saved locally")
 
     @patch.object(toggl_tray, "start_entry", side_effect=Exception("offline"))
     @patch.object(toggl_tray, "save_state")
@@ -552,6 +644,35 @@ class TestTrayIcon:
         toggl_tray.icon_ref = icon
         toggl_tray.update_tray_icon()
         assert icon.icon == "new-icon"
+
+
+class TestHotkeyListener:
+    @patch.object(toggl_tray, "_notify")
+    @patch.object(toggl_tray, "_play_sound")
+    def test_grab_failure_reports_visible_error(self, mock_sound, mock_notify):
+        class FakeRoot:
+            def grab_key(self, *_args):
+                return None
+
+        class FakeScreen:
+            root = FakeRoot()
+
+        class FakeDisplay:
+            def set_error_handler(self, handler):
+                self.handler = handler
+
+            def screen(self):
+                return FakeScreen()
+
+            def keysym_to_keycode(self, _keysym):
+                return 42
+
+            def sync(self):
+                self.handler(Exception("BadAccess"), None)
+
+        assert toggl_tray._run_hotkey_listener(display_factory=FakeDisplay) is False
+        mock_notify.assert_called_once_with("Toggl hotkey unavailable — use tray menu or terminal commands")
+        mock_sound.assert_called_once_with(toggl_tray.SOUND_ERROR)
 
 
 # ── Notification throttling ─────────────────────────────────────────────────
@@ -659,3 +780,46 @@ class TestHealthCheck:
         toggl_tray.state["entry_id"] = None
         toggl_tray._health_check()
         mock_fetch.assert_not_called()
+
+
+class TestSyncCycle:
+    @patch.object(toggl_tray, "_load_pending", return_value=[])
+    @patch.object(toggl_tray, "_sync_cloud_state")
+    @patch.object(toggl_tray, "_health_check")
+    @patch.object(toggl_tray, "_record_sync_success")
+    def test_idle_cycle_does_not_poll_cloud_before_interval(
+        self, mock_success, mock_health, mock_cloud, mock_pending
+    ):
+        toggl_tray._last_cloud_poll_at = 1000.0
+        toggl_tray._run_sync_cycle(now=1100.0)
+        mock_cloud.assert_not_called()
+        mock_health.assert_called_once()
+        mock_success.assert_called_once()
+
+    @patch.object(toggl_tray, "_load_pending", return_value=[])
+    @patch.object(toggl_tray, "_sync_cloud_state")
+    @patch.object(toggl_tray, "_health_check")
+    @patch.object(toggl_tray, "_record_sync_success")
+    def test_idle_cycle_polls_cloud_when_interval_elapsed(
+        self, mock_success, mock_health, mock_cloud, mock_pending
+    ):
+        toggl_tray._last_cloud_poll_at = 1000.0
+        toggl_tray._run_sync_cycle(now=1000.0 + toggl_tray.CLOUD_POLL_INTERVAL_SECONDS + 1)
+        mock_cloud.assert_called_once()
+        mock_health.assert_called_once()
+        mock_success.assert_called_once()
+
+    @patch.object(toggl_tray, "_load_pending", return_value=[{"action": "start"}])
+    @patch.object(toggl_tray, "sync_pending", return_value=1)
+    @patch.object(toggl_tray, "_sync_cloud_state")
+    @patch.object(toggl_tray, "_health_check")
+    @patch.object(toggl_tray, "_record_sync_success")
+    def test_pending_cycle_prioritizes_pending_without_cloud_poll(
+        self, mock_success, mock_health, mock_cloud, mock_sync, mock_pending
+    ):
+        toggl_tray._last_cloud_poll_at = 0.0
+        toggl_tray._run_sync_cycle(now=999999.0)
+        mock_sync.assert_called_once()
+        mock_cloud.assert_not_called()
+        mock_health.assert_called_once()
+        mock_success.assert_called_once()

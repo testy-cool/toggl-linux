@@ -40,7 +40,10 @@ AUTOSTART_FILE = AUTOSTART_DIR / "toggl-tray.desktop"
 ICON_SIZE = 64
 ICON_PADDING = 6  # transparent padding around the icon
 SYNC_INTERVAL_SECONDS = 300
+CLOUD_POLL_INTERVAL_SECONDS = 3600
 NOTIFY_REPEAT_SECONDS = 3600
+NO_TOKEN_SYNC_MESSAGE = "No Toggl API token — pending entries cannot sync"
+AUTH_FAILED_SYNC_MESSAGE = "Toggl auth failed — pending entries kept locally"
 
 
 # ── State ───────────────────────────────────────────────────────────────────
@@ -67,6 +70,10 @@ class RateLimitedError(Exception):
         super().__init__(f"Rate limited for {retry_after} seconds")
 
 
+class MissingApiTokenError(Exception):
+    """Raised when an API call is attempted without a configured token."""
+
+
 # ── API Token ───────────────────────────────────────────────────────────────
 
 def get_api_token():
@@ -74,15 +81,17 @@ def get_api_token():
     token = os.environ.get("TOGGL_API_TOKEN")
     if token:
         return token
-    try:
-        result = subprocess.run(
-            ["secret-tool", "lookup", "service", "toggl", "username", "api_token"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+    lookups = (
+        ["secret-tool", "lookup", "service", "toggl", "username", "api_token"],
+        ["secret-tool", "lookup", "application", "toggl-tray"],
+    )
+    for cmd in lookups:
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            break
     return None
 
 
@@ -91,7 +100,8 @@ def store_api_token(token):
     try:
         subprocess.run(
             ["secret-tool", "store", "--label=Toggl API Token",
-             "service", "toggl", "username", "api_token"],
+             "service", "toggl", "username", "api_token",
+             "application", "toggl-tray"],
             input=token, text=True, timeout=10,
         )
         return True
@@ -108,6 +118,8 @@ def _auth():
 def _api(method, path, json=None, params=None):
     """Single API wrapper. 429s are deferred instead of retried inline."""
     global rate_limited_until
+    if not api_token:
+        raise MissingApiTokenError("No Toggl API token configured")
     r = requests.request(
         method, f"{API_BASE}{path}",
         auth=_auth(), json=json, params=params, timeout=10,
@@ -293,6 +305,20 @@ def _create_pending_op(indexes, start_time, stop_time, item, paired_item=None):
     }
 
 
+def _completed_entry_payload(op, workspace_id):
+    payload = {
+        "created_with": "toggl-tray-linux",
+        "description": op.get("description", ""),
+        "start": op["start_time"],
+        "stop": op["stop_time"],
+        "duration": op["duration"],
+        "workspace_id": workspace_id,
+    }
+    if op.get("project_id"):
+        payload["project_id"] = op["project_id"]
+    return payload
+
+
 def _pending_operations(queue):
     """Normalize raw pending events into sync/display operations."""
     ops = []
@@ -373,21 +399,14 @@ def sync_pending():
         queue = _load_pending()
         if not queue:
             return 0
-
-        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
-        fresh_queue = []
-        for item in queue:
-            ts = _parse_iso(item.get("ts"))
-            if ts and ts < cutoff:
-                print(f"Dropping expired pending item: {item.get('action')} from {item.get('ts')}", file=sys.stderr)
-            else:
-                fresh_queue.append(item)
-        queue = fresh_queue
+        if not api_token:
+            _notify(NO_TOKEN_SYNC_MESSAGE)
+            return len(queue)
 
         synced_indexes = set()
         for op in _pending_operations(queue):
             if op["kind"] == "invalid":
-                synced_indexes.update(op["indexes"])
+                print(f"Invalid pending item kept for manual recovery: {op.get('indexes')}", file=sys.stderr)
                 continue
             if op["kind"] == "open":
                 workspace_id = op.get("workspace_id") or state.get("workspace_id")
@@ -423,11 +442,9 @@ def sync_pending():
                     break
                 except requests.exceptions.HTTPError as e:
                     status = e.response.status_code if e.response is not None else 0
-                    if 400 <= status < 500:
-                        synced_indexes.update(op["indexes"])
-                        print(f"Dropping permanently failed open start (HTTP {status})", file=sys.stderr)
-                    else:
-                        print(f"Pending sync error (open start): {e}", file=sys.stderr)
+                    if status in (401, 403):
+                        _notify(AUTH_FAILED_SYNC_MESSAGE)
+                    print(f"Pending open start kept after HTTP {status}: {e}", file=sys.stderr)
                 except Exception as e:
                     print(f"Pending sync error (open start): {e}", file=sys.stderr)
                 continue
@@ -438,16 +455,7 @@ def sync_pending():
                     raise RuntimeError("No workspace_id available for pending sync")
 
                 if op["kind"] == "create":
-                    payload = {
-                        "created_with": "toggl-tray-linux",
-                        "description": op.get("description", ""),
-                        "start": op["start_time"],
-                        "stop": op["stop_time"],
-                        "duration": op["duration"],
-                        "workspace_id": workspace_id,
-                    }
-                    if op.get("project_id"):
-                        payload["project_id"] = op["project_id"]
+                    payload = _completed_entry_payload(op, workspace_id)
                     api_post(f"/workspaces/{workspace_id}/time_entries", payload)
                 elif op["kind"] == "update_stop":
                     data = {"stop": op["stop_time"]}
@@ -457,7 +465,15 @@ def sync_pending():
                         data["duration"] = op["duration"]
                     if op.get("description") is not None:
                         data["description"] = op["description"]
-                    update_entry(workspace_id, op["entry_id"], data)
+                    try:
+                        update_entry(workspace_id, op["entry_id"], data)
+                    except requests.exceptions.HTTPError as e:
+                        status = e.response.status_code if e.response is not None else 0
+                        if status in (404, 410) and op.get("start_time") and op.get("stop_time"):
+                            payload = _completed_entry_payload(op, workspace_id)
+                            api_post(f"/workspaces/{workspace_id}/time_entries", payload)
+                        else:
+                            raise
                 elif op["kind"] == "delete":
                     try:
                         delete_entry(workspace_id, op["entry_id"])
@@ -473,12 +489,13 @@ def sync_pending():
                 break
             except requests.exceptions.HTTPError as e:
                 status = e.response.status_code if e.response is not None else 0
-                if 400 <= status < 500:
-                    synced_indexes.update(op["indexes"])
-                    print(f"Dropping permanently failed pending item (HTTP {status}): {op.get('kind')}", file=sys.stderr)
-                else:
-                    print(f"Pending sync server error ({op.get('kind')}): {e}", file=sys.stderr)
-                    continue
+                if status in (401, 403):
+                    _notify(AUTH_FAILED_SYNC_MESSAGE)
+                print(f"Pending item kept after HTTP {status} ({op.get('kind')}): {e}", file=sys.stderr)
+                continue
+            except MissingApiTokenError:
+                _notify(NO_TOKEN_SYNC_MESSAGE)
+                break
             except Exception as e:
                 print(f"Pending sync error ({op.get('kind')}): {e}", file=sys.stderr)
                 continue
@@ -490,6 +507,7 @@ def sync_pending():
 
 _consecutive_sync_failures = 0
 _sync_failure_notified = False
+_last_cloud_poll_at = 0.0
 
 
 def _record_sync_success():
@@ -507,27 +525,40 @@ def _record_sync_failure(error):
         _sync_failure_notified = True
 
 
+def _run_sync_cycle(now=None):
+    """Run one background sync pass while preserving API quota for user actions."""
+    global _last_cloud_poll_at
+    now = time.monotonic() if now is None else now
+    if now < rate_limited_until:
+        return
+
+    pending = _load_pending()
+    if pending:
+        left = sync_pending()
+        if left == 0 and PENDING_FILE.exists():
+            PENDING_FILE.unlink(missing_ok=True)
+    elif api_token and now - _last_cloud_poll_at >= CLOUD_POLL_INTERVAL_SECONDS:
+        _sync_cloud_state()
+        _last_cloud_poll_at = now
+
+    _health_check()
+    _record_sync_success()
+
+
 def sync_loop():
     """Background thread: retry pending actions and sync cloud state."""
     while True:
         time.sleep(SYNC_INTERVAL_SECONDS)
         try:
-            if time.monotonic() < rate_limited_until:
-                continue
-            pending = _load_pending()
-            if pending:
-                left = sync_pending()
-                if left == 0 and PENDING_FILE.exists():
-                    PENDING_FILE.unlink(missing_ok=True)
-            _sync_cloud_state()
-            _health_check()
-            _record_sync_success()
+            _run_sync_cycle()
         except Exception as e:
             _record_sync_failure(e)
 
 
 def _health_check():
     """Detect and recover from tracking-without-cloud-backing."""
+    if not api_token:
+        return
     with state_lock:
         tracking = state["tracking"]
         entry_id = state["entry_id"]
@@ -714,6 +745,20 @@ def _sync_cloud_state():
         print(f"Cloud sync failed: {e}", file=sys.stderr)
 
 
+def _rate_limit_active():
+    return time.monotonic() < rate_limited_until
+
+
+def _local_save_reason(action):
+    if not api_token:
+        return f"No Toggl API token — {action} saved locally"
+    if _rate_limit_active():
+        return f"Toggl rate limit active — {action} saved locally"
+    if not state.get("workspace_id"):
+        return f"No Toggl workspace yet — {action} saved locally"
+    return f"Offline — {action} queued locally"
+
+
 def toggle_tracking(*_args):
     """Start or stop tracking locally, queuing failed cloud writes."""
     global icon_ref
@@ -733,16 +778,23 @@ def toggle_tracking(*_args):
         if is_tracking:
             # Stop
             now = datetime.now(timezone.utc).isoformat()
-            if entry_id and workspace_id:
+            if entry_id and workspace_id and api_token and not _rate_limit_active():
                 try:
                     stop_entry(workspace_id, entry_id)
+                except RateLimitedError:
+                    print("Stop rate limited, queuing locally", file=sys.stderr)
+                    _notify(_local_save_reason("stop"))
+                    queue_action("stop", entry_id=entry_id,
+                                 start_time=start_time, stop_time=now,
+                                 description=description)
                 except Exception as e:
                     print(f"Stop failed, queuing offline: {e}", file=sys.stderr)
-                    _notify("Offline — stop queued locally")
+                    _notify(_local_save_reason("stop"))
                     queue_action("stop", entry_id=entry_id,
                                  start_time=start_time, stop_time=now,
                                  description=description)
             else:
+                _notify(_local_save_reason("stop"))
                 queue_action("stop", entry_id=entry_id,
                              start_time=start_time, stop_time=now,
                              description=description)
@@ -755,20 +807,30 @@ def toggle_tracking(*_args):
         else:
             # Start
             now = datetime.now(timezone.utc)
-            try:
-                entry = start_entry(
-                    workspace_id,
-                    description=description,
-                    project_id=project_id,
-                )
+            entry = None
+            if api_token and workspace_id and not _rate_limit_active():
+                try:
+                    entry = start_entry(
+                        workspace_id,
+                        description=description,
+                        project_id=project_id,
+                    )
+                except RateLimitedError:
+                    print("Start rate limited, queuing locally", file=sys.stderr)
+                    _notify(_local_save_reason("start"))
+                except Exception as e:
+                    print(f"Start failed, queuing offline: {e}", file=sys.stderr)
+                    _notify(_local_save_reason("start"))
+            else:
+                _notify(_local_save_reason("start"))
+
+            if entry:
                 with state_lock:
                     state["tracking"] = True
                     state["entry_id"] = entry["id"]
                     state["start_time"] = entry["start"]
                     save_state()
-            except Exception as e:
-                print(f"Start failed, queuing offline: {e}", file=sys.stderr)
-                _notify("Offline — start queued locally")
+            else:
                 with state_lock:
                     state["tracking"] = True
                     state["entry_id"] = None
@@ -1376,10 +1438,24 @@ def build_menu():
 
 # ── Global hotkey ───────────────────────────────────────────────────────────
 
-def start_hotkey_listener():
-    """Grab Ctrl+Shift+T globally via X11 — no app sees the keypress."""
-    def _grab_loop():
-        dpy = Display()
+def _report_hotkey_failure(error):
+    print(f"Hotkey listener failed: {error}", file=sys.stderr)
+    _notify("Toggl hotkey unavailable — use tray menu or terminal commands")
+    _play_sound(SOUND_ERROR)
+
+
+def _run_hotkey_listener(display_factory=Display):
+    """Grab Ctrl+Shift+T globally via X11. Returns False if setup fails."""
+    try:
+        dpy = display_factory()
+        x_errors = []
+
+        def _x_error_handler(error, _request):
+            x_errors.append(error)
+
+        if hasattr(dpy, "set_error_handler"):
+            dpy.set_error_handler(_x_error_handler)
+
         root = dpy.screen().root
         keycode = dpy.keysym_to_keycode(XK.string_to_keysym("T"))
 
@@ -1397,10 +1473,24 @@ def start_hotkey_listener():
                 X.GrabModeAsync,
             )
 
+        if hasattr(dpy, "sync"):
+            dpy.sync()
+        if x_errors:
+            raise RuntimeError(x_errors[0])
+
         while True:
             event = dpy.next_event()
             if event.type == X.KeyPress:
                 threading.Thread(target=toggle_tracking, daemon=True).start()
+    except Exception as e:
+        _report_hotkey_failure(e)
+        return False
+
+
+def start_hotkey_listener():
+    """Start the global hotkey listener thread."""
+    def _grab_loop():
+        _run_hotkey_listener()
 
     t = threading.Thread(target=_grab_loop, daemon=True)
     t.start()
@@ -1851,7 +1941,7 @@ def _acquire_instance_lock():
 
 def _init_workspace():
     """Fetch workspace and project info, sync running entry."""
-    global api_token, rate_limited_until
+    global api_token, rate_limited_until, _last_cloud_poll_at
     if not api_token:
         return False
     pending = _load_pending()
@@ -1895,6 +1985,7 @@ def _init_workspace():
                     pass
 
         save_state()
+        _last_cloud_poll_at = time.monotonic()
         return True
     except RateLimitedError as e:
         rate_limited_until = time.monotonic() + e.retry_after

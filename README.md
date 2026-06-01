@@ -80,7 +80,7 @@ Get your API token from your [Toggl Profile page](https://track.toggl.com/profil
 **Option A** — Store in GNOME Keyring (recommended, persistent):
 
 ```bash
-secret-tool store --label='Toggl API Token' service toggl username api_token
+secret-tool store --label='Toggl API Token' service toggl username api_token application toggl-tray
 # Paste your token, press Enter, then Ctrl+D
 ```
 
@@ -141,7 +141,8 @@ python3 toggl_tray.py install-app --autostart
 - **One file** (`toggl_tray.py`) — no complex project structure
 - Talks to [Toggl Track API v9](https://engineering.toggl.com/docs/track/) using basic auth
 - Global hotkey uses X11 `XGrabKey` — the key is grabbed at the X server level, so no other app sees `Ctrl+Shift+T`
-- If the API is unreachable (no internet, rate limited), actions are queued locally and synced automatically every 30 seconds
+- If the API is unreachable, auth is missing, or Toggl rate-limits requests, start/stop actions are saved locally and retried
+- Pending local actions sync every 5 minutes; idle cloud polling is limited to once per hour to preserve the free-plan request budget
 - State is saved to `~/.local/share/toggl-tray/state.json`
 
 ## Dependencies
@@ -158,7 +159,14 @@ All installed via pip — no compiled extensions needed:
 
 ## Toggl Free Plan Limits
 
-The free plan allows **30 API requests per hour**. This app only calls the API when you explicitly do something (toggle, view entries, edit). Normal usage is ~5 requests per hour. You won't hit the limit unless you toggle hundreds of times.
+Toggl documents the free-plan quota as **30 API requests/hour** for user-specific endpoints and **30 requests/hour/user/organization** for organization-scoped endpoints. The app preserves that budget by:
+
+- Prioritizing user actions and pending local start/stop sync over background cloud polling
+- Retrying pending local entries every 5 minutes when there is something to sync
+- Polling Toggl's current timer at most once per hour while idle
+- Keeping billable pending start/stop data locally after auth errors, 4xx errors, 5xx errors, network failures, and rate limits
+
+Pending billable entries are not expired or garbage-collected automatically.
 
 ## Troubleshooting
 
@@ -169,6 +177,7 @@ The free plan allows **30 API requests per hour**. This app only calls the API w
 **Ctrl+Shift+T doesn't work**
 - This app only works on X11, not Wayland. Check with `echo $XDG_SESSION_TYPE`.
 - Another app may have already grabbed that key combo.
+- If the tray app cannot grab the hotkey, it shows a desktop notification. You can still use the tray menu or terminal commands.
 
 **"Another instance is already running"**
 - The message includes the PID from the lock file. If that process is gone, remove the lock file: `rm ~/.local/share/toggl-tray/toggl-tray.lock`
@@ -176,6 +185,11 @@ The free plan allows **30 API requests per hour**. This app only calls the API w
 **Tray entries are empty but tracking looks active**
 - Run `python3 toggl_tray.py status`. Local/offline entries are shown from `~/.local/share/toggl-tray/pending.json`.
 - Run `python3 toggl_tray.py local` to list only local pending entries for today.
+
+**Nothing is being tracked**
+- Run `python3 toggl_tray.py status` to check whether a local timer or pending queue exists.
+- Run `python3 toggl_tray.py entries` to check today's Toggl entries.
+- If both are empty, the hotkey likely did not reach the app. Use the tray menu or `python3 toggl_tray.py start "Task"` until the hotkey notification/conflict is resolved.
 
 **No sound on toggle**
 - Sounds use `paplay` (PulseAudio). Make sure it's installed: `sudo apt install pulseaudio-utils`
