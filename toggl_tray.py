@@ -9,6 +9,7 @@ import fcntl
 import io
 import argparse
 import shutil
+import shlex
 import contextlib
 import threading
 import subprocess
@@ -41,6 +42,7 @@ APPLICATIONS_DIR = Path.home() / ".local" / "share" / "applications"
 DESKTOP_FILE = APPLICATIONS_DIR / "toggl-tray.desktop"
 AUTOSTART_DIR = Path.home() / ".config" / "autostart"
 AUTOSTART_FILE = AUTOSTART_DIR / "toggl-tray.desktop"
+CLI_FILE = Path.home() / ".local" / "bin" / "toggl"
 ICON_SIZE = 64
 ICON_PADDING = 6  # transparent padding around the icon
 SYNC_INTERVAL_SECONDS = 300
@@ -2188,6 +2190,15 @@ def _write_desktop_file(path, autostart=False):
     return path
 
 
+def _write_cli_launcher(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    python = shlex.quote(str(_launcher_python()))
+    script = shlex.quote(str(Path(__file__).resolve()))
+    path.write_text(f'#!/bin/sh\nexec {python} {script} "$@"\n')
+    path.chmod(0o755)
+    return path
+
+
 def _refresh_desktop_database():
     updater = shutil.which("update-desktop-database")
     if updater:
@@ -2203,17 +2214,20 @@ def _refresh_desktop_database():
 def _cli_install_app(args):
     app_file = _write_desktop_file(DESKTOP_FILE)
     print(f"Installed app launcher: {app_file}")
+    cli_file = _write_cli_launcher(CLI_FILE)
+    print(f"Installed CLI launcher: {cli_file}")
     if args.autostart:
         autostart_file = _write_desktop_file(AUTOSTART_FILE, autostart=True)
         print(f"Installed autostart launcher: {autostart_file}")
     _refresh_desktop_database()
     print("Look for 'Toggl Tray' in the app launcher.")
+    print("Run 'toggl --help' for terminal commands.")
     return 0
 
 
 def _cli_uninstall_app(_args):
     removed = []
-    for path in (DESKTOP_FILE, AUTOSTART_FILE):
+    for path in (DESKTOP_FILE, AUTOSTART_FILE, CLI_FILE):
         if path.exists():
             path.unlink()
             removed.append(path)
@@ -2228,7 +2242,7 @@ def _cli_uninstall_app(_args):
 
 def _build_cli_parser():
     parser = argparse.ArgumentParser(
-        prog="toggl_tray.py",
+        prog="toggl",
         description="Run the Toggl tray app or inspect/recover local tracking state.",
     )
     sub = parser.add_subparsers(dest="command")
@@ -2258,7 +2272,7 @@ def _build_cli_parser():
     set_start = sub.add_parser("set-start", help="set current timer start time, HH:MM local")
     set_start.add_argument("time", help="new local start time, HH:MM")
     sub.add_parser("sync", help="try to sync pending local entries now")
-    install_app = sub.add_parser("install-app", help="install desktop app launcher")
+    install_app = sub.add_parser("install-app", help="install desktop app and CLI launchers")
     install_app.add_argument("--autostart", action="store_true", help="also start Toggl Tray on login")
     sub.add_parser("uninstall-app", help="remove desktop app launcher")
     return parser

@@ -111,21 +111,26 @@ python3 toggl_tray.py
 
 ### Terminal recovery commands
 
-These do not need the tray window to be visible:
+Install the `toggl` command once (this also refreshes the desktop launcher):
 
 ```bash
-python3 toggl_tray.py status          # show current state and local pending entries
-python3 toggl_tray.py local           # list today's local/offline entries
-python3 toggl_tray.py entries         # list today's Toggl + local entries
-python3 toggl_tray.py doctor          # inspect local state, token, pending queue, and ledger
-python3 toggl_tray.py doctor --cloud  # also check Toggl's current timer (uses one API request)
-python3 toggl_tray.py audit 2026-05-01 2026-05-31
-                                     # summarize totals, blanks, local pending entries, and large gaps
-python3 toggl_tray.py start "Task"    # start tracking from a terminal
-python3 toggl_tray.py stop            # stop tracking from a terminal
-python3 toggl_tray.py set-start 09:00 # correct the current timer start time
-python3 toggl_tray.py sync            # push pending local entries to Toggl now
-python3 toggl_tray.py install-app     # add Toggl Tray to your app launcher
+.venv/bin/python toggl_tray.py install-app
+```
+
+The command uses this checkout's virtual environment automatically and works from any directory. These commands do not need the tray window to be visible:
+
+```bash
+toggl status          # show current state and local pending entries
+toggl local           # list today's local/offline entries
+toggl entries         # list today's Toggl + local entries
+toggl doctor          # inspect local state, token, pending queue, and ledger
+toggl doctor --cloud  # also check Toggl's current timer (uses one API request)
+toggl audit 2026-05-01 2026-05-31
+                     # summarize totals, blanks, local pending entries, and large gaps
+toggl start "Task"    # start tracking from a terminal
+toggl stop            # stop tracking from a terminal
+toggl set-start 09:00 # correct the current timer start time
+toggl sync            # push pending local entries now
 ```
 
 ## Autostart on Login
@@ -133,8 +138,10 @@ python3 toggl_tray.py install-app     # add Toggl Tray to your app launcher
 To make the app searchable from your desktop app launcher:
 
 ```bash
-python3 toggl_tray.py install-app
+.venv/bin/python toggl_tray.py install-app
 ```
+
+This also installs `~/.local/bin/toggl` for terminal use.
 
 To also start it automatically on login:
 

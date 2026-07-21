@@ -920,6 +920,9 @@ class TestCliRecovery:
         assert toggl_tray._cli_audit(args) == 2
         assert "Start date must be before or equal to end date." in capsys.readouterr().err
 
+    def test_parser_uses_installed_cli_name(self):
+        assert toggl_tray._build_cli_parser().prog == "toggl"
+
 
 class TestDesktopInstall:
     def test_desktop_entry_uses_repo_script(self, tmp_state_dir):
@@ -935,6 +938,53 @@ class TestDesktopInstall:
         text = path.read_text()
         assert text.startswith("[Desktop Entry]")
         assert path.stat().st_mode & 0o111
+
+    def test_write_cli_launcher_uses_app_interpreter_and_forwards_arguments(
+        self, tmp_path, tmp_state_dir
+    ):
+        path = tmp_path / "toggl"
+
+        toggl_tray._write_cli_launcher(path)
+
+        text = path.read_text()
+        assert text.startswith("#!/bin/sh\n")
+        assert str(toggl_tray._launcher_python()) in text
+        assert str(Path(toggl_tray.__file__).resolve()) in text
+        assert '"$@"' in text
+        assert path.stat().st_mode & 0o111
+
+    @patch.object(toggl_tray, "_refresh_desktop_database")
+    def test_install_app_installs_cli_launcher(
+        self, mock_refresh, tmp_path, tmp_state_dir
+    ):
+        desktop_file = tmp_path / "applications" / "toggl-tray.desktop"
+        cli_file = tmp_path / "bin" / "toggl"
+        args = type("Args", (), {"autostart": False})()
+
+        with patch.object(toggl_tray, "DESKTOP_FILE", desktop_file), \
+             patch.object(toggl_tray, "CLI_FILE", cli_file):
+            assert toggl_tray._cli_install_app(args) == 0
+
+        assert cli_file.exists()
+        assert cli_file.stat().st_mode & 0o111
+
+    @patch.object(toggl_tray, "_refresh_desktop_database")
+    def test_uninstall_app_removes_cli_launcher(
+        self, mock_refresh, tmp_path, tmp_state_dir
+    ):
+        desktop_file = tmp_path / "applications" / "toggl-tray.desktop"
+        autostart_file = tmp_path / "autostart" / "toggl-tray.desktop"
+        cli_file = tmp_path / "bin" / "toggl"
+        for path in (desktop_file, autostart_file, cli_file):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("installed")
+
+        with patch.object(toggl_tray, "DESKTOP_FILE", desktop_file), \
+             patch.object(toggl_tray, "AUTOSTART_FILE", autostart_file), \
+             patch.object(toggl_tray, "CLI_FILE", cli_file):
+            assert toggl_tray._cli_uninstall_app(type("Args", (), {})()) == 0
+
+        assert not cli_file.exists()
 
 
 class TestTrayMenu:
