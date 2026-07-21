@@ -210,6 +210,14 @@ class TestOfflineQueue:
         assert queue[0]["description"] == "offline task"
         assert "ts" in queue[0]
 
+    def test_queue_action_wakes_sync_worker(self, tmp_state_dir):
+        wakeup = MagicMock()
+
+        with patch.object(toggl_tray, "_sync_wakeup", wakeup, create=True):
+            toggl_tray.queue_action("start", description="offline task")
+
+        wakeup.set.assert_called_once_with()
+
     def test_queue_multiple_actions(self, tmp_state_dir):
         toggl_tray.queue_action("start", description="task1")
         toggl_tray.queue_action("stop", entry_id="e1")
@@ -1050,6 +1058,18 @@ class TestHealthCheck:
 
 
 class TestSyncCycle:
+    @patch.object(toggl_tray, "_run_sync_cycle")
+    def test_sync_loop_runs_cycle_before_waiting(self, mock_cycle):
+        wakeup = MagicMock()
+        wakeup.wait.side_effect = StopIteration
+
+        with patch.object(toggl_tray, "_sync_wakeup", wakeup, create=True), \
+             patch.object(toggl_tray.time, "sleep", side_effect=StopIteration), \
+             pytest.raises(StopIteration):
+            toggl_tray.sync_loop()
+
+        mock_cycle.assert_called_once_with()
+
     @patch.object(toggl_tray, "_load_pending", return_value=[])
     @patch.object(toggl_tray, "_sync_cloud_state")
     @patch.object(toggl_tray, "_health_check")

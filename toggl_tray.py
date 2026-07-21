@@ -366,6 +366,7 @@ def load_state():
 pending_lock = threading.Lock()
 toggle_lock = threading.Lock()
 state_lock = threading.Lock()
+_sync_wakeup = threading.Event()
 
 
 def _load_pending():
@@ -387,6 +388,7 @@ def queue_action(action, **kwargs):
         queue.append(item)
         _append_event("pending_queued", **item)
         _save_pending(queue)
+    _sync_wakeup.set()
 
 
 def _parse_iso(value):
@@ -707,11 +709,12 @@ def _run_sync_cycle(now=None):
 def sync_loop():
     """Background thread: retry pending actions and sync cloud state."""
     while True:
-        time.sleep(SYNC_INTERVAL_SECONDS)
+        _sync_wakeup.clear()
         try:
             _run_sync_cycle()
         except Exception as e:
             _record_sync_failure(e)
+        _sync_wakeup.wait(SYNC_INTERVAL_SECONDS)
 
 
 def _health_check():
