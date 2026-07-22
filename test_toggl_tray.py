@@ -140,7 +140,16 @@ class TestPanelTimerLabel:
             "description": "Writing release notes",
         }
 
-        assert toggl_tray._panel_timer_label(panel) == "0:05:12 · Writing release notes"
+        assert toggl_tray._panel_timer_label(panel) == "0:05:12 · Writing rel…"
+
+    def test_panel_label_strips_decorative_underscores(self):
+        panel = {
+            "tracking": True,
+            "elapsed": "0:24:10",
+            "description": "__OpenTickly recovery verification__",
+        }
+
+        assert toggl_tray._panel_timer_label(panel) == "0:24:10 · OpenTickly…"
 
     def test_stopped_label_is_compact(self):
         panel = {"tracking": False, "elapsed": "0:00:00", "description": ""}

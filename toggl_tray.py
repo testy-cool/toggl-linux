@@ -63,7 +63,7 @@ REQUEST_BUDGET_BACKGROUND_RESERVE = 6
 REQUEST_BUDGET_SYNC_MESSAGE = "Toggl request budget exhausted — pending sync paused"
 SYNC_CONFLICT_MESSAGE = "Toggl conflict — local start kept pending"
 OPEN_START_MATCH_TOLERANCE_SECONDS = 300
-PANEL_TIMER_DESCRIPTION_CHARS = 28
+PANEL_TIMER_DESCRIPTION_CHARS = 12
 PANEL_TIMER_LABEL_GUIDE = "88:88:88 · MMMMMMMMMMMMMMMMMMMMMMMMMMMM"
 
 
@@ -915,7 +915,7 @@ def get_tooltip():
 
 
 def _short_panel_description(description):
-    text = " ".join(str(description or "").split())
+    text = " ".join(str(description or "").strip(" _\t\r\n").split())
     if len(text) <= PANEL_TIMER_DESCRIPTION_CHARS:
         return text
     return text[:PANEL_TIMER_DESCRIPTION_CHARS - 1].rstrip() + "…"
