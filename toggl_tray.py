@@ -63,7 +63,6 @@ REQUEST_BUDGET_BACKGROUND_RESERVE = 6
 REQUEST_BUDGET_SYNC_MESSAGE = "Toggl request budget exhausted — pending sync paused"
 SYNC_CONFLICT_MESSAGE = "Toggl conflict — local start kept pending"
 OPEN_START_MATCH_TOLERANCE_SECONDS = 300
-PANEL_TIMER_DESCRIPTION_CHARS = 12
 PANEL_TIMER_LABEL_GUIDE = "88:88:88 · MMMMMMMMMMMMMMMMMMMMMMMMMMMM"
 
 
@@ -914,13 +913,6 @@ def get_tooltip():
     return "Toggl: Stopped"
 
 
-def _short_panel_description(description):
-    text = " ".join(str(description or "").strip(" _\t\r\n").split())
-    if len(text) <= PANEL_TIMER_DESCRIPTION_CHARS:
-        return text
-    return text[:PANEL_TIMER_DESCRIPTION_CHARS - 1].rstrip() + "…"
-
-
 def _panel_timer_snapshot():
     with state_lock:
         tracking = state.get("tracking", False)
@@ -946,8 +938,7 @@ def _panel_timer_label(panel=None):
     panel = panel or _panel_timer_snapshot()
     if not panel["tracking"]:
         return "Stopped"
-    description = _short_panel_description(panel.get("description"))
-    return f"{panel['elapsed']} · {description}" if description else panel["elapsed"]
+    return panel["elapsed"]
 
 
 def _update_panel_timer_label():
@@ -1325,24 +1316,76 @@ def on_toggle(icon, item):
     threading.Thread(target=toggle_tracking, daemon=True).start()
 
 
-def on_set_description(icon, item):
-    def _do():
-        desc = _gtk_input_dialog(
-            "Description", "Time entry description:",
-            placeholder="e.g. Client work",
-            default=state.get("description", ""),
-        )
-        if desc is not None:
-            state["description"] = desc
-            save_state()
-            if state["tracking"] and state["entry_id"]:
-                try:
-                    update_entry(state["workspace_id"], state["entry_id"],
-                                 {"description": desc})
-                except Exception:
-                    pass
+def _apply_description(desc):
+    with state_lock:
+        state["description"] = desc
+        tracking = state.get("tracking")
+        entry_id = state.get("entry_id")
+        workspace_id = state.get("workspace_id")
+        save_state()
 
-    threading.Thread(target=_do, daemon=True).start()
+    if tracking and entry_id and workspace_id:
+        try:
+            update_entry(workspace_id, entry_id, {"description": desc})
+        except Exception as error:
+            print(f"Description update failed: {error}", file=sys.stderr)
+            _notify("Description saved locally but the cloud update failed")
+            return False
+
+    if icon_ref:
+        icon_ref.title = get_tooltip()
+        _set_tray_menu(build_menu())
+    return True
+
+
+def _show_description_dialog():
+    """Show a non-blocking editor that remains responsive when opened from XApp."""
+    dialog = Gtk.Dialog(title="Description", modal=True)
+    dialog.set_keep_above(True)
+    dialog.set_resizable(True)
+    dialog.set_default_size(420, -1)
+    dialog.add_buttons(
+        Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+        Gtk.STOCK_OK, Gtk.ResponseType.OK,
+    )
+    dialog.set_default_response(Gtk.ResponseType.OK)
+
+    box = dialog.get_content_area()
+    box.set_spacing(12)
+    box.set_margin_start(18)
+    box.set_margin_end(18)
+    box.set_margin_top(16)
+    box.set_margin_bottom(12)
+
+    label = Gtk.Label(label="Time entry description:")
+    label.set_xalign(0)
+    box.add(label)
+
+    entry = Gtk.Entry()
+    entry.set_placeholder_text("e.g. Client work")
+    entry.set_text(state.get("description", ""))
+    entry.set_width_chars(36)
+    box.add(entry)
+
+    def respond(_dialog, response):
+        if response == Gtk.ResponseType.OK:
+            worker = threading.Thread(
+                target=_apply_description,
+                args=(entry.get_text().strip(),),
+                daemon=True,
+            )
+            worker.start()
+        dialog.destroy()
+
+    entry.connect("activate", lambda _entry: dialog.response(Gtk.ResponseType.OK))
+    dialog.connect("response", respond)
+    dialog.show_all()
+    entry.grab_focus()
+    return False
+
+
+def on_set_description(icon, item):
+    GLib.idle_add(_show_description_dialog)
 
 
 def on_view_today(icon, item):
@@ -1803,8 +1846,6 @@ def on_quit(icon, item):
 
 def build_menu():
     toggle_label = "Stop tracking" if state["tracking"] else "Start tracking"
-    desc = state.get("description", "")
-    desc_label = f"Description: {desc}" if desc else "Set description..."
     return pystray.Menu(
         pystray.MenuItem(
             "Show timer in panel",
@@ -1812,7 +1853,7 @@ def build_menu():
             checked=lambda _item: get_panel_timer_enabled(),
         ),
         pystray.MenuItem(toggle_label, on_toggle, default=True),
-        pystray.MenuItem(desc_label, on_set_description),
+        pystray.MenuItem("Edit description...", on_set_description),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Today's entries", on_view_today),
         pystray.MenuItem("Doctor", on_doctor),

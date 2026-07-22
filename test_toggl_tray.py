@@ -133,23 +133,14 @@ class TestGetTooltip:
 
 
 class TestPanelTimerLabel:
-    def test_tracking_label_includes_elapsed_time_and_task(self):
+    def test_tracking_label_shows_only_elapsed_time(self):
         panel = {
             "tracking": True,
             "elapsed": "0:05:12",
             "description": "Writing release notes",
         }
 
-        assert toggl_tray._panel_timer_label(panel) == "0:05:12 · Writing rel…"
-
-    def test_panel_label_strips_decorative_underscores(self):
-        panel = {
-            "tracking": True,
-            "elapsed": "0:24:10",
-            "description": "__OpenTickly recovery verification__",
-        }
-
-        assert toggl_tray._panel_timer_label(panel) == "0:24:10 · OpenTickly…"
+        assert toggl_tray._panel_timer_label(panel) == "0:05:12"
 
     def test_stopped_label_is_compact(self):
         panel = {"tracking": False, "elapsed": "0:00:00", "description": ""}
@@ -179,7 +170,7 @@ class TestPanelTimerLabel:
             assert toggl_tray._update_panel_timer_label() is True
 
         indicator.set_label.assert_called_once_with(
-            "1:02:03 · Deep work", toggl_tray.PANEL_TIMER_LABEL_GUIDE
+            "1:02:03", toggl_tray.PANEL_TIMER_LABEL_GUIDE
         )
 
     def test_xapp_label_is_preferred_on_cinnamon(self):
@@ -197,8 +188,34 @@ class TestPanelTimerLabel:
              patch.object(toggl_tray, "_panel_timer_snapshot", return_value=panel):
             assert toggl_tray._update_panel_timer_label() is True
 
-        native_icon.set_label.assert_called_once_with("1:02:03 · Deep work")
+        native_icon.set_label.assert_called_once_with("1:02:03")
         appindicator.set_label.assert_not_called()
+
+
+class TestDescriptionDialog:
+    def test_ok_response_applies_edited_description(self):
+        dialog = MagicMock()
+        entry = MagicMock()
+        entry.get_text.return_value = "  New description  "
+        toggl_tray.Gtk.Dialog.return_value = dialog
+        toggl_tray.Gtk.Entry.return_value = entry
+
+        with patch.object(toggl_tray.threading, "Thread") as thread_cls:
+            toggl_tray._show_description_dialog()
+            response_handler = next(
+                call.args[1]
+                for call in dialog.connect.call_args_list
+                if call.args[0] == "response"
+            )
+            response_handler(dialog, toggl_tray.Gtk.ResponseType.OK)
+
+        thread_cls.assert_called_once_with(
+            target=toggl_tray._apply_description,
+            args=("New description",),
+            daemon=True,
+        )
+        thread_cls.return_value.start.assert_called_once()
+        dialog.destroy.assert_called_once()
 
 
 # ── State persistence ────────────────────────────────────────────────────────
@@ -1076,6 +1093,7 @@ class TestTrayMenu:
 
         labels = [call.args[0] for call in toggl_tray.pystray.MenuItem.call_args_list]
         assert "Show timer in panel" in labels
+        assert "Edit description..." in labels
         assert "Doctor" in labels
         assert "Audit today" in labels
 
