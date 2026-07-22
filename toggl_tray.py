@@ -29,10 +29,17 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, GLib
 
+try:
+    gi.require_version("XApp", "1.0")
+    from gi.repository import XApp
+except (ImportError, ValueError):
+    XApp = None
+
 # ── Config ──────────────────────────────────────────────────────────────────
 
 API_BASE = "https://api.track.toggl.com/api/v9"
 STATE_DIR = Path.home() / ".local" / "share" / "toggl-tray"
+CONFIG_FILE = STATE_DIR / "config.json"
 STATE_FILE = STATE_DIR / "state.json"
 PENDING_FILE = STATE_DIR / "pending.json"
 LEDGER_FILE = STATE_DIR / "events.jsonl"
@@ -56,6 +63,8 @@ REQUEST_BUDGET_BACKGROUND_RESERVE = 6
 REQUEST_BUDGET_SYNC_MESSAGE = "Toggl request budget exhausted — pending sync paused"
 SYNC_CONFLICT_MESSAGE = "Toggl conflict — local start kept pending"
 OPEN_START_MATCH_TOLERANCE_SECONDS = 300
+PANEL_TIMER_DESCRIPTION_CHARS = 28
+PANEL_TIMER_LABEL_GUIDE = "88:88:88 · MMMMMMMMMMMMMMMMMMMMMMMMMMMM"
 
 
 # ── State ───────────────────────────────────────────────────────────────────
@@ -70,6 +79,8 @@ state = {
 }
 
 icon_ref = None
+native_status_icon_ref = None
+native_status_menu_ref = None
 api_token = None
 rate_limited_until = 0.0
 _request_budget_lock = threading.Lock()
@@ -85,6 +96,22 @@ class RateLimitedError(Exception):
 
 class MissingApiTokenError(Exception):
     """Raised when an API call is attempted without a configured token."""
+
+
+def get_panel_timer_enabled():
+    """Return whether elapsed time should be visible beside the tray icon."""
+    config = _load_json_with_backup(CONFIG_FILE, {})
+    return bool(config.get("show_timer_in_panel", False)) if isinstance(config, dict) else False
+
+
+def set_panel_timer_enabled(enabled):
+    """Persist whether elapsed time is visible beside the tray icon."""
+    config = _load_json_with_backup(CONFIG_FILE, {})
+    if not isinstance(config, dict):
+        config = {}
+    config["show_timer_in_panel"] = bool(enabled)
+    _atomic_write_text(CONFIG_FILE, json.dumps(config, indent=2))
+    return config["show_timer_in_panel"]
 
 
 # ── API Token ───────────────────────────────────────────────────────────────
@@ -848,12 +875,20 @@ def render_icon():
 def update_tray_icon():
     """Force appindicator to pick up the icon change."""
     _init_icons()
-    if icon_ref and hasattr(icon_ref, '_appindicator'):
+    path = _icon_path_active if state["tracking"] else _icon_path_inactive
+    if native_status_icon_ref:
+        GLib.idle_add(_set_native_status_icon_path, path)
+    elif icon_ref and hasattr(icon_ref, '_appindicator'):
         # Direct appindicator path update
-        path = _icon_path_active if state["tracking"] else _icon_path_inactive
         icon_ref._appindicator.set_icon_full(path, "Toggl")
     elif icon_ref:
         icon_ref.icon = render_icon()
+
+
+def _set_native_status_icon_path(path):
+    if native_status_icon_ref:
+        native_status_icon_ref.set_icon_name(path)
+    return False
 
 
 # ── Elapsed time formatting ────────────────────────────────────────────────
@@ -877,6 +912,106 @@ def get_tooltip():
     if state["tracking"]:
         return f"Toggl: {elapsed_str()}"
     return "Toggl: Stopped"
+
+
+def _short_panel_description(description):
+    text = " ".join(str(description or "").split())
+    if len(text) <= PANEL_TIMER_DESCRIPTION_CHARS:
+        return text
+    return text[:PANEL_TIMER_DESCRIPTION_CHARS - 1].rstrip() + "…"
+
+
+def _panel_timer_snapshot():
+    with state_lock:
+        tracking = state.get("tracking", False)
+        start_time = state.get("start_time")
+        description = state.get("description", "")
+
+    elapsed_seconds = 0
+    if tracking and start_time:
+        try:
+            start = datetime.fromisoformat(start_time)
+            elapsed_seconds = int((datetime.now(timezone.utc) - start).total_seconds())
+        except (TypeError, ValueError):
+            pass
+    return {
+        "tracking": tracking,
+        "elapsed": _format_duration(elapsed_seconds),
+        "description": description,
+    }
+
+
+def _panel_timer_label(panel=None):
+    """Build the compact text shown by panel implementations that support it."""
+    panel = panel or _panel_timer_snapshot()
+    if not panel["tracking"]:
+        return "Stopped"
+    description = _short_panel_description(panel.get("description"))
+    return f"{panel['elapsed']} · {description}" if description else panel["elapsed"]
+
+
+def _update_panel_timer_label():
+    """Update the optional native text label when the tray backend supports it."""
+    label = _panel_timer_label() if get_panel_timer_enabled() else ""
+    if native_status_icon_ref:
+        native_status_icon_ref.set_label(label)
+        return True
+    if not icon_ref:
+        return False
+    indicator = getattr(icon_ref, "_appindicator", None)
+    set_label = getattr(indicator, "set_label", None)
+    if not callable(set_label):
+        return False
+    try:
+        set_label(label, PANEL_TIMER_LABEL_GUIDE)
+    except TypeError:
+        set_label(label)
+    return True
+
+
+def _native_status_icon_supported():
+    desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+    return XApp is not None and "cinnamon" in desktop and icon_ref is not None
+
+
+def _update_native_status_menu():
+    global native_status_menu_ref
+    if not native_status_icon_ref or not icon_ref:
+        return False
+    create_menu = getattr(icon_ref, "_create_menu", None)
+    if not callable(create_menu):
+        return False
+    native_status_menu_ref = create_menu(icon_ref.menu)
+    native_status_icon_ref.set_primary_menu(native_status_menu_ref)
+    return False
+
+
+def _set_tray_menu(menu):
+    if not icon_ref:
+        return
+    icon_ref.menu = menu
+    if native_status_icon_ref:
+        GLib.idle_add(_update_native_status_menu)
+
+
+def _init_native_status_icon():
+    """Use Cinnamon's XApp icon so its panel can render a live text label."""
+    global native_status_icon_ref
+    if not _native_status_icon_supported():
+        return False
+    try:
+        native_status_icon_ref = XApp.StatusIcon.new()
+        path = _icon_path_active if state["tracking"] else _icon_path_inactive
+        native_status_icon_ref.set_icon_name(path)
+        native_status_icon_ref.set_tooltip_text(get_tooltip())
+        _update_native_status_menu()
+        _update_panel_timer_label()
+        native_status_icon_ref.set_visible(True)
+        return True
+    except Exception as error:
+        native_status_icon_ref = None
+        print(f"Native Cinnamon panel label unavailable: {error}", file=sys.stderr)
+        return False
 
 
 # ── Toggle action ───────────────────────────────────────────────────────────
@@ -1039,7 +1174,7 @@ def toggle_tracking(*_args):
         if icon_ref:
             update_tray_icon()
             icon_ref.title = get_tooltip()
-            icon_ref.menu = build_menu()
+            _set_tray_menu(build_menu())
     finally:
         toggle_lock.release()
 
@@ -1177,6 +1312,14 @@ def _gtk_confirm(title, text):
 
 
 # ── Menu callbacks ──────────────────────────────────────────────────────────
+
+def on_toggle_panel_timer(icon, item):
+    enabled = set_panel_timer_enabled(not get_panel_timer_enabled())
+    if not _update_panel_timer_label() and enabled:
+        _notify("This desktop's tray does not support a visible timer label")
+    if icon_ref:
+        _set_tray_menu(build_menu())
+
 
 def on_toggle(icon, item):
     threading.Thread(target=toggle_tracking, daemon=True).start()
@@ -1651,6 +1794,8 @@ def on_set_token(icon, item):
 
 def on_quit(icon, item):
     save_state()
+    if native_status_icon_ref:
+        native_status_icon_ref.set_visible(False)
     icon.stop()
 
 
@@ -1661,6 +1806,11 @@ def build_menu():
     desc = state.get("description", "")
     desc_label = f"Description: {desc}" if desc else "Set description..."
     return pystray.Menu(
+        pystray.MenuItem(
+            "Show timer in panel",
+            on_toggle_panel_timer,
+            checked=lambda _item: get_panel_timer_enabled(),
+        ),
         pystray.MenuItem(toggle_label, on_toggle, default=True),
         pystray.MenuItem(desc_label, on_set_description),
         pystray.Menu.SEPARATOR,
@@ -1736,11 +1886,15 @@ def start_hotkey_listener():
 # ── Update loop ─────────────────────────────────────────────────────────────
 
 def update_loop():
-    """Update icon tooltip with elapsed time."""
+    """Update icon tooltip and optional panel label with elapsed time."""
     while True:
         time.sleep(1)
         if icon_ref:
-            icon_ref.title = get_tooltip()
+            tooltip = get_tooltip()
+            icon_ref.title = tooltip
+            if native_status_icon_ref:
+                GLib.idle_add(native_status_icon_ref.set_tooltip_text, tooltip)
+            GLib.idle_add(_update_panel_timer_label)
 
 
 # ── Command-line recovery tools ─────────────────────────────────────────────
@@ -2429,7 +2583,12 @@ def main():
 
     # Create and run tray icon
     icon_ref = pystray.Icon("toggl-tray", render_icon(), get_tooltip(), build_menu())
-    icon_ref.run()
+    if _init_native_status_icon():
+        # XApp owns the visible icon; pystray still supplies its GTK loop and menu adapter.
+        icon_ref.run(setup=lambda _icon: None)
+    else:
+        _update_panel_timer_label()
+        icon_ref.run()
     lock_fp.close()
     return 0
 

@@ -33,7 +33,8 @@ import toggl_tray
 @pytest.fixture(autouse=True)
 def reset_state(tmp_path):
     """Reset global state before each test."""
-    with patch.object(toggl_tray, "LEDGER_FILE", tmp_path / "events.jsonl"), \
+    with patch.object(toggl_tray, "CONFIG_FILE", tmp_path / "config.json"), \
+         patch.object(toggl_tray, "LEDGER_FILE", tmp_path / "events.jsonl"), \
          patch.object(toggl_tray, "REQUEST_BUDGET_FILE", tmp_path / "request_budget.json", create=True):
         toggl_tray.state.update({
             "tracking": False,
@@ -44,6 +45,8 @@ def reset_state(tmp_path):
             "description": "",
         })
         toggl_tray.icon_ref = None
+        toggl_tray.native_status_icon_ref = None
+        toggl_tray.native_status_menu_ref = None
         toggl_tray.api_token = "tok"
         toggl_tray.rate_limited_until = 0.0
         toggl_tray._last_cloud_poll_at = 0.0
@@ -59,6 +62,7 @@ def reset_state(tmp_path):
 def tmp_state_dir(tmp_path):
     """Redirect state/pending files to tmp dir."""
     with patch.object(toggl_tray, "STATE_DIR", tmp_path), \
+         patch.object(toggl_tray, "CONFIG_FILE", tmp_path / "config.json"), \
          patch.object(toggl_tray, "STATE_FILE", tmp_path / "state.json"), \
          patch.object(toggl_tray, "PENDING_FILE", tmp_path / "pending.json"), \
          patch.object(toggl_tray, "LEDGER_FILE", tmp_path / "events.jsonl"), \
@@ -126,6 +130,66 @@ class TestGetTooltip:
         result = toggl_tray.get_tooltip()
         assert "Deep work" in result
         assert result.startswith("Toggl: Deep work")
+
+
+class TestPanelTimerLabel:
+    def test_tracking_label_includes_elapsed_time_and_task(self):
+        panel = {
+            "tracking": True,
+            "elapsed": "0:05:12",
+            "description": "Writing release notes",
+        }
+
+        assert toggl_tray._panel_timer_label(panel) == "0:05:12 · Writing release notes"
+
+    def test_stopped_label_is_compact(self):
+        panel = {"tracking": False, "elapsed": "0:00:00", "description": ""}
+
+        assert toggl_tray._panel_timer_label(panel) == "Stopped"
+
+    def test_setting_is_off_by_default_and_persists(self, tmp_state_dir):
+        assert toggl_tray.get_panel_timer_enabled() is False
+
+        toggl_tray.set_panel_timer_enabled(True)
+
+        assert toggl_tray.get_panel_timer_enabled() is True
+        config = json.loads((tmp_state_dir / "config.json").read_text())
+        assert config["show_timer_in_panel"] is True
+
+    def test_native_indicator_label_is_updated(self):
+        indicator = MagicMock()
+        toggl_tray.icon_ref = type("Icon", (), {"_appindicator": indicator})()
+        panel = {
+            "tracking": True,
+            "elapsed": "1:02:03",
+            "description": "Deep work",
+        }
+
+        with patch.object(toggl_tray, "get_panel_timer_enabled", return_value=True), \
+             patch.object(toggl_tray, "_panel_timer_snapshot", return_value=panel):
+            assert toggl_tray._update_panel_timer_label() is True
+
+        indicator.set_label.assert_called_once_with(
+            "1:02:03 · Deep work", toggl_tray.PANEL_TIMER_LABEL_GUIDE
+        )
+
+    def test_xapp_label_is_preferred_on_cinnamon(self):
+        native_icon = MagicMock()
+        appindicator = MagicMock()
+        toggl_tray.native_status_icon_ref = native_icon
+        toggl_tray.icon_ref = type("Icon", (), {"_appindicator": appindicator})()
+        panel = {
+            "tracking": True,
+            "elapsed": "1:02:03",
+            "description": "Deep work",
+        }
+
+        with patch.object(toggl_tray, "get_panel_timer_enabled", return_value=True), \
+             patch.object(toggl_tray, "_panel_timer_snapshot", return_value=panel):
+            assert toggl_tray._update_panel_timer_label() is True
+
+        native_icon.set_label.assert_called_once_with("1:02:03 · Deep work")
+        appindicator.set_label.assert_not_called()
 
 
 # ── State persistence ────────────────────────────────────────────────────────
@@ -1002,6 +1066,7 @@ class TestTrayMenu:
         toggl_tray.build_menu()
 
         labels = [call.args[0] for call in toggl_tray.pystray.MenuItem.call_args_list]
+        assert "Show timer in panel" in labels
         assert "Doctor" in labels
         assert "Audit today" in labels
 
