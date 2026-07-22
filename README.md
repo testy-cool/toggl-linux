@@ -18,7 +18,7 @@ The tray icon shows the Toggl logo in **pink when tracking** and **grey when sto
 
 - **Global hotkey** (`Ctrl+Shift+T`) — works everywhere, overrides all apps (X11 key grab)
 - **Tray icon** — pink = tracking, grey = stopped
-- **Optional panel timer** — elapsed time and task title beside the icon on Cinnamon
+- **Optional panel text** — independently show or hide elapsed time and the task description on Cinnamon
 - **Tooltip** — hover to see elapsed time and description
 - **Offline mode** — works without internet, syncs to Toggl when back online
 - **Single instance** — launching twice won't create duplicate icons
@@ -109,7 +109,7 @@ python3 toggl_tray.py
 | **Run diagnostics** | Right-click tray icon > "Doctor" or "Audit today" |
 | **Edit/delete entries** | From the "Today's entries" window |
 | **Check elapsed time** | Hover over the tray icon |
-| **Show timer in panel** | Tray menu > "Show timer in panel" (Cinnamon) |
+| **Configure panel text** | Toggle "Show timer in panel" and "Show description in panel" independently (Cinnamon) |
 
 ### Terminal recovery commands
 

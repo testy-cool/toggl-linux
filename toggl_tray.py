@@ -113,6 +113,22 @@ def set_panel_timer_enabled(enabled):
     return config["show_timer_in_panel"]
 
 
+def get_panel_description_enabled():
+    """Return whether the task description should be visible beside the tray icon."""
+    config = _load_json_with_backup(CONFIG_FILE, {})
+    return bool(config.get("show_description_in_panel", False)) if isinstance(config, dict) else False
+
+
+def set_panel_description_enabled(enabled):
+    """Persist whether the task description is visible beside the tray icon."""
+    config = _load_json_with_backup(CONFIG_FILE, {})
+    if not isinstance(config, dict):
+        config = {}
+    config["show_description_in_panel"] = bool(enabled)
+    _atomic_write_text(CONFIG_FILE, json.dumps(config, indent=2))
+    return config["show_description_in_panel"]
+
+
 # ── API Token ───────────────────────────────────────────────────────────────
 
 def get_api_token():
@@ -933,17 +949,25 @@ def _panel_timer_snapshot():
     }
 
 
-def _panel_timer_label(panel=None):
+def _panel_timer_label(panel=None, show_timer=True, show_description=False):
     """Build the compact text shown by panel implementations that support it."""
     panel = panel or _panel_timer_snapshot()
-    if not panel["tracking"]:
-        return "Stopped"
-    return panel["elapsed"]
+    parts = []
+    if show_timer:
+        parts.append(panel["elapsed"] if panel["tracking"] else "Stopped")
+    if show_description:
+        description = " ".join(str(panel.get("description") or "").split())
+        if description:
+            parts.append(description)
+    return " · ".join(parts)
 
 
 def _update_panel_timer_label():
     """Update the optional native text label when the tray backend supports it."""
-    label = _panel_timer_label() if get_panel_timer_enabled() else ""
+    label = _panel_timer_label(
+        show_timer=get_panel_timer_enabled(),
+        show_description=get_panel_description_enabled(),
+    )
     if native_status_icon_ref:
         native_status_icon_ref.set_label(label)
         return True
@@ -1308,6 +1332,13 @@ def on_toggle_panel_timer(icon, item):
     enabled = set_panel_timer_enabled(not get_panel_timer_enabled())
     if not _update_panel_timer_label() and enabled:
         _notify("This desktop's tray does not support a visible timer label")
+    if icon_ref:
+        _set_tray_menu(build_menu())
+
+
+def on_toggle_panel_description(icon, item):
+    set_panel_description_enabled(not get_panel_description_enabled())
+    _update_panel_timer_label()
     if icon_ref:
         _set_tray_menu(build_menu())
 
@@ -1851,6 +1882,11 @@ def build_menu():
             "Show timer in panel",
             on_toggle_panel_timer,
             checked=lambda _item: get_panel_timer_enabled(),
+        ),
+        pystray.MenuItem(
+            "Show description in panel",
+            on_toggle_panel_description,
+            checked=lambda _item: get_panel_description_enabled(),
         ),
         pystray.MenuItem(toggle_label, on_toggle, default=True),
         pystray.MenuItem("Edit description...", on_set_description),

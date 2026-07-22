@@ -142,6 +142,39 @@ class TestPanelTimerLabel:
 
         assert toggl_tray._panel_timer_label(panel) == "0:05:12"
 
+    def test_description_can_be_shown_without_timer(self):
+        panel = {
+            "tracking": True,
+            "elapsed": "0:05:12",
+            "description": "Writing release notes",
+        }
+
+        assert toggl_tray._panel_timer_label(
+            panel, show_timer=False, show_description=True
+        ) == "Writing release notes"
+
+    def test_timer_and_description_can_be_shown_together(self):
+        panel = {
+            "tracking": True,
+            "elapsed": "0:05:12",
+            "description": "Writing release notes",
+        }
+
+        assert toggl_tray._panel_timer_label(
+            panel, show_timer=True, show_description=True
+        ) == "0:05:12 · Writing release notes"
+
+    def test_panel_text_can_be_hidden_completely(self):
+        panel = {
+            "tracking": True,
+            "elapsed": "0:05:12",
+            "description": "Writing release notes",
+        }
+
+        assert toggl_tray._panel_timer_label(
+            panel, show_timer=False, show_description=False
+        ) == ""
+
     def test_stopped_label_is_compact(self):
         panel = {"tracking": False, "elapsed": "0:00:00", "description": ""}
 
@@ -155,6 +188,15 @@ class TestPanelTimerLabel:
         assert toggl_tray.get_panel_timer_enabled() is True
         config = json.loads((tmp_state_dir / "config.json").read_text())
         assert config["show_timer_in_panel"] is True
+
+    def test_description_setting_is_off_by_default_and_persists(self, tmp_state_dir):
+        assert toggl_tray.get_panel_description_enabled() is False
+
+        toggl_tray.set_panel_description_enabled(True)
+
+        assert toggl_tray.get_panel_description_enabled() is True
+        config = json.loads((tmp_state_dir / "config.json").read_text())
+        assert config["show_description_in_panel"] is True
 
     def test_native_indicator_label_is_updated(self):
         indicator = MagicMock()
@@ -1093,6 +1135,7 @@ class TestTrayMenu:
 
         labels = [call.args[0] for call in toggl_tray.pystray.MenuItem.call_args_list]
         assert "Show timer in panel" in labels
+        assert "Show description in panel" in labels
         assert "Edit description..." in labels
         assert "Doctor" in labels
         assert "Audit today" in labels
