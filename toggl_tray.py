@@ -984,6 +984,12 @@ def _update_panel_timer_label():
     return True
 
 
+def _update_panel_timer_label_once():
+    """Update the panel label once when dispatched through GLib.idle_add."""
+    _update_panel_timer_label()
+    return False
+
+
 def _native_status_icon_supported():
     desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
     return XApp is not None and "cinnamon" in desktop and icon_ref is not None
@@ -1971,7 +1977,7 @@ def update_loop():
             icon_ref.title = tooltip
             if native_status_icon_ref:
                 GLib.idle_add(native_status_icon_ref.set_tooltip_text, tooltip)
-            GLib.idle_add(_update_panel_timer_label)
+            GLib.idle_add(_update_panel_timer_label_once)
 
 
 # ── Command-line recovery tools ─────────────────────────────────────────────

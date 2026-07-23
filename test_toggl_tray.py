@@ -233,6 +233,21 @@ class TestPanelTimerLabel:
         native_icon.set_label.assert_called_once_with("1:02:03")
         appindicator.set_label.assert_not_called()
 
+    def test_panel_label_idle_callback_runs_only_once(self):
+        toggl_tray.icon_ref = MagicMock()
+        toggl_tray.native_status_icon_ref = MagicMock()
+        toggl_tray.GLib.idle_add.reset_mock()
+
+        with patch.object(
+            toggl_tray.time,
+            "sleep",
+            side_effect=[None, RuntimeError("stop update loop")],
+        ), pytest.raises(RuntimeError, match="stop update loop"):
+            toggl_tray.update_loop()
+
+        idle_callback = toggl_tray.GLib.idle_add.call_args_list[-1].args[0]
+        assert idle_callback() is False
+
 
 class TestDescriptionDialog:
     def test_ok_response_applies_edited_description(self):
