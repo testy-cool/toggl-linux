@@ -726,10 +726,22 @@ def _record_sync_failure(error):
 
 def _run_sync_cycle(now=None):
     """Run one background sync pass while preserving API quota for user actions."""
-    global _last_cloud_poll_at
+    global api_token, _last_cloud_poll_at
     now = time.monotonic() if now is None else now
     if now < rate_limited_until:
         return
+
+    # The desktop keyring may not be unlocked when the app autostarts.
+    if not api_token:
+        token = get_api_token()
+        if token and not api_token:
+            api_token = token
+    if api_token and not state.get("workspace_id"):
+        if _request_budget_exhausted():
+            _notify(REQUEST_BUDGET_SYNC_MESSAGE)
+            return
+        if not _init_workspace():
+            return
 
     pending = _load_pending()
     if pending:

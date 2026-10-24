@@ -1208,6 +1208,119 @@ class TestHealthCheck:
 
 
 class TestSyncCycle:
+    @pytest.mark.parametrize("lookup_token", [None, "stale_token"])
+    def test_keyring_retry_preserves_token_set_while_lookup_runs(self, lookup_token, tmp_state_dir):
+        toggl_tray.api_token = None
+
+        def lookup():
+            toggl_tray.api_token = "manually_entered_token"
+            return lookup_token
+
+        with patch.object(toggl_tray, "get_api_token", side_effect=lookup):
+            toggl_tray._run_sync_cycle(now=1000.0)
+
+        assert toggl_tray.api_token == "manually_entered_token"
+
+    @patch.object(toggl_tray, "get_api_token", return_value="recovered_token")
+    @patch.object(toggl_tray, "_init_workspace")
+    @patch.object(toggl_tray, "_notify")
+    def test_workspace_recovery_waits_for_request_budget(
+        self, mock_notify, mock_init, mock_token, tmp_state_dir
+    ):
+        toggl_tray.api_token = None
+        toggl_tray.state["workspace_id"] = None
+        toggl_tray._save_request_timestamps([time.time()] * toggl_tray.REQUEST_BUDGET_LIMIT)
+
+        toggl_tray._run_sync_cycle(now=1000.0)
+
+        mock_init.assert_not_called()
+        mock_notify.assert_called_once_with(toggl_tray.REQUEST_BUDGET_SYNC_MESSAGE)
+        assert toggl_tray._request_budget_status()["used"] == toggl_tray.REQUEST_BUDGET_LIMIT
+
+    @patch.object(toggl_tray, "get_api_token", side_effect=[None, "recovered_token"])
+    @patch.object(toggl_tray, "fetch_current_entry", return_value=None)
+    @patch.object(toggl_tray, "start_entry", return_value={
+        "id": "recovered_entry", "start": "2026-10-24T11:00:00+00:00",
+    })
+    @patch.object(toggl_tray, "_notify")
+    def test_missing_token_retries_and_syncs_saved_start(
+        self, mock_notify, mock_start, mock_current, mock_token, tmp_state_dir
+    ):
+        toggl_tray.api_token = None
+        toggl_tray.state["tracking"] = True
+        toggl_tray.state["start_time"] = "2026-10-24T11:00:00+00:00"
+        toggl_tray.queue_action("start", description="saved task",
+                                start_time=toggl_tray.state["start_time"])
+        saved_queue = toggl_tray._load_pending()
+
+        toggl_tray._run_sync_cycle(now=1000.0)
+
+        assert toggl_tray._load_pending() == saved_queue
+        mock_start.assert_not_called()
+        mock_current.assert_not_called()
+        mock_notify.assert_called_once_with(toggl_tray.NO_TOKEN_SYNC_MESSAGE)
+
+        toggl_tray._run_sync_cycle(now=1300.0)
+
+        assert toggl_tray.api_token == "recovered_token"
+        assert not toggl_tray.PENDING_FILE.exists()
+        assert toggl_tray.state["entry_id"] == "recovered_entry"
+        assert toggl_tray.state["start_time"] == "2026-10-24T11:00:00+00:00"
+        mock_start.assert_called_once_with(
+            "ws_123", description="saved task", project_id=None,
+            start_time="2026-10-24T11:00:00+00:00",
+        )
+        assert mock_token.call_count == 2
+
+    @patch.object(toggl_tray, "get_api_token", return_value="recovered_token")
+    @patch.object(toggl_tray, "fetch_me", side_effect=[
+        requests.exceptions.ConnectionError("offline"), {"default_workspace_id": "new_ws"},
+    ])
+    @patch.object(toggl_tray, "fetch_current_entry", return_value=None)
+    @patch.object(toggl_tray, "start_entry", return_value={
+        "id": "recovered_entry", "start": "2026-10-24T11:00:00+00:00",
+    })
+    def test_recovered_token_retries_workspace_before_syncing(
+        self, mock_start, mock_current, mock_me, mock_token, tmp_state_dir
+    ):
+        toggl_tray.api_token = None
+        toggl_tray.state["workspace_id"] = None
+        toggl_tray.queue_action("start", description="saved task",
+                                start_time="2026-10-24T11:00:00+00:00")
+        saved_queue = toggl_tray._load_pending()
+
+        toggl_tray._run_sync_cycle(now=1000.0)
+
+        assert toggl_tray._load_pending() == saved_queue
+        mock_start.assert_not_called()
+
+        toggl_tray._run_sync_cycle(now=1300.0)
+
+        assert toggl_tray.state["workspace_id"] == "new_ws"
+        assert toggl_tray.state["entry_id"] == "recovered_entry"
+        assert not toggl_tray.PENDING_FILE.exists()
+        assert mock_start.call_args.args[0] == "new_ws"
+        assert mock_me.call_count == 2
+        mock_token.assert_called_once_with()
+
+    @patch.object(toggl_tray, "get_api_token", return_value="recovered_token")
+    @patch.object(toggl_tray, "fetch_current_entry", return_value=None)
+    def test_idle_cycle_recovers_token_without_pending_entries(
+        self, mock_current, mock_token, tmp_state_dir
+    ):
+        toggl_tray.api_token = None
+
+        toggl_tray._run_sync_cycle(now=999999.0)
+
+        assert toggl_tray.api_token == "recovered_token"
+        mock_current.assert_called_once_with()
+
+    @patch.object(toggl_tray, "get_api_token")
+    def test_loaded_token_does_not_repeat_keyring_lookup(self, mock_token, tmp_state_dir):
+        toggl_tray._run_sync_cycle(now=1000.0)
+
+        mock_token.assert_not_called()
+
     @patch.object(toggl_tray, "_run_sync_cycle")
     def test_sync_loop_runs_cycle_before_waiting(self, mock_cycle):
         wakeup = MagicMock()
