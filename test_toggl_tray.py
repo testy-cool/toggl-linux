@@ -1208,6 +1208,35 @@ class TestHealthCheck:
 
 
 class TestSyncCycle:
+    @pytest.mark.parametrize("lookup_token", [None, "stale_token"])
+    def test_keyring_retry_preserves_token_set_while_lookup_runs(self, lookup_token, tmp_state_dir):
+        toggl_tray.api_token = None
+
+        def lookup():
+            toggl_tray.api_token = "manually_entered_token"
+            return lookup_token
+
+        with patch.object(toggl_tray, "get_api_token", side_effect=lookup):
+            toggl_tray._run_sync_cycle(now=1000.0)
+
+        assert toggl_tray.api_token == "manually_entered_token"
+
+    @patch.object(toggl_tray, "get_api_token", return_value="recovered_token")
+    @patch.object(toggl_tray, "_init_workspace")
+    @patch.object(toggl_tray, "_notify")
+    def test_workspace_recovery_waits_for_request_budget(
+        self, mock_notify, mock_init, mock_token, tmp_state_dir
+    ):
+        toggl_tray.api_token = None
+        toggl_tray.state["workspace_id"] = None
+        toggl_tray._save_request_timestamps([time.time()] * toggl_tray.REQUEST_BUDGET_LIMIT)
+
+        toggl_tray._run_sync_cycle(now=1000.0)
+
+        mock_init.assert_not_called()
+        mock_notify.assert_called_once_with(toggl_tray.REQUEST_BUDGET_SYNC_MESSAGE)
+        assert toggl_tray._request_budget_status()["used"] == toggl_tray.REQUEST_BUDGET_LIMIT
+
     @patch.object(toggl_tray, "get_api_token", side_effect=[None, "recovered_token"])
     @patch.object(toggl_tray, "fetch_current_entry", return_value=None)
     @patch.object(toggl_tray, "start_entry", return_value={

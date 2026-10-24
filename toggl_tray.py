@@ -733,8 +733,13 @@ def _run_sync_cycle(now=None):
 
     # The desktop keyring may not be unlocked when the app autostarts.
     if not api_token:
-        api_token = get_api_token()
+        token = get_api_token()
+        if token and not api_token:
+            api_token = token
     if api_token and not state.get("workspace_id"):
+        if _request_budget_exhausted():
+            _notify(REQUEST_BUDGET_SYNC_MESSAGE)
+            return
         if not _init_workspace():
             return
 
