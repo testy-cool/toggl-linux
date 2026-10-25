@@ -241,3 +241,23 @@ The [`vicinae/`](vicinae/) extension manages the running timer, project selectio
 Choose **Open Timer** in the tray to edit the project, description, and start time together. **Save Changes** (Enter or Ctrl+Enter) keeps the same interval; **Start New Task** (Ctrl+Shift+Enter) closes it and starts another. Start time includes the date; HH:MM means today, while a full date and time can correct an older interval. Stop and sync preserve unsaved drafts. Start/Stop and today's entries stay visible; **More** holds sync, project refresh, account connection, and panel visibility in the same window. Vicinae offers the same Start New Task action. See [`docs/timer-scenarios.md`](docs/timer-scenarios.md) for the scenario tree.
 
 Use **Resume Previous Task** in the timer window, or **Start Again** on a completed Today entry in Vicinae, to return to earlier work. The previous description, project and workspace are copied into a new interval; a running timer is stopped first. Today's cached and pending tasks are supported, including offline. Resume never changes the earlier interval.
+
+### Quick project and task selection from the tray
+
+Right-click the tray icon. The last two projects and up to three recent/frequent
+tasks per project are directly visible at the top of the first menu, ready to
+click without hovering or opening a submenu. Open **Project** for more projects
+and their recent/frequent task descriptions. **Start: …** ends the current interval and starts
+a new one with that project and description; **Use this project** changes only
+the current interval's project.
+
+Choose **Find Project or Task…** for a searchable tree. Type a project name or task
+description, expand a project, and double-click a task (or press **Start Task**).
+**Use Project** assigns the selected project without splitting the interval.
+Unused projects and **No project** remain available.
+
+Suggestions use the last 30 days, limited to 1,000 fetched entries, plus local
+pending intervals. They are cached per account, API server and workspace in
+`~/.local/share/toggl-tray/task-history.json`, work offline, and refresh at most
+once an hour in the background. **Refresh projects and tasks** requests a manual
+refresh. Here, tasks are descriptions you have already tracked under each project.

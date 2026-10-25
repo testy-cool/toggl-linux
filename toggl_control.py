@@ -188,6 +188,8 @@ def dispatch(app, action, payload):
     # Share the tray's mutation lock, including its existing toggle implementation.
     with app.toggle_lock:
         before = dict(app.state)
+        if "context" in payload and payload["context"] != toggl_projects.context(app):
+            raise ControlError("Account or workspace changed; reopen projects and tasks")
         if action == "resume" and "expected" not in payload:
             raise ControlError("Timer changed; refresh before resuming")
         if action in {"edit-current", "switch", "resume", "start", "stop"} and "expected" in payload:
@@ -209,6 +211,8 @@ def dispatch(app, action, payload):
             changes = _changes(app, payload.get("changes", {}))
             if "start" in changes:
                 raise ControlError("A new task starts now; edit the current timer to adjust its start")
+            if "context" in payload and payload["context"] != toggl_projects.context(app):
+                raise ControlError("Account or workspace changed; reopen projects and tasks")
             if app.state.get("tracking"):
                 app.toggle_tracking(prompt_for_description=False)
             _edit_current(app, changes)
