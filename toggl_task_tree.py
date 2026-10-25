@@ -71,8 +71,8 @@ def refresh(app, force=False):
             if toggl_projects.context(app) != scope:
                 return False
             cloud = _bounded(entries)
-            cloud_starts = {e.get('start') for e in cloud}
-            local = [e for e in cache.get('local_entries', []) if e.get('start') not in cloud_starts]
+            cloud_starts = {_stamp(e.get('start')) for e in cloud}
+            local = [e for e in cache.get('local_entries', []) if _stamp(e.get('start')) not in cloud_starts]
             data = dict(context=scope, fetched_at=now, entries=cloud, local_entries=local)
             _save(app, data)
         return True
@@ -117,7 +117,7 @@ def group_projects(projects, entries, workspace, query='', now=None):
               and str(p.get('workspace_id')) == str(workspace)}
     groups['None'] = dict(id=None, workspace_id=workspace, name='No project', tasks=[], count=0, last_used=0)
     tasks, seen = {}, set()
-    remote_ids = {e.get('start'): str(e['id']) for e in entries if isinstance(e, dict) and e.get('id') is not None
+    remote_ids = {_stamp(e.get('start')): str(e['id']) for e in entries if isinstance(e, dict) and e.get('id') is not None
                   and not e.get('_offline') and not str(e['id']).startswith(('local:', 'pending:'))
                   and str(e.get('workspace_id')) == str(workspace)}
     for entry in entries:
@@ -130,7 +130,7 @@ def group_projects(projects, entries, workspace, query='', now=None):
             continue
         identity = str(entry.get('_remote_entry_id') or entry.get('id') or 'local:'+entry['start'])
         if identity.startswith(('local:', 'pending:')):
-            identity = remote_ids.get(entry['start'], 'local:'+entry['start'])
+            identity = remote_ids.get(stamp, 'local:'+str(stamp))
         if identity in seen:
             continue
         seen.add(identity)
@@ -156,7 +156,14 @@ def group_projects(projects, entries, workspace, query='', now=None):
 def tree(app, query='', now=None):
     with app.state_lock:
         current = dict(app.state)
-    entries = app._merge_entries_with_pending(cached_entries(app), app._pending_as_entries())
+    cached = cached_entries(app)
+    scope = toggl_projects.context(app)
+    known_starts = {_stamp(e.get('start')) for e in cached}
+    # Untagged legacy queue entries remain editable, but need a scoped history match to be suggested.
+    pending = [e for e in app._pending_as_entries() if e.get('_task_context') == scope
+               or (e.get('_task_context') is None and _stamp(e.get('start')) in known_starts)]
+    pending_starts = {_stamp(e.get('start')) for e in pending}
+    entries = pending+[e for e in cached if _stamp(e.get('start')) not in pending_starts]
     if current.get('tracking') and current.get('start_time'):
         entries = [dict(id=current.get('entry_id') or 'local:'+current['start_time'], start=current['start_time'],
                         workspace_id=current.get('workspace_id'), project_id=current.get('project_id'),

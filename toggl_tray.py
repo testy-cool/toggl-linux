@@ -434,9 +434,12 @@ def queue_action(action, **kwargs):
     """Queue an offline action for later sync."""
     if "workspace_id" not in kwargs and state.get("workspace_id"):
         kwargs["workspace_id"] = state["workspace_id"]
+    import toggl_projects
+    task_context = toggl_projects.context(sys.modules[__name__])
     with pending_lock:
         queue = _load_pending()
-        item = {"action": action, "ts": datetime.now(timezone.utc).isoformat(), **kwargs}
+        item = {"action": action, "ts": datetime.now(timezone.utc).isoformat(), **kwargs,
+                "_task_context": task_context}
         queue.append(item)
         _append_event("pending_queued", **item)
         _save_pending(queue)
@@ -849,6 +852,7 @@ def _pending_as_entries(date_obj=None):
             "project_id": op.get("project_id"),
             "_offline": True,
             "_pending_indexes": op["indexes"],
+            "_task_context": queue[op["indexes"][0]].get("_task_context"),
             "_pending_kind": op["kind"],
             "_remote_entry_id": op.get("entry_id"),
         })
@@ -2009,14 +2013,16 @@ def on_quit(icon, item):
 
 # ── Menu ────────────────────────────────────────────────────────────────────
 
-def _apply_tray_project(project_id, expected):
+def _apply_tray_project(project_id, expected, context=None):
     import toggl_control
     with state_lock:
         if state == expected and str(state.get("project_id")) == str(project_id):
             return True
     try:
-        toggl_control.dispatch(sys.modules[__name__], "edit-current",
-                               {"changes": {"project_id": project_id}, "expected": expected})
+        payload = {"changes": {"project_id": project_id}, "expected": expected}
+        if context is not None:
+            payload["context"] = context
+        toggl_control.dispatch(sys.modules[__name__], "edit-current", payload)
         return True
     except Exception as error:
         _notify(f"Project not changed: {error}")
@@ -2031,7 +2037,7 @@ def _refresh_project_menu():
     return False
 
 
-def _project_choice_action(project_id, context):
+def _project_choice_action(project_id, context, account_context=None):
     def selected(_icon, _item):
         with state_lock:
             expected = dict(state)
@@ -2040,7 +2046,7 @@ def _project_choice_action(project_id, context):
             if icon_ref:
                 GLib.idle_add(_refresh_project_menu)
             return
-        threading.Thread(target=_apply_tray_project, args=(project_id, expected), daemon=True).start()
+        threading.Thread(target=_apply_tray_project, args=(project_id, expected, account_context), daemon=True).start()
     return selected
 
 
@@ -2095,7 +2101,7 @@ def _tray_project_items():
                 and (p.get("active") is not False or str(p.get("id")) == str(current.get("project_id")))]
     groups = toggl_task_tree.tree(sys.modules[__name__])
     def choice(project_id, name):
-        return pystray.MenuItem(name, _project_choice_action(project_id, current), radio=True,
+        return pystray.MenuItem(name, _project_choice_action(project_id, current, context), radio=True,
                                checked=lambda _item: str(state.get("workspace_id")) == str(current.get("workspace_id"))
                                and str(state.get("project_id")) == str(project_id))
     def project_item(project):

@@ -55,7 +55,7 @@ def test_cache_is_scoped_to_server_account_and_workspace(tmp_state_dir):
     scope=toggl_projects.context(app)
     app._atomic_write_text(tmp_state_dir/'task-history.json',json.dumps(dict(context=scope,entries=[entry(1)],fetched_at=0)))
     assert len(m.cached_entries(app))==1
-    with patch.object(app,'API_BASE','https://other.example/api/v9'):
+    with patch.object(app,'get_api_base',return_value='https://other.example/api/v9',create=True):
         assert m.cached_entries(app)==[]
     app.api_token='other'
     assert m.cached_entries(app)==[]
@@ -68,7 +68,7 @@ def test_refresh_pins_token_and_base_and_discards_reply_after_account_switch(tmp
     with patch.object(app,'_api',side_effect=switch) as api:
         assert m.refresh(app,force=True) is False
     assert api.call_args.kwargs['token']=='tok'
-    assert api.call_args.kwargs['base_url']==app.API_BASE
+    assert api.call_args.kwargs['base_url']==toggl_projects._api_base(app)
     assert not (tmp_state_dir/'task-history.json').exists()
 
 def test_refresh_is_throttled_and_respects_background_request_reserve(tmp_state_dir):
@@ -175,3 +175,36 @@ def test_task_switch_closes_offline_interval_and_creates_distinct_pending_start(
     assert operations[0]['stop_time'] is not None
     assert operations[1]['description']=='Next task'
     assert operations[1].get('stop_time') is None
+
+
+def test_pending_correction_replaces_remembered_description(tmp_state_dir):
+    m=module()
+    start=NOW.isoformat()
+    app.queue_action('start',start_time=start,description='Old',project_id=7,workspace_id='ws_123')
+    app.queue_action('stop',start_time=start,stop_time=(NOW+timedelta(minutes=1)).isoformat(),description='Old',project_id=7,workspace_id='ws_123')
+    m.remember(app,dict(app.state,tracking=True,start_time=start,description='Old',project_id=7))
+    selected=app._pending_as_entries()[0]
+    import toggl_control
+    toggl_control.dispatch(app,'edit-entry',dict(entry=selected,changes={'description':'Corrected'}))
+    with patch.object(app,'_cached_projects',return_value=PROJECTS):
+        group=next(p for p in m.tree(app,now=NOW) if p['id']==7)
+    assert [t['description'] for t in group['tasks']]==['Corrected']
+
+
+def test_equivalent_cloud_timestamp_does_not_double_count_uploaded_local_interval(tmp_state_dir):
+    m=module()
+    m.remember(app,dict(app.state,tracking=True,start_time=NOW.isoformat(),description='Task',project_id=7))
+    cloud=[dict(entry(45,description='Task'),start=NOW.isoformat().replace('+00:00','Z'))]
+    with patch.object(app,'_api',return_value=cloud):
+        assert m.refresh(app,force=True)
+    with patch.object(app,'_cached_projects',return_value=PROJECTS):
+        group=next(p for p in m.tree(app,now=NOW) if p['id']==7)
+    assert group['count']==1
+
+
+def test_pending_suggestions_do_not_cross_accounts_with_identical_project_ids(tmp_state_dir):
+    m=module()
+    app.queue_action('start',start_time=NOW.isoformat(),description='Private old account task',project_id=7,workspace_id='ws_123')
+    app.api_token='replacement-account'
+    with patch.object(app,'_cached_projects',return_value=PROJECTS):
+        assert all(not p['tasks'] for p in m.tree(app,now=NOW))
