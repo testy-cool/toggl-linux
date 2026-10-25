@@ -124,6 +124,26 @@ def _edit_entry(app, selected, changes):
                 app.save_state()
 
 
+def _resume_entry(app, selected):
+    """Resolve a completed selection before changing the running interval."""
+    fields = ("id", "start", "stop", "duration", "description", "project_id", "workspace_id",
+              "_offline", "_pending_kind", "_pending_indexes", "_remote_entry_id")
+    if not isinstance(selected, dict):
+        raise ControlError("Entry changed; refresh before resuming")
+    entry = next((e for e in snapshot(app)["entries"]
+                  if all(e.get(k) == selected.get(k) for k in fields)), None)
+    if entry is None:
+        raise ControlError("Entry changed; refresh before resuming")
+    duration = entry.get("duration")
+    if (not entry.get("start") or not entry.get("stop")
+            or not isinstance(duration, (int, float)) or duration < 0
+            or (app.state.get("tracking") and entry.get("id") == app.state.get("entry_id"))):
+        raise ControlError("Only completed entries can be resumed")
+    if not entry.get("workspace_id"):
+        raise ControlError("Entry workspace is unavailable; refresh before resuming")
+    return entry
+
+
 def dispatch(app, action, payload):
     if not isinstance(payload, dict):
         raise ControlError("Command payload must be an object")
@@ -147,17 +167,29 @@ def dispatch(app, action, payload):
             except Exception:
                 app._control_warning = "Cloud refresh unavailable; showing cached and pending entries"
         return snapshot(app)
-    if action not in {"start", "switch", "stop", "edit-current", "edit-entry"}:
+    if action not in {"start", "switch", "resume", "stop", "edit-current", "edit-entry"}:
         raise ControlError("Unknown action")
     # Share the tray's mutation lock, including its existing toggle implementation.
     with app.toggle_lock:
         before = dict(app.state)
-        if action in {"edit-current", "switch", "start", "stop"} and "expected" in payload:
+        if action == "resume" and "expected" not in payload:
+            raise ControlError("Timer changed; refresh before resuming")
+        if action in {"edit-current", "switch", "resume", "start", "stop"} and "expected" in payload:
             expected = payload["expected"]
-            if not isinstance(expected, dict) or any(expected.get(k) != before.get(k)
-                    for k in ("tracking", "entry_id", "start_time", "description", "project_id")):
+            fields = ("tracking", "entry_id", "start_time", "description", "project_id")
+            if action == "resume":
+                fields += ("workspace_id",)
+            if not isinstance(expected, dict) or any(expected.get(k) != before.get(k) for k in fields):
                 raise ControlError("Timer changed; refresh before editing")
-        if action == "switch":
+        if action == "resume":
+            entry = _resume_entry(app, payload.get("entry"))
+            changes = _changes(app, {"description": entry.get("description", ""),
+                                     "project_id": entry.get("project_id")}, entry)
+            if app.state.get("tracking"):
+                app.toggle_tracking(prompt_for_description=False)
+            _edit_current(app, dict(changes, workspace_id=entry["workspace_id"]))
+            app.toggle_tracking(prompt_for_description=False)
+        elif action == "switch":
             changes = _changes(app, payload.get("changes", {}))
             if "start" in changes:
                 raise ControlError("A new task starts now; edit the current timer to adjust its start")

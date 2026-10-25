@@ -75,7 +75,11 @@ export default function Timer() {
           subtitle={e._offline ? "Pending sync" : new Date(e.start).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"})}
           icon={e._offline ? Icon.Clock : Icon.CheckCircle}
           accessories={[{text: elapsed(e.start, e.stop)}]}
-          actions={<ActionPanel><Action.Push title="Edit Description and Project" icon={Icon.Pencil} target={<TimerForm snapshot={snapshot} entry={e} submit={run} />} />{refresh}</ActionPanel>} />)}
+          actions={<ActionPanel>
+            {e.stop && <Action title="Start Again" icon={Icon.Play} onAction={() => run("resume", { entry: e, expected: snapshot.state })} />}
+            <Action.Push title="Edit Description and Project" icon={Icon.Pencil} target={<TimerForm snapshot={snapshot} entry={e} submit={run} />} />
+            {refresh}
+          </ActionPanel>} />)}
       </List.Section>
     </>}
   </List>;

@@ -48,7 +48,7 @@ def test_non_edit_actions_preserve_a_dirty_description_and_project(action):
     view.window = MagicMock()
     view.baseline = dict(tracking=True, description='Saved', project_id=7,
                          start_time='2026-10-25T10:00:00+00:00')
-    for name in ['toggle', 'new_task', 'save', 'description', 'project', 'start', 'message', 'reload']:
+    for name in ['toggle', 'new_task', 'save', 'resume', 'description', 'project', 'start', 'message', 'reload']:
         setattr(view, name, MagicMock())
     view.description.get_text.return_value = 'Unsaved next task'
     view.project.get_active_id.return_value = '8'
@@ -88,6 +88,41 @@ def test_new_task_has_a_separate_keyboard_shortcut():
         assert view._key(None, MagicMock(keyval=65293, state=5)) is True
     view._new_task.assert_called_once_with()
     view._save.assert_not_called()
+
+
+def test_previous_tasks_show_recent_distinct_completed_tasks():
+    def entry(id, start, description='Work', project=7, stop='2026-10-25T11:00:00Z'):
+        return dict(id=id, start=start, stop=stop, duration=3600 if stop else -1,
+                    description=description, project_id=project, workspace_id=99)
+    newest = entry(3, '2026-10-25T10:00:00Z')
+    other = entry(4, '2026-10-25T09:30:00Z', 'Other task')
+    result = editor.previous_tasks(app, {'entries': [
+        entry(1, '2026-10-25T08:00:00Z'), newest, other,
+        entry(5, '2026-10-25T11:00:00Z', 'Active task', stop=None),
+    ]})
+    assert result == [newest, other]
+
+
+def test_resume_request_fetches_history_when_no_previous_tasks_are_cached():
+    view = editor.TimerEditor.__new__(editor.TimerEditor)
+    view.app = app
+    view.busy = False
+    view._act = MagicMock()
+    with patch.object(editor.toggl_control, 'snapshot', return_value={'entries': []}):
+        view._resume_previous()
+    view._act.assert_called_once_with('refresh', {})
+    assert view.pending_resume_picker is True
+
+
+def test_resume_selection_keeps_the_details_displayed_when_the_chooser_opened():
+    entry = dict(id=1, start='2026-10-25T08:00:00Z', stop='2026-10-25T09:00:00Z',
+                 duration=3600, description='Displayed task', project_id=7, workspace_id=99,
+                 _pending_indexes=[0, 1])
+    selected = editor.previous_tasks(app, {'entries': [entry]})[0]
+    entry['description'] = 'Changed in Vicinae'
+    entry['_pending_indexes'].append(2)
+    assert selected['description'] == 'Displayed task'
+    assert selected['_pending_indexes'] == [0, 1]
 
 
 def test_unchanged_fields_make_no_request():
@@ -132,7 +167,7 @@ def test_editor_fields_are_frozen_while_request_is_pending():
     from unittest.mock import MagicMock,patch
     view=editor.TimerEditor.__new__(editor.TimerEditor)
     view.app=app;view.busy=False
-    for name in ['toggle','new_task','save','description','project','start','message']:
+    for name in ['toggle','new_task','save','resume','description','project','start','message']:
         setattr(view,name,MagicMock())
     with patch.object(editor.threading,'Thread'):
         view._act('edit-current',{})
