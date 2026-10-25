@@ -191,12 +191,40 @@ def test_last_two_projects_and_tasks_are_clickable_in_first_tray_menu_without_su
     direct=[i for i in menu if isinstance(i,SimpleNamespace)]
     labels=[i.text for i in direct]
     assert 'DPF' in labels and 'Tools' in labels
-    tasks=[i for i in direct if 'Start: ' in i.text]
+    tasks=[i for i in direct if '─ ' in i.text]
     assert any('Write FAQ' in i.text for i in tasks)
     assert any('Build selector' in i.text for i in tasks)
     assert all(callable(i.action) and not isinstance(i.action,Menu) for i in tasks)
     assert callable(next(i for i in direct if i.text=='DPF').action)
     assert 'Unused' not in labels
+
+
+def test_tray_tree_marks_only_the_running_project_and_task_with_a_dot(tmp_state_dir):
+    from types import SimpleNamespace
+    m=module()
+    class Menu(list):
+        SEPARATOR=object()
+        def __init__(self,*items): super().__init__(items)
+    def item(text,action,**options):return SimpleNamespace(text=text,action=action,**options)
+    rows=m.group_projects(PROJECTS,[entry(1,7,'Write FAQ'),entry(2,7,'Review',days=1),entry(3,8,'Build selector',days=2)],'ws_123',now=NOW)
+    app.state.update(tracking=True,start_time=NOW.isoformat(),project_id=7,description='Write FAQ',workspace_id='ws_123')
+    with patch.object(m,'tree',return_value=rows),patch.object(app,'_cached_projects',return_value=PROJECTS), \
+         patch.object(app.pystray,'Menu',Menu),patch.object(app.pystray,'MenuItem',side_effect=item):
+        labels=[i.text for i in app.build_menu() if isinstance(i,SimpleNamespace)]
+    assert labels[:5]==['● DPF','  ├─ ● Write FAQ','  └─ Review','Tools','  └─ Build selector']
+    assert sum('●' in l for l in labels)==2
+
+
+def test_tray_icon_colour_follows_project_or_task(tmp_state_dir):
+    projects=[dict(id=7,workspace_id='ws_123',name='DPF',color='#e28c1c',active=True)]
+    with patch.object(app,'_cached_projects',return_value=projects):
+        app.state.update(tracking=True,project_id=7,workspace_id='ws_123',description='x')
+        assert app._tracking_color()=='#e28c1c'
+        app.state.update(project_id=None,description='Stay Safe')
+        first=app._tracking_color()
+        assert first in app.TASK_COLORS and first==app._tracking_color()
+        app.state.update(description='')
+        assert app._tracking_color() is None
 
 
 def test_pending_correction_replaces_remembered_description(tmp_state_dir):
