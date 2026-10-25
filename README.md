@@ -153,7 +153,7 @@ python3 toggl_tray.py install-app --autostart
 
 ## How It Works
 
-- **One file** (`toggl_tray.py`) — no complex project structure
+- **Small Python core** (`toggl_tray.py`) with focused control and editor modules
 - Talks to [Toggl Track API v9](https://engineering.toggl.com/docs/track/) using basic auth
 - Global hotkey uses X11 `XGrabKey` — the key is grabbed at the X server level, so no other app sees `Ctrl+Shift+T`
 - If the API is unreachable, auth is missing, or Toggl rate-limits requests, start/stop actions are saved locally and retried
