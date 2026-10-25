@@ -6,6 +6,7 @@ import socketserver
 import threading
 import time
 import toggl_projects
+import toggl_task_tree
 from pathlib import Path
 
 MAX_MESSAGE = 2 * 1024 * 1024
@@ -113,6 +114,7 @@ def _edit_entry(app, selected, changes):
             with app.state_lock:
                 app.state.update(changes)
                 app.save_state()
+        toggl_task_tree.correct(app, entry.get("start"), changes)
     else:
         entries = getattr(app, "_control_entries", [])
         entry = next((e for e in entries if str(e.get("id")) == str(selected.get("id"))), None)
@@ -127,6 +129,7 @@ def _edit_entry(app, selected, changes):
             with app.state_lock:
                 app.state.update(changes)
                 app.save_state()
+        toggl_task_tree.correct(app, entry.get("start"), changes)
 
 
 def _resume_entry(app, selected):

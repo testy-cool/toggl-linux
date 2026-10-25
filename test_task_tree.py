@@ -289,3 +289,17 @@ def test_running_task_from_previous_account_is_not_suggested_or_remembered(tmp_s
         assert all(not p['tasks'] for p in m.tree(app,now=NOW))
     m.remember(app,dict(app.state))
     assert m.cached_entries(app)==[]
+
+
+def test_corrected_interval_stays_corrected_after_its_upload(tmp_state_dir):
+    m=module()
+    start=NOW.isoformat()
+    app.queue_action('start',start_time=start,description='Old',project_id=7,workspace_id='ws_123')
+    app.queue_action('stop',start_time=start,stop_time=(NOW+timedelta(minutes=1)).isoformat(),description='Old',project_id=7,workspace_id='ws_123')
+    m.remember(app,dict(app.state,tracking=True,start_time=start,description='Old',project_id=7))
+    import toggl_control
+    toggl_control.dispatch(app,'edit-entry',dict(entry=app._pending_as_entries()[0],changes={'description':'Corrected'}))
+    app._save_pending([])  # the corrected interval uploaded and left the queue
+    with patch.object(app,'_cached_projects',return_value=PROJECTS):
+        group=next(p for p in m.tree(app,now=NOW) if p['id']==7)
+    assert [t['description'] for t in group['tasks']]==['Corrected']

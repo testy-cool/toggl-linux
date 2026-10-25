@@ -180,6 +180,25 @@ def tree(app, query='', now=None):
     return group_projects(app._cached_projects(), entries, current.get('workspace_id'), query, now)
 
 
+def correct(app, start, changes):
+    """Apply an interval edit to its cached copy, so the tree never offers the old text."""
+    fields = {k: changes[k] for k in ('description', 'project_id') if k in changes}
+    stamp = _stamp(start)
+    if not fields or stamp is None:
+        return
+    try:
+        with _cache_lock:
+            data = _cache(app)
+            hits = [e for key in ('entries', 'local_entries') for e in data.get(key, [])
+                    if _stamp(e.get('start')) == stamp]
+            if hits:
+                for e in hits:
+                    e.update(fields)
+                _save(app, data)
+    except OSError as error:
+        print(f'Project/task history not saved: {error}', file=app.sys.stderr)
+
+
 def quick_choices(rows, recent=4, frequent=3):
     """Show recent rows plus frequent alternatives without duplicate choices."""
     used = [r for r in rows if r.get('count')]
