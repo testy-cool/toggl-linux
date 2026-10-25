@@ -129,6 +129,10 @@ def dispatch(app, action, payload):
         raise ControlError("Command payload must be an object")
     if action == "snapshot":
         return snapshot(app)
+    if action == "sync":
+        with app.toggle_lock:
+            app._run_sync_cycle()
+        return snapshot(app)
     if action == "refresh":
         last = getattr(app, "_control_refreshed_at", None)
         if last is None or time.monotonic() - last >= 60:
@@ -148,7 +152,7 @@ def dispatch(app, action, payload):
     # Share the tray's mutation lock, including its existing toggle implementation.
     with app.toggle_lock:
         before = dict(app.state)
-        if action in {"edit-current", "switch"} and "expected" in payload:
+        if action in {"edit-current", "switch", "start", "stop"} and "expected" in payload:
             expected = payload["expected"]
             if not isinstance(expected, dict) or any(expected.get(k) != before.get(k)
                     for k in ("tracking", "entry_id", "start_time", "description", "project_id")):

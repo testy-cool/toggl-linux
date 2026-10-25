@@ -231,3 +231,7 @@ While tracking a project, the tray icon uses that project’s saved six-digit he
 ### Vicinae extension
 
 The [`vicinae/`](vicinae/) extension manages the running timer, project selection, descriptions, and today's cloud/pending entries. See its README for installation, upgrades, and removal. It uses the tray's private `control.sock` (owner access only), with the same state and offline queue. The tray must be running; the extension does not require a second API token.
+
+### Edit the current timer quickly
+
+Choose **Open Timer** in the tray to edit the project, description, and start time together. **Save Changes** keeps the same interval; **Start New Task** closes it and starts another. Start/Stop, today's entries, sync, account connection, and panel visibility controls are visible in that window. Vicinae offers the same Start New Task action. See [`docs/timer-scenarios.md`](docs/timer-scenarios.md) for the scenario tree.

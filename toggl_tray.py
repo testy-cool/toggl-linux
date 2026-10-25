@@ -2603,7 +2603,7 @@ def _build_cli_parser():
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("run", help="run the tray app")
     control = sub.add_parser("control", help="control the running tray using its private socket")
-    control.add_argument("action", choices=["snapshot", "refresh", "start", "switch", "stop", "edit-current", "edit-entry"])
+    control.add_argument("action", choices=["snapshot", "refresh", "sync", "start", "switch", "stop", "edit-current", "edit-entry"])
     control.add_argument("payload", nargs="?", default="{}", help="JSON command payload")
     sub.add_parser("status", help="show local state and pending queue")
     doctor = sub.add_parser("doctor", help="diagnose local state, pending queue, token, and optional cloud state")

@@ -186,3 +186,20 @@ def test_external_timer_switch_does_not_display_previous_timer_as_running(tmp_st
     result=control.snapshot(app)
     assert not any(e['id']==101 for e in result['entries'])
     assert 'refresh' in result['warning'].lower()
+
+
+def test_stale_start_button_does_not_stop_or_edit_replacement_timer(tmp_state_dir):
+    before=dict(app.state)
+    app.state.update(tracking=True,entry_id=99,description='Replacement')
+    with patch.object(app,'toggle_tracking') as toggle:
+        with pytest.raises(control.ControlError,match='changed'):
+            control.dispatch(app,'start',{'expected':before,'changes':{'description':'New work'}})
+        toggle.assert_not_called()
+    assert app.state['description']=='Replacement'
+
+
+def test_sync_button_runs_existing_offline_recovery(tmp_state_dir):
+    with patch.object(app,'_run_sync_cycle') as sync:
+        result=control.dispatch(app,'sync',{})
+    sync.assert_called_once_with()
+    assert 'pending_count' in result

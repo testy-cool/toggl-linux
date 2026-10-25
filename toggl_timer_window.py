@@ -1,6 +1,6 @@
 """Native GTK timer editor, with common controls visible in one place."""
 import threading
-from gi.repository import Gtk, GLib, Gdk
+from gi.repository import Gtk, GLib, Gdk, Pango
 import toggl_control
 
 _window = None
@@ -23,6 +23,13 @@ def editor_changes(app, baseline, description, project, start):
     return changes
 
 
+def elapsed_text(app, state):
+    if not state.get("tracking"):
+        return "0:00:00"
+    seconds = (app.datetime.now(app.timezone.utc) - app._coerce_datetime(state["start_time"])).total_seconds()
+    return app._format_duration(seconds)
+
+
 class TimerEditor:
     def __init__(self, app):
         self.app = app
@@ -42,6 +49,7 @@ class TimerEditor:
             getattr(box, "set_margin_" + side)(16)
         self.window.add(box)
         self.status = Gtk.Label(xalign=0)
+        self.status.set_ellipsize(Pango.EllipsizeMode.END)
         self.elapsed = Gtk.Label(xalign=0)
         self.elapsed.get_style_context().add_class("timer-elapsed")
         box.pack_start(self.status, False, False, 0)
@@ -88,7 +96,7 @@ class TimerEditor:
         box.pack_start(self.panel_description, False, False, 0)
         secondary = Gtk.Box(spacing=10)
         for title, callback in (("Today's Entries", lambda *_: app.on_view_today(None, None)),
-                                ("Sync Now", lambda *_: self._act("refresh", {})),
+                                ("Sync Now", lambda *_: self._act("sync", {})),
                                 ("Connection…", lambda *_: app.on_set_token(None, None))):
             button = Gtk.Button(label=title)
             button.connect("clicked", callback)
@@ -130,10 +138,11 @@ class TimerEditor:
 
     def _headers(self, snapshot):
         current = snapshot["state"]
+        self.rendered_state = dict(current)
         name = next((p.get("name") for p in snapshot["projects"] if str(p.get("id")) == str(current.get("project_id"))
                      and str(p.get("workspace_id")) == str(current.get("workspace_id"))), "No project")
-        self.status.set_text(("Tracking · " if current.get("tracking") else "Stopped · ") + str(name))
-        self.elapsed.set_text(self.app.elapsed_str() if current.get("tracking") else "0:00:00")
+        self.status.set_text(("Tracking · " if current.get("tracking") else "Stopped · ") + str(name) + (f" · {snapshot['pending_count']} pending" if snapshot["pending_count"] else ""))
+        self.elapsed.set_text(elapsed_text(self.app, current))
         self.toggle.set_label("Stop Timer" if current.get("tracking") else "Start Timer")
         self.new_task.set_sensitive(bool(current.get("tracking")) and not self.busy)
 
@@ -160,10 +169,10 @@ class TimerEditor:
             self.message.set_text(str(error))
 
     def _toggle(self, *_):
-        if self.app.state.get("tracking"):
-            self._act("stop", {})
+        if self.rendered_state.get("tracking"):
+            self._act("stop", {"expected": self.rendered_state})
         else:
-            self._act("start", {"changes": {"description": self.description.get_text(), "project_id": None if self.project.get_active_id() == "none" else self.project.get_active_id()}})
+            self._act("start", {"expected": self.rendered_state, "changes": {"description": self.description.get_text(), "project_id": None if self.project.get_active_id() == "none" else self.project.get_active_id()}})
 
     def _new_task(self):
         self._act("switch", {"expected": self.baseline, "changes": {"description": self.description.get_text(), "project_id": None if self.project.get_active_id() == "none" else self.project.get_active_id()}})
@@ -176,7 +185,7 @@ class TimerEditor:
         if self.busy:
             return
         self.busy = True
-        for button in (self.toggle, self.new_task, self.save):
+        for button in (self.toggle, self.new_task, self.save, self.description, self.project, self.start):
             button.set_sensitive(False)
         self.message.set_text("Saving…" if action != "refresh" else "Refreshing…")
         def worker():
@@ -193,6 +202,9 @@ class TimerEditor:
             return False
         self.toggle.set_sensitive(True)
         self.save.set_sensitive(True)
+        self.description.set_sensitive(True)
+        self.project.set_sensitive(True)
+        self.start.set_sensitive(bool(self.baseline.get("tracking")))
         if error:
             self.message.set_text(error)
             self.reload.show()
