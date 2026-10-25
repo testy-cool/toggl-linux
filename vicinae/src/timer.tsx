@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Action, ActionPanel, Form, Icon, List, Toast, getPreferenceValues, showToast, useNavigation } from "@vicinae/api";
-import { control, elapsed, Entry, Snapshot, queueCommands, projectChoices } from "./control";
+import { control, elapsed, Entry, Snapshot, queueCommands, projectChoices, timerChanges } from "./control";
 
 function TimerForm({ snapshot, entry, start, newTask, submit }: { snapshot: Snapshot; entry?: Entry; start?: boolean; newTask?: boolean; submit: (action: string, payload: object) => Promise<boolean> }) {
   const { pop } = useNavigation();
@@ -10,7 +10,7 @@ function TimerForm({ snapshot, entry, start, newTask, submit }: { snapshot: Snap
   async function save(values: Form.Values) {
     if (saving) return;
     setSaving(true);
-    const changes = { description: String(values.description || ""), project_id: values.project === "none" ? null : String(values.project) };
+    const changes = timerChanges(current, values);
     const action = newTask ? "switch" : start ? "start" : entry ? "edit-entry" : "edit-current";
     if (await submit(action, entry ? { entry, changes } : { changes, expected: snapshot.state })) pop();
     setSaving(false);
