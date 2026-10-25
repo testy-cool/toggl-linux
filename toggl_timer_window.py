@@ -1,5 +1,6 @@
 """Native GTK timer editor, with common controls visible in one place."""
 import threading
+from copy import deepcopy
 from gi.repository import Gtk, GLib, Gdk, Pango
 import toggl_control
 
@@ -50,7 +51,7 @@ def previous_tasks(app, snapshot):
     for _, entry in sorted(completed, key=lambda item: item[0], reverse=True):
         key = (entry.get("description", ""), str(entry.get("project_id")), str(entry["workspace_id"]))
         if key not in seen:
-            result.append(entry)
+            result.append(deepcopy(entry))
             seen.add(key)
     return result[:20]
 

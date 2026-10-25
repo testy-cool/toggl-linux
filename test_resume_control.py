@@ -1,4 +1,5 @@
 """Resume creates a new interval from an authoritative, completed entry."""
+import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -158,13 +159,17 @@ def test_resume_rejects_unknown_entry_workspace(history):
         toggle.assert_not_called()
 
 
-def test_resume_uses_real_local_socket_without_cloud_calls(history):
+def test_resume_uses_real_cli_and_local_socket_without_cloud_calls(history, capsys):
     app.api_token = None
     server = control.start_server(app)
     try:
         with patch.object(app, "api_get", side_effect=AssertionError("No live API")), \
              patch.object(app, "api_post", side_effect=AssertionError("No live API")):
-            result = control.request(app.STATE_DIR, "resume", {"entry": dict(history), "expected": dict(app.state)})
+            payload = {"entry": dict(history), "expected": dict(app.state)}
+            assert app._run_cli(["control", "resume", json.dumps(payload)]) == 0
+            response = json.loads(capsys.readouterr().out)
+            assert response["ok"] is True
+            result = response["result"]
         assert result["state"]["tracking"] is True
         assert result["state"]["description"] == "Previous task"
         assert result["state"]["workspace_id"] == "history-ws"
@@ -185,3 +190,12 @@ def test_resume_preserves_existing_open_pending_interval(history):
     assert [op["kind"] for op in operations] == ["create", "open"]
     assert (operations[0]["workspace_id"], operations[0]["project_id"], operations[0]["description"]) == ("current-ws", 8, "Pending current")
     assert (operations[1]["workspace_id"], operations[1]["project_id"], operations[1]["description"]) == ("history-ws", 7, "Previous task")
+
+
+def test_resume_cli_forwards_action_and_json_payload_to_socket_client(history, capsys):
+    payload = {"entry": dict(history), "expected": dict(app.state)}
+    response = {"state": {"tracking": True, "description": "Previous task"}}
+    with patch.object(control, "request", return_value=response) as request:
+        assert app._run_cli(["control", "resume", json.dumps(payload)]) == 0
+    request.assert_called_once_with(app.STATE_DIR, "resume", payload)
+    assert json.loads(capsys.readouterr().out) == {"ok": True, "result": response}

@@ -114,6 +114,17 @@ def test_resume_request_fetches_history_when_no_previous_tasks_are_cached():
     assert view.pending_resume_picker is True
 
 
+def test_resume_selection_keeps_the_details_displayed_when_the_chooser_opened():
+    entry = dict(id=1, start='2026-10-25T08:00:00Z', stop='2026-10-25T09:00:00Z',
+                 duration=3600, description='Displayed task', project_id=7, workspace_id=99,
+                 _pending_indexes=[0, 1])
+    selected = editor.previous_tasks(app, {'entries': [entry]})[0]
+    entry['description'] = 'Changed in Vicinae'
+    entry['_pending_indexes'].append(2)
+    assert selected['description'] == 'Displayed task'
+    assert selected['_pending_indexes'] == [0, 1]
+
+
 def test_unchanged_fields_make_no_request():
     state=dict(description="Work",project_id=7,tracking=False)
     assert editor.editor_changes(app,state,"Work","7","")=={}
