@@ -36,6 +36,25 @@ def elapsed_text(app, state):
     return app._format_duration(seconds)
 
 
+def previous_tasks(app, snapshot):
+    completed = []
+    for entry in snapshot["entries"]:
+        if not entry.get("stop") or entry.get("duration", 0) < 0 or not entry.get("workspace_id"):
+            continue
+        try:
+            stamp = app._coerce_datetime(entry["start"]).timestamp()
+        except (ValueError, TypeError, KeyError):
+            continue
+        completed.append((stamp, entry))
+    result, seen = [], set()
+    for _, entry in sorted(completed, key=lambda item: item[0], reverse=True):
+        key = (entry.get("description", ""), str(entry.get("project_id")), str(entry["workspace_id"]))
+        if key not in seen:
+            result.append(entry)
+            seen.add(key)
+    return result[:20]
+
+
 class TimerEditor:
     def __init__(self, app):
         self.app = app
@@ -99,6 +118,9 @@ class TimerEditor:
         today = Gtk.Button(label="Today's Entries")
         today.connect("clicked", lambda *_: app.on_view_today(None, None))
         secondary.pack_start(today, True, True, 0)
+        self.resume = Gtk.Button(label="Resume Previous Task")
+        self.resume.connect("clicked", lambda *_: self._resume_previous())
+        secondary.pack_start(self.resume, True, True, 0)
         self.more = Gtk.MenuButton(label="More")
         menu = Gtk.Menu()
         menu.get_style_context().add_class("toggl-editor")
@@ -194,6 +216,54 @@ class TimerEditor:
     def _new_task(self):
         self._act("switch", {"expected": self.baseline, "changes": {"description": self.description.get_text(), "project_id": None if self.project.get_active_id() == "none" else self.project.get_active_id()}})
 
+    def _resume_previous(self):
+        if self.busy:
+            return
+        snapshot = toggl_control.snapshot(self.app)
+        if not previous_tasks(self.app, snapshot):
+            self.pending_resume_picker = True
+            self._act("refresh", {})
+        else:
+            self._show_resume_picker(snapshot)
+
+    def _show_resume_picker(self, snapshot):
+        entries = previous_tasks(self.app, snapshot)
+        if not entries:
+            self.message.set_text(snapshot.get("warning") or "No completed tasks from today to resume yet.")
+            return
+        dialog = Gtk.Dialog(title="Resume Previous Task", transient_for=self.window, modal=True)
+        dialog.get_style_context().add_class("toggl-editor")
+        dialog.set_default_size(560, -1)
+        dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Start Again", Gtk.ResponseType.OK)
+        content = dialog.get_content_area()
+        content.set_border_width(16)
+        content.set_spacing(12)
+        label = Gtk.Label(label="Choose a task from today. Starting again creates a new interval.", xalign=0)
+        label.set_line_wrap(True)
+        content.pack_start(label, False, False, 0)
+        picker = Gtk.ComboBoxText()
+        for index, entry in enumerate(entries):
+            project = next((p.get("name") for p in snapshot["projects"]
+                            if str(p["id"]) == str(entry.get("project_id"))
+                            and str(p.get("workspace_id")) == str(entry["workspace_id"])),
+                           "No project" if entry.get("project_id") is None else "Saved project")
+            picker.append(str(index), f"{entry.get('description') or 'No description'} · {project}")
+        for cell in picker.get_cells():
+            cell.set_property("ellipsize", Pango.EllipsizeMode.END)
+            cell.set_property("width-chars", 36)
+        picker.set_active(0)
+        content.pack_start(picker, False, False, 0)
+        if self.dirty:
+            note = Gtk.Label(label="Starting again replaces the unsaved draft in this window.", xalign=0)
+            note.set_line_wrap(True)
+            content.pack_start(note, False, False, 0)
+        dialog.show_all()
+        response = dialog.run()
+        selected = picker.get_active()
+        dialog.destroy()
+        if response == Gtk.ResponseType.OK and selected >= 0:
+            self._act("resume", {"entry": entries[selected], "expected": snapshot["state"]})
+
     def _panel(self, kind, active):
         if self.updating:
             return
@@ -215,7 +285,7 @@ class TimerEditor:
             return
         self.busy = True
         self.pending_action = action
-        for button in (self.toggle, self.new_task, self.save, self.description, self.project, self.start):
+        for button in (self.toggle, self.new_task, self.save, self.resume, self.description, self.project, self.start):
             button.set_sensitive(False)
         self.message.set_text("Saving…" if action != "refresh" else "Refreshing…")
         def worker():
@@ -232,6 +302,7 @@ class TimerEditor:
             return False
         self.toggle.set_sensitive(True)
         self.save.set_sensitive(True)
+        self.resume.set_sensitive(True)
         self.description.set_sensitive(True)
         self.project.set_sensitive(True)
         self.start.set_sensitive(bool(self.baseline.get("tracking")))
@@ -250,6 +321,10 @@ class TimerEditor:
                 self.reload.show()
         else:
             self._load(result)
+        if getattr(self, "pending_resume_picker", False):
+            self.pending_resume_picker = False
+            if not error:
+                self._show_resume_picker(result)
         return False
 
     def _key(self, _, event):

@@ -235,3 +235,5 @@ The [`vicinae/`](vicinae/) extension manages the running timer, project selectio
 ### Edit the current timer quickly
 
 Choose **Open Timer** in the tray to edit the project, description, and start time together. **Save Changes** (Enter or Ctrl+Enter) keeps the same interval; **Start New Task** (Ctrl+Shift+Enter) closes it and starts another. Start time includes the date; HH:MM means today, while a full date and time can correct an older interval. Stop and sync preserve unsaved drafts. Start/Stop and today's entries stay visible; **More** holds sync, project refresh, account connection, and panel visibility in the same window. Vicinae offers the same Start New Task action. See [`docs/timer-scenarios.md`](docs/timer-scenarios.md) for the scenario tree.
+
+Use **Resume Previous Task** in the timer window, or **Start Again** on a completed Today entry in Vicinae, to return to earlier work. The previous description, project and workspace are copied into a new interval; a running timer is stopped first. Today's cached and pending tasks are supported, including offline. Resume never changes the earlier interval.
