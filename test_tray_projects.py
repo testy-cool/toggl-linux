@@ -17,9 +17,11 @@ def test_tray_project_choices_include_no_project_and_current_workspace_only(tmp_
     with patch.object(app, '_cached_projects', return_value=PROJECTS), \
          patch.object(app.pystray, 'MenuItem', side_effect=item):
         items = app._tray_project_items()
-    assert [i.text for i in items if isinstance(i, SimpleNamespace) and getattr(i, 'radio', False)] == ['No project', 'DPF']
-    assert items[0].checked(None) is True
-    assert items[1].checked(None) is False
+    assert [i.text for i in items if isinstance(i, SimpleNamespace) and getattr(i, 'radio', False)] == ['No project']
+    assert 'DPF' in [i.text for i in items if isinstance(i, SimpleNamespace)]
+    assert 'Other workspace' not in [i.text for i in items if isinstance(i, SimpleNamespace)]
+    no_project = next(i for i in items if isinstance(i, SimpleNamespace) and i.text == 'No project')
+    assert no_project.checked(None) is True
 
 
 def test_tray_project_choice_updates_pending_timer_without_splitting_it(tmp_state_dir):

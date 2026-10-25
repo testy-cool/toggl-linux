@@ -156,3 +156,22 @@ def test_remembered_correction_overrides_older_cloud_description(tmp_state_dir):
     with patch.object(app,'_cached_projects',return_value=PROJECTS):
         group=next(p for p in m.tree(app,now=NOW) if p['id']==7)
     assert [t['description'] for t in group['tasks']]==['Corrected']
+
+
+def test_task_switch_closes_offline_interval_and_creates_distinct_pending_start(tmp_state_dir):
+    m=module()
+    app.api_token=None
+    app.state.update(tracking=True,start_time=(app.datetime.now(app.timezone.utc)-app.timedelta(minutes=5)).isoformat(),entry_id=None,description='Old task',project_id=7)
+    app.queue_action('start',start_time=app.state['start_time'],description='Old task',project_id=7,workspace_id='ws_123')
+    original=app.state['start_time']
+    with patch.object(app,'_cached_projects',return_value=PROJECTS),patch.object(app,'update_tray_icon'),patch.object(app,'_play_sound'),patch.object(app,'_notify'):
+        m.select_task(app,7,'Next task',toggl_projects.context(app),dict(app.state))
+    operations=app._pending_operations(app._load_pending())
+    assert app.state['tracking'] is True
+    assert app.state['description']=='Next task'
+    assert len(operations)==2
+    assert operations[0]['description']=='Old task'
+    assert operations[0]['start_time']==original
+    assert operations[0]['stop_time'] is not None
+    assert operations[1]['description']=='Next task'
+    assert operations[1].get('stop_time') is None

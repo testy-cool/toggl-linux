@@ -16,6 +16,10 @@ def _cache(app):
     data = app._load_json_with_backup(app.STATE_DIR / 'task-history.json', {})
     if not isinstance(data, dict) or data.get('context') != toggl_projects.context(app):
         return {}
+    for key in ('entries', 'local_entries'):
+        data[key] = [e for e in data.get(key, []) if isinstance(e, dict)] if isinstance(data.get(key), list) else []
+    if not isinstance(data.get('fetched_at', 0), (int, float)):
+        data['fetched_at'] = 0
     return data
 
 

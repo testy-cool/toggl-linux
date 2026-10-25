@@ -18,6 +18,7 @@ import subprocess
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+import toggl_task_tree
 import requests
 from requests.auth import HTTPBasicAuth
 from PIL import Image
@@ -770,6 +771,8 @@ def _run_sync_cycle(now=None):
     _health_check()
     if icon_ref:
         _refresh_projects()
+        if toggl_task_tree.refresh(sys.modules[__name__]):
+            GLib.idle_add(_refresh_project_menu)
     _record_sync_success()
 
 
@@ -1219,6 +1222,7 @@ def toggle_tracking(*_args, prompt_for_description=True):
         )
 
         if is_tracking:
+            toggl_task_tree.remember(sys.modules[__name__], dict(state))
             # Stop
             now = datetime.now(timezone.utc).isoformat()
             if (
@@ -1988,9 +1992,10 @@ def on_set_token(icon, item):
         token = _gtk_input_dialog("API Token", "Enter Toggl API token:", placeholder="hex token")
         if token:
             global api_token
-            api_token = token
-            store_api_token(token)
-            _init_workspace()
+            with toggle_lock:
+                api_token = token
+                store_api_token(token)
+                _init_workspace()
 
     threading.Thread(target=_do, daemon=True).start()
 
@@ -2042,6 +2047,7 @@ def _project_choice_action(project_id, context):
 def on_refresh_tray_projects(_icon, _item):
     def refresh():
         _refresh_projects(force=True)
+        toggl_task_tree.refresh(sys.modules[__name__], force=True)
         GLib.idle_add(_refresh_project_menu)
     threading.Thread(target=refresh, daemon=True).start()
 
@@ -2061,19 +2067,66 @@ def on_manage_projects(_icon, _item):
     GLib.idle_add(toggl_project_window.manage, sys.modules[__name__])
 
 
+def on_find_project_task(_icon, _item):
+    import toggl_task_picker
+    GLib.idle_add(toggl_task_picker.show, sys.modules[__name__])
+
+
+def _task_choice_action(project_id, description, context):
+    def selected(_icon, _item):
+        with state_lock:
+            expected = dict(state)
+        def start():
+            try:
+                toggl_task_tree.select_task(sys.modules[__name__], project_id, description, context, expected)
+            except Exception as error:
+                _notify(f"Task not started: {error}")
+        threading.Thread(target=start, daemon=True).start()
+    return selected
+
+
 def _tray_project_items():
+    import toggl_projects
     with state_lock:
         current = dict(state)
+    context = toggl_projects.context(sys.modules[__name__])
     projects = [p for p in _cached_projects() if isinstance(p, dict)
                 and str(p.get("workspace_id")) == str(current.get("workspace_id"))
                 and (p.get("active") is not False or str(p.get("id")) == str(current.get("project_id")))]
+    groups = toggl_task_tree.tree(sys.modules[__name__])
     def choice(project_id, name):
         return pystray.MenuItem(name, _project_choice_action(project_id, current), radio=True,
                                checked=lambda _item: str(state.get("workspace_id")) == str(current.get("workspace_id"))
                                and str(state.get("project_id")) == str(project_id))
-    items = [choice(None, "No project")]
-    for project in sorted(projects, key=lambda p: (p.get("name") or "").casefold()):
-        items.append(choice(project["id"], project.get("name") or str(project["id"])))
+    def project_item(project):
+        children = [choice(project['id'], 'Use this project')]
+        recent, frequent = toggl_task_tree.quick_choices(project['tasks'], recent=4, frequent=3)
+        for label, tasks in (('Recent tasks', recent), ('Frequent tasks', frequent)):
+            if tasks:
+                children.extend((pystray.Menu.SEPARATOR, pystray.MenuItem(label, None, enabled=False)))
+            for task in tasks:
+                name = ' '.join(task['description'].split()) or 'No description'
+                if len(name) > 70:
+                    name = name[:67]+'…'
+                children.append(pystray.MenuItem('Start: '+name,
+                    _task_choice_action(project['id'], task['description'], context)))
+        children.extend((pystray.Menu.SEPARATOR, pystray.MenuItem('Find Project or Task…', on_find_project_task)))
+        return pystray.MenuItem(project.get('name') or str(project['id']), pystray.Menu(*children))
+    items = [pystray.MenuItem('Find Project or Task…', on_find_project_task)]
+    recent, frequent = toggl_task_tree.quick_choices(groups)
+    for title, rows in (('Recent projects', recent), ('Frequent projects', frequent)):
+        if rows:
+            items.extend((pystray.Menu.SEPARATOR, pystray.MenuItem(title, None, enabled=False)))
+            items.extend(project_item(p) for p in rows)
+    if recent or frequent:
+        items.append(pystray.Menu.SEPARATOR)
+    items.append(choice(None, 'No project'))
+    # Unused projects stay directly available until the list gets large.
+    remaining = [p for p in groups if p['id'] is not None and p not in recent+frequent]
+    if len(remaining) <= 8:
+        items.extend(project_item(p) for p in remaining)
+    else:
+        items.append(pystray.MenuItem('All projects', pystray.Menu(*(project_item(p) for p in remaining))))
     if current.get("project_id") is not None and not any(str(p["id"]) == str(current["project_id"]) for p in projects):
         items.append(choice(current["project_id"], "Current project (not cached)"))
     items.extend((pystray.Menu.SEPARATOR,
@@ -2082,7 +2135,7 @@ def _tray_project_items():
                                    enabled=current.get("project_id") is not None and any(
                                        str(p["id"]) == str(current["project_id"]) for p in projects)),
                   pystray.MenuItem("Manage Projects…", on_manage_projects),
-                  pystray.MenuItem("Refresh projects", on_refresh_tray_projects)))
+                  pystray.MenuItem("Refresh projects and tasks", on_refresh_tray_projects)))
     return items
 
 
@@ -2876,6 +2929,7 @@ def main():
         _init_workspace()
 
     _refresh_projects()
+    toggl_task_tree.refresh(sys.modules[__name__])
 
     import toggl_control
     control_server = toggl_control.start_server(sys.modules[__name__])
