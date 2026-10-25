@@ -172,7 +172,7 @@ class TimerEditor:
         if self.rendered_state.get("tracking"):
             self._act("stop", {"expected": self.rendered_state})
         else:
-            self._act("start", {"expected": self.rendered_state, "changes": {"description": self.description.get_text(), "project_id": None if self.project.get_active_id() == "none" else self.project.get_active_id()}})
+            self._act("start", {"expected": self.baseline, "changes": {"description": self.description.get_text(), "project_id": None if self.project.get_active_id() == "none" else self.project.get_active_id()}})
 
     def _new_task(self):
         self._act("switch", {"expected": self.baseline, "changes": {"description": self.description.get_text(), "project_id": None if self.project.get_active_id() == "none" else self.project.get_active_id()}})

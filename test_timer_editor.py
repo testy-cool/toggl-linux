@@ -33,6 +33,7 @@ def test_start_button_uses_the_displayed_state_and_supplies_guard():
     view.app=app
     app.state.update(tracking=True,entry_id=99)
     view.rendered_state=dict(tracking=False,entry_id=None,description="",project_id=None,start_time=None)
+    view.baseline=dict(view.rendered_state)
     view.description=MagicMock();view.description.get_text.return_value="New work"
     view.project=MagicMock();view.project.get_active_id.return_value="none"
     view._act=MagicMock()
@@ -51,3 +52,18 @@ def test_editor_fields_are_frozen_while_request_is_pending():
         view._act('edit-current',{})
     for name in ['description','project','start']:
         getattr(view,name).set_sensitive.assert_called_once_with(False)
+
+
+def test_start_with_dirty_fields_guards_the_state_those_fields_came_from():
+    from unittest.mock import MagicMock
+    view=editor.TimerEditor.__new__(editor.TimerEditor)
+    view.app=app
+    view.baseline=dict(tracking=False,entry_id=None,start_time=None,description="Old task",project_id=None)
+    view.rendered_state=dict(view.baseline,description="Replacement task")
+    app.state.update(view.rendered_state)
+    view.description=MagicMock();view.description.get_text.return_value="Old task edited before replacement"
+    view.project=MagicMock();view.project.get_active_id.return_value="none"
+    view._act=MagicMock()
+    view._toggle()
+    assert view._act.call_args.args[0]=='start'
+    assert view._act.call_args.args[1]['expected']==view.baseline
