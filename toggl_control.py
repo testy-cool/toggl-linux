@@ -31,11 +31,18 @@ def snapshot(app):
 
 def _changes(app, values, context=None):
     context = app.state if context is None else context
-    if not isinstance(values, dict) or set(values) - {"description", "project_id"}:
-        raise ControlError("Only description and project may be edited")
+    if not isinstance(values, dict) or set(values) - {"description", "project_id", "start"}:
+        raise ControlError("Only description, project, and current start time may be edited")
     if "description" in values and (not isinstance(values["description"], str) or len(values["description"]) > 10000):
         raise ControlError("Description must be text of at most 10000 characters")
     result = dict(values)
+    if "start" in result:
+        try:
+            dt = app._parse_iso(result["start"]) if isinstance(result["start"], str) else None
+        except ValueError:
+            dt = None
+        if dt is None or dt.tzinfo is None or dt > app.datetime.now(app.timezone.utc):
+            raise ControlError("Start time must be a valid timestamp in the past")
     if result.get("project_id") is not None:
         if str(result["project_id"]) == str(context.get("project_id")):
             result["project_id"] = context["project_id"]
@@ -52,10 +59,17 @@ def _changes(app, values, context=None):
 def _edit_current(app, changes):
     with app.state_lock:
         current = dict(app.state)
+    if "start" in changes and not current.get("tracking"):
+        raise ControlError("Start time can only be changed while tracking")
+    remote_changes = dict(changes)
+    local_changes = dict(changes)
+    if "start" in changes:
+        remote_changes["duration"] = -int(app._parse_iso(changes["start"]).timestamp())
+        local_changes["start_time"] = local_changes.pop("start")
     if current.get("tracking") and current.get("entry_id"):
         if not app.api_token or app._rate_limit_active() or app._request_budget_exhausted():
             raise ControlError("Cloud entry cannot be edited right now; retry when connected")
-        app.update_entry(current["workspace_id"], current["entry_id"], changes)
+        app.update_entry(current["workspace_id"], current["entry_id"], remote_changes)
     if current.get("tracking") and not current.get("entry_id"):
         with app.pending_lock:
             queue = app._load_pending()
@@ -64,16 +78,18 @@ def _edit_current(app, changes):
             if not candidates:
                 raise ControlError("Pending timer changed; refresh before editing")
             for idx in candidates[-1]["indexes"]:
-                queue[idx].update(changes)
+                queue[idx].update(local_changes)
             app._save_pending(queue)
     with app.state_lock:
         if any(app.state.get(k) != current.get(k) for k in ("tracking", "entry_id", "start_time")):
             raise ControlError("Timer changed while saving; refresh before editing again")
-        app.state.update(changes)
+        app.state.update(local_changes)
         app.save_state()
 
 
 def _edit_entry(app, selected, changes):
+    if isinstance(changes, dict) and "start" in changes:
+        raise ControlError("Use the current timer editor to change its start time")
     if not isinstance(selected, dict):
         raise ControlError("Entry is required")
     if selected.get("_offline"):
@@ -113,6 +129,10 @@ def dispatch(app, action, payload):
         raise ControlError("Command payload must be an object")
     if action == "snapshot":
         return snapshot(app)
+    if action == "sync":
+        with app.toggle_lock:
+            app._run_sync_cycle()
+        return snapshot(app)
     if action == "refresh":
         last = getattr(app, "_control_refreshed_at", None)
         if last is None or time.monotonic() - last >= 60:
@@ -127,17 +147,25 @@ def dispatch(app, action, payload):
             except Exception:
                 app._control_warning = "Cloud refresh unavailable; showing cached and pending entries"
         return snapshot(app)
-    if action not in {"start", "stop", "edit-current", "edit-entry"}:
+    if action not in {"start", "switch", "stop", "edit-current", "edit-entry"}:
         raise ControlError("Unknown action")
     # Share the tray's mutation lock, including its existing toggle implementation.
     with app.toggle_lock:
         before = dict(app.state)
-        if action == "edit-current" and "expected" in payload:
+        if action in {"edit-current", "switch", "start", "stop"} and "expected" in payload:
             expected = payload["expected"]
             if not isinstance(expected, dict) or any(expected.get(k) != before.get(k)
                     for k in ("tracking", "entry_id", "start_time", "description", "project_id")):
                 raise ControlError("Timer changed; refresh before editing")
-        if action == "start":
+        if action == "switch":
+            changes = _changes(app, payload.get("changes", {}))
+            if "start" in changes:
+                raise ControlError("A new task starts now; edit the current timer to adjust its start")
+            if app.state.get("tracking"):
+                app.toggle_tracking(prompt_for_description=False)
+            _edit_current(app, changes)
+            app.toggle_tracking(prompt_for_description=False)
+        elif action == "start":
             if not app.state.get("tracking"):
                 _edit_current(app, _changes(app, payload.get("changes", {})))
                 app.toggle_tracking(prompt_for_description=False)

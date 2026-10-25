@@ -419,7 +419,14 @@ def _load_pending():
 
 
 def _save_pending(queue):
-    _atomic_write_text(PENDING_FILE, json.dumps(queue, indent=2))
+    if queue:
+        _atomic_write_text(PENDING_FILE, json.dumps(queue, indent=2))
+    else:
+        # Persist completion before removing the recovery copy. Callers hold
+        # pending_lock, so a newly queued action cannot be removed here.
+        _atomic_write_text(PENDING_FILE, "[]", backup=False)
+        _backup_path(PENDING_FILE).unlink(missing_ok=True)
+        PENDING_FILE.unlink(missing_ok=True)
 
 
 def queue_action(action, **kwargs):
@@ -754,9 +761,7 @@ def _run_sync_cycle(now=None):
         if _request_budget_exhausted():
             _notify(REQUEST_BUDGET_SYNC_MESSAGE)
         else:
-            left = sync_pending()
-            if left == 0 and PENDING_FILE.exists():
-                PENDING_FILE.unlink(missing_ok=True)
+            sync_pending()
     elif api_token and now - _last_cloud_poll_at >= CLOUD_POLL_INTERVAL_SECONDS:
         if _request_budget_remaining() > REQUEST_BUDGET_BACKGROUND_RESERVE:
             _sync_cloud_state()
@@ -1192,6 +1197,7 @@ def toggle_tracking(*_args, prompt_for_description=True):
     global icon_ref
 
     if not toggle_lock.acquire(blocking=False):
+        _notify("Timer busy syncing or saving — try Start/Stop again")
         return
 
     try:
@@ -1226,18 +1232,21 @@ def toggle_tracking(*_args, prompt_for_description=True):
                     _notify(_local_save_reason("stop"))
                     queue_action("stop", entry_id=entry_id,
                                  start_time=start_time, stop_time=now,
-                                 description=description)
+                                 description=description, project_id=project_id,
+                                 workspace_id=workspace_id)
                 except Exception as e:
                     print(f"Stop failed, queuing offline: {e}", file=sys.stderr)
                     _notify(_local_save_reason("stop"))
                     queue_action("stop", entry_id=entry_id,
                                  start_time=start_time, stop_time=now,
-                                 description=description)
+                                 description=description, project_id=project_id,
+                                 workspace_id=workspace_id)
             else:
                 _notify(_local_save_reason("stop"))
                 queue_action("stop", entry_id=entry_id,
                              start_time=start_time, stop_time=now,
-                             description=description)
+                             description=description, project_id=project_id,
+                             workspace_id=workspace_id)
             with state_lock:
                 state["tracking"] = False
                 state["entry_id"] = None
@@ -1455,6 +1464,11 @@ def on_toggle_panel_description(icon, item):
     _update_panel_timer_label()
     if icon_ref:
         _set_tray_menu(build_menu())
+
+
+def on_open_timer(icon, item):
+    import toggl_timer_window
+    GLib.idle_add(toggl_timer_window.show, sys.modules[__name__])
 
 
 def on_toggle(icon, item):
@@ -1992,6 +2006,7 @@ def on_quit(icon, item):
 def build_menu():
     toggle_label = "Stop tracking" if state["tracking"] else "Start tracking"
     return pystray.Menu(
+        pystray.MenuItem("Open Timer", on_open_timer, default=True),
         pystray.MenuItem(
             "Show timer in panel",
             on_toggle_panel_timer,
@@ -2002,7 +2017,7 @@ def build_menu():
             on_toggle_panel_description,
             checked=lambda _item: get_panel_description_enabled(),
         ),
-        pystray.MenuItem(toggle_label, on_toggle, default=True),
+        pystray.MenuItem(toggle_label, on_toggle),
         pystray.MenuItem("Edit description...", on_set_description),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Today's entries", on_view_today),
@@ -2399,6 +2414,7 @@ def _cli_stop(_args):
             start_time=op.get("start_time"),
             stop_time=now,
             description=op.get("description", ""),
+            project_id=op.get("project_id"),
             workspace_id=op.get("workspace_id"),
         )
         print(f"Stopped open local pending entry at {_format_local_dt(now)}.")
@@ -2425,6 +2441,8 @@ def _cli_stop(_args):
             start_time=start_time,
             stop_time=now,
             description=description,
+            project_id=state.get("project_id"),
+            workspace_id=workspace_id,
         )
 
     state["tracking"] = False
@@ -2486,8 +2504,6 @@ def _cli_sync(_args):
         print("No API token; cannot sync pending entries.", file=sys.stderr)
         return 2
     remaining = sync_pending()
-    if remaining == 0 and PENDING_FILE.exists():
-        PENDING_FILE.unlink(missing_ok=True)
     _sync_cloud_state()
     print(f"Sync complete. Pending actions remaining: {remaining}")
     return 0
@@ -2597,7 +2613,7 @@ def _build_cli_parser():
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("run", help="run the tray app")
     control = sub.add_parser("control", help="control the running tray using its private socket")
-    control.add_argument("action", choices=["snapshot", "refresh", "start", "stop", "edit-current", "edit-entry"])
+    control.add_argument("action", choices=["snapshot", "refresh", "sync", "start", "switch", "stop", "edit-current", "edit-entry"])
     control.add_argument("payload", nargs="?", default="{}", help="JSON command payload")
     sub.add_parser("status", help="show local state and pending queue")
     doctor = sub.add_parser("doctor", help="diagnose local state, pending queue, token, and optional cloud state")

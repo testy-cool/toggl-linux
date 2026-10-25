@@ -66,3 +66,17 @@ test('historical entry forms offer projects from that entry workspace', () => {
   ]};
   assert.deepEqual(projectChoices(snapshot, {workspace_id:2, project_id:9}).map(p => p.id), [8,9]);
 });
+
+test('editing a pending description preserves a project that was not supplied', () => {
+  const { timerChanges } = compiled.exports;
+  assert.deepEqual(timerChanges({description:'Before'}, {description:'After', project:'none'}), {description:'After'});
+});
+
+test('form edits send an explicitly changed project but omit unchanged values', () => {
+  const { timerChanges } = compiled.exports;
+  const entry = {description:'Work', project_id:7};
+  assert.deepEqual(timerChanges(entry, {description:'Work', project:'7'}), {});
+  assert.deepEqual(timerChanges(entry, {description:'Work', project:'none'}), {project_id:null});
+  assert.deepEqual(timerChanges(entry, {description:'Work', project:'8'}), {project_id:'8'});
+  assert.deepEqual(timerChanges(entry, {description:'Renamed'}), {description:'Renamed'});
+});

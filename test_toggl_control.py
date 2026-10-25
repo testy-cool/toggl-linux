@@ -137,6 +137,37 @@ def test_stopped_entry_snapshot_has_a_stop_time(tmp_state_dir):
     assert result["entries"][0]["duration"]>=0
 
 
+def test_switch_task_closes_previous_interval_and_starts_new_offline(tmp_state_dir):
+    app.api_token=None
+    with patch.object(app,"_play_sound"),patch.object(app,"_notify"):
+        control.dispatch(app,"start",{"changes":{"description":"First"}})
+        original=dict(app.state)
+        result=control.dispatch(app,"switch",{"expected":original,"changes":{"description":"Next"}})
+    assert result["state"]["tracking"] is True
+    assert result["state"]["description"]=="Next"
+    assert result["state"]["start_time"]!=original["start_time"]
+    assert [item['action'] for item in app._load_pending()]==['start','stop','start']
+    assert app._pending_as_entries()[0]['description']=='First'
+
+
+def test_edit_start_time_updates_pending_start_and_running_timer(tmp_state_dir):
+    app.api_token=None
+    app.state.update(tracking=True,start_time="2026-10-25T10:00:00+00:00",description="Work")
+    app.queue_action("start",start_time=app.state["start_time"],description="Work")
+    control.dispatch(app,"edit-current",{"changes":{"start":"2026-10-25T09:00:00+00:00"}})
+    assert app.state["start_time"]=="2026-10-25T09:00:00+00:00"
+    assert app._load_pending()[0]["start_time"]==app.state["start_time"]
+
+
+def test_invalid_start_time_does_not_partially_edit_description(tmp_state_dir):
+    app.state.update(tracking=True,description="Original",entry_id=5,start_time="2026-10-25T10:00:00+00:00")
+    with patch.object(app,"update_entry") as update:
+        with pytest.raises(control.ControlError):
+            control.dispatch(app,"edit-current",{"changes":{"start":"bad","description":"Changed"}})
+        update.assert_not_called()
+    assert app.state['description']=='Original'
+
+
 def test_tray_stop_closes_cached_running_entry(tmp_state_dir):
     app.state.update(tracking=True,entry_id=101,start_time="2026-10-25T10:00:00+00:00",description="Work")
     app._control_entries=[{"id":101,"start":app.state["start_time"],"stop":None,"duration":-1,"description":"Work"}]
@@ -155,3 +186,20 @@ def test_external_timer_switch_does_not_display_previous_timer_as_running(tmp_st
     result=control.snapshot(app)
     assert not any(e['id']==101 for e in result['entries'])
     assert 'refresh' in result['warning'].lower()
+
+
+def test_stale_start_button_does_not_stop_or_edit_replacement_timer(tmp_state_dir):
+    before=dict(app.state)
+    app.state.update(tracking=True,entry_id=99,description='Replacement')
+    with patch.object(app,'toggle_tracking') as toggle:
+        with pytest.raises(control.ControlError,match='changed'):
+            control.dispatch(app,'start',{'expected':before,'changes':{'description':'New work'}})
+        toggle.assert_not_called()
+    assert app.state['description']=='Replacement'
+
+
+def test_sync_button_runs_existing_offline_recovery(tmp_state_dir):
+    with patch.object(app,'_run_sync_cycle') as sync:
+        result=control.dispatch(app,'sync',{})
+    sync.assert_called_once_with()
+    assert 'pending_count' in result

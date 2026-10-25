@@ -49,3 +49,15 @@ export function projectChoices(snapshot: Snapshot, current: { workspace_id?: num
   return snapshot.projects.filter(p => String(p.workspace_id) === String(workspace)
     && (p.active !== false || String(p.id) === String(current.project_id)));
 }
+
+export function timerChanges(current: Pick<Entry, "description" | "project_id">, values: { description?: unknown; project?: unknown }) {
+  const changes: { description?: string; project_id?: string | null } = {};
+  const description = String(values.description ?? "");
+  if (description !== (current.description || "")) changes.description = description;
+  if (values.project !== undefined) {
+    const project = values.project === "none" ? null : String(values.project);
+    const previous = current.project_id == null ? null : String(current.project_id);
+    if (project !== previous) changes.project_id = project;
+  }
+  return changes;
+}

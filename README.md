@@ -153,7 +153,7 @@ python3 toggl_tray.py install-app --autostart
 
 ## How It Works
 
-- **One file** (`toggl_tray.py`) — no complex project structure
+- **Small Python core** (`toggl_tray.py`) with focused control and editor modules
 - Talks to [Toggl Track API v9](https://engineering.toggl.com/docs/track/) using basic auth
 - Global hotkey uses X11 `XGrabKey` — the key is grabbed at the X server level, so no other app sees `Ctrl+Shift+T`
 - If the API is unreachable, auth is missing, or Toggl rate-limits requests, start/stop actions are saved locally and retried
@@ -231,3 +231,7 @@ While tracking a project, the tray icon uses that project’s saved six-digit he
 ### Vicinae extension
 
 The [`vicinae/`](vicinae/) extension manages the running timer, project selection, descriptions, and today's cloud/pending entries. See its README for installation, upgrades, and removal. It uses the tray's private `control.sock` (owner access only), with the same state and offline queue. The tray must be running; the extension does not require a second API token.
+
+### Edit the current timer quickly
+
+Choose **Open Timer** in the tray to edit the project, description, and start time together. **Save Changes** (Enter or Ctrl+Enter) keeps the same interval; **Start New Task** (Ctrl+Shift+Enter) closes it and starts another. Start time includes the date; HH:MM means today, while a full date and time can correct an older interval. Stop and sync preserve unsaved drafts. Start/Stop and today's entries stay visible; **More** holds sync, project refresh, account connection, and panel visibility in the same window. Vicinae offers the same Start New Task action. See [`docs/timer-scenarios.md`](docs/timer-scenarios.md) for the scenario tree.

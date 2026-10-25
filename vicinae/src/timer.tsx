@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Action, ActionPanel, Form, Icon, List, Toast, getPreferenceValues, showToast, useNavigation } from "@vicinae/api";
-import { control, elapsed, Entry, Snapshot, queueCommands, projectChoices } from "./control";
+import { control, elapsed, Entry, Snapshot, queueCommands, projectChoices, timerChanges } from "./control";
 
-function TimerForm({ snapshot, entry, start, submit }: { snapshot: Snapshot; entry?: Entry; start?: boolean; submit: (action: string, payload: object) => Promise<boolean> }) {
+function TimerForm({ snapshot, entry, start, newTask, submit }: { snapshot: Snapshot; entry?: Entry; start?: boolean; newTask?: boolean; submit: (action: string, payload: object) => Promise<boolean> }) {
   const { pop } = useNavigation();
   const current = entry || snapshot.state;
   const [saving, setSaving] = useState(false);
@@ -10,12 +10,12 @@ function TimerForm({ snapshot, entry, start, submit }: { snapshot: Snapshot; ent
   async function save(values: Form.Values) {
     if (saving) return;
     setSaving(true);
-    const changes = { description: String(values.description || ""), project_id: values.project === "none" ? null : String(values.project) };
-    const action = start ? "start" : entry ? "edit-entry" : "edit-current";
-    if (await submit(action, entry ? { entry, changes } : start ? { changes } : { changes, expected: snapshot.state })) pop();
+    const changes = timerChanges(current, values);
+    const action = newTask ? "switch" : start ? "start" : entry ? "edit-entry" : "edit-current";
+    if (await submit(action, entry ? { entry, changes } : { changes, expected: snapshot.state })) pop();
     setSaving(false);
   }
-  return <Form isLoading={saving} navigationTitle={start ? "Start Timer" : "Edit Timer"} actions={<ActionPanel><Action.SubmitForm title={start ? "Start Timer" : "Save Changes"} onSubmit={save} /></ActionPanel>}>
+  return <Form isLoading={saving} navigationTitle={newTask ? "Start New Task" : start ? "Start Timer" : "Edit Timer"} actions={<ActionPanel><Action.SubmitForm title={newTask ? "Start New Task" : start ? "Start Timer" : "Save Changes"} onSubmit={save} /></ActionPanel>}>
     <Form.TextField id="description" title="Description" defaultValue={current.description || ""} />
     <Form.Dropdown id="project" title="Project" defaultValue={current.project_id == null ? "none" : String(current.project_id)}>
       <Form.Dropdown.Item value="none" title="No project" />
@@ -62,8 +62,10 @@ export default function Timer() {
           icon={{source: Icon.Stopwatch, tintColor: state.tracking ? project?.color || undefined : undefined}}
           accessories={[{text: state.tracking ? elapsed(state.start_time) : "Stopped"}]}
           actions={<ActionPanel>
-            {state.tracking ? <Action title="Stop Timer" icon={Icon.Stop} onAction={() => run("stop")} /> : <Action.Push title="Start Timer" icon={Icon.Play} target={<TimerForm snapshot={snapshot} start submit={run} />} />}
+            {state.tracking ? <Action title="Stop Timer" icon={Icon.Stop} onAction={() => run("stop", { expected: snapshot.state })} /> : <Action.Push title="Start Timer" icon={Icon.Play} target={<TimerForm snapshot={snapshot} start submit={run} />} />}
+            {state.tracking && <Action.Push title="Start New Task" icon={Icon.Play} target={<TimerForm snapshot={snapshot} newTask submit={run} />} />}
             <Action.Push title="Edit Description and Project" icon={Icon.Pencil} target={<TimerForm snapshot={snapshot} submit={run} />} />
+            {snapshot.pending_count > 0 && <Action title="Sync Pending Entries" icon={Icon.ArrowClockwise} onAction={() => run("sync")} />}
             {refresh}
           </ActionPanel>} />
       </List.Section>
