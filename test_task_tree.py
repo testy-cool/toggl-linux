@@ -278,3 +278,14 @@ def test_stale_cloud_reply_does_not_undo_a_switch_made_during_the_request(tmp_st
     with patch.object(app,'fetch_current_entry',side_effect=slow_reply),patch.object(app,'_load_pending',return_value=[]):
         app._sync_cloud_state()
     assert (app.state['entry_id'],app.state['description'])==(202,'Next')
+
+
+def test_running_task_from_previous_account_is_not_suggested_or_remembered(tmp_state_dir):
+    m=module()
+    app.queue_action('start',start_time=NOW.isoformat(),description='Account A private task',project_id=7,workspace_id='ws_123')
+    app.state.update(tracking=True,start_time=NOW.isoformat(),description='Account A private task',project_id=7)
+    app.api_token='account-b'
+    with patch.object(app,'_cached_projects',return_value=PROJECTS):
+        assert all(not p['tasks'] for p in m.tree(app,now=NOW))
+    m.remember(app,dict(app.state))
+    assert m.cached_entries(app)==[]

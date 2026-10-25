@@ -92,9 +92,18 @@ def _save(app, data):
         backup.chmod(0o600)
 
 
+def _other_account(app, current, scope):
+    """True when the running interval is a queued start made under a different account."""
+    start = _stamp(current.get('start_time'))
+    return any(_stamp(e.get('start')) == start and e.get('_task_context') not in (None, scope)
+               for e in app._pending_as_entries())
+
+
 def remember(app, current):
     """Keep a task available immediately after stopping, including while offline."""
     if not current.get('tracking') or not current.get('start_time'):
+        return
+    if _other_account(app, current, toggl_projects.context(app)):
         return
     entry = dict(id=current.get('entry_id') or 'local:'+current['start_time'],
                  start=current['start_time'], workspace_id=current.get('workspace_id'),
@@ -164,7 +173,7 @@ def tree(app, query='', now=None):
                or (e.get('_task_context') is None and _stamp(e.get('start')) in known_starts)]
     pending_starts = {_stamp(e.get('start')) for e in pending}
     entries = pending+[e for e in cached if _stamp(e.get('start')) not in pending_starts]
-    if current.get('tracking') and current.get('start_time'):
+    if current.get('tracking') and current.get('start_time') and not _other_account(app, current, scope):
         entries = [dict(id=current.get('entry_id') or 'local:'+current['start_time'], start=current['start_time'],
                         workspace_id=current.get('workspace_id'), project_id=current.get('project_id'),
                         description=current.get('description', ''))]+entries
