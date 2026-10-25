@@ -2004,10 +2004,65 @@ def on_quit(icon, item):
 
 # ── Menu ────────────────────────────────────────────────────────────────────
 
+def _apply_tray_project(project_id, expected):
+    import toggl_control
+    with state_lock:
+        if state == expected and str(state.get("project_id")) == str(project_id):
+            return True
+    try:
+        toggl_control.dispatch(sys.modules[__name__], "edit-current",
+                               {"changes": {"project_id": project_id}, "expected": expected})
+        return True
+    except Exception as error:
+        _notify(f"Project not changed: {error}")
+        if icon_ref:
+            GLib.idle_add(_refresh_project_menu)
+        return False
+
+
+def _refresh_project_menu():
+    if icon_ref:
+        _set_tray_menu(build_menu())
+    return False
+
+
+def _project_choice_action(project_id, expected):
+    def selected(_icon, _item):
+        threading.Thread(target=_apply_tray_project, args=(project_id, expected), daemon=True).start()
+    return selected
+
+
+def on_refresh_tray_projects(_icon, _item):
+    def refresh():
+        _refresh_projects(force=True)
+        GLib.idle_add(_refresh_project_menu)
+    threading.Thread(target=refresh, daemon=True).start()
+
+
+def _tray_project_items():
+    with state_lock:
+        current = dict(state)
+    projects = [p for p in _cached_projects() if isinstance(p, dict)
+                and str(p.get("workspace_id")) == str(current.get("workspace_id"))
+                and (p.get("active") is not False or str(p.get("id")) == str(current.get("project_id")))]
+    def choice(project_id, name):
+        return pystray.MenuItem(name, _project_choice_action(project_id, current), radio=True,
+                               checked=lambda _item: str(state.get("workspace_id")) == str(current.get("workspace_id"))
+                               and str(state.get("project_id")) == str(project_id))
+    items = [choice(None, "No project")]
+    for project in sorted(projects, key=lambda p: (p.get("name") or "").casefold()):
+        items.append(choice(project["id"], project.get("name") or str(project["id"])))
+    if current.get("project_id") is not None and not any(str(p["id"]) == str(current["project_id"]) for p in projects):
+        items.append(choice(current["project_id"], "Current project (not cached)"))
+    items.append(pystray.MenuItem("Refresh projects", on_refresh_tray_projects))
+    return items
+
+
 def build_menu():
     toggle_label = "Stop tracking" if state["tracking"] else "Start tracking"
     return pystray.Menu(
         pystray.MenuItem("Open Timer", on_open_timer, default=True),
+        pystray.MenuItem("Project", pystray.Menu(*_tray_project_items())),
         pystray.MenuItem(
             "Show timer in panel",
             on_toggle_panel_timer,

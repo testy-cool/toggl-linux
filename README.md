@@ -226,6 +226,8 @@ MIT
 
 ### Project colors
 
+Right-click the tray icon and open **Project** to select a saved project or **No project** directly. The current choice is checked. Selection updates the current interval, or the remembered project while stopped, without starting a new interval. **Refresh projects** reloads the choices. Pending offline timers remain editable; cloud edits show a notification if they cannot be saved.
+
 While tracking a project, the tray icon uses that project’s saved six-digit hex color. Stopped timers stay grey; timers without a project or a valid color keep the default active icon. Project metadata is cached locally in `~/.local/share/toggl-tray/projects.json`, scoped to the account, and refreshed at most hourly while API quota is available. Cached colors work offline, and rendering never makes network requests. Changing a project or its color updates the panel icon automatically after the next cloud/project refresh.
 
 ### Vicinae extension
