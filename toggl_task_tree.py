@@ -185,11 +185,19 @@ def tree(app, query='', now=None):
     return group_projects(app._cached_projects(), entries, current.get('workspace_id'), query, now)
 
 
+def _remote_id(entry):
+    value = entry.get('_remote_entry_id') or entry.get('id')
+    return None if value is None or str(value).startswith(('local:', 'pending:')) else str(value)
+
+
 def _same_interval(cached, edited):
     """Same remote id, or same start with the same old project and text (offline copies have no shared id)."""
     if cached.get('id') is not None and str(cached.get('id')) == str(edited.get('id')):
         return True
+    if _remote_id(cached) and _remote_id(edited):
+        return _remote_id(cached) == _remote_id(edited)  # known remote intervals match only by id
     return (_stamp(cached.get('start')) == _stamp(edited.get('start'))
+            and str(cached.get('workspace_id')) == str(edited.get('workspace_id'))
             and str(cached.get('project_id')) == str(edited.get('project_id'))
             and (cached.get('description') or '') == (edited.get('description') or ''))
 
@@ -203,9 +211,8 @@ def correct(app, edited, changes):
         return
     try:
         with _cache_lock:
-            data = _cache(app)
-            if not data:
-                return
+            data = _cache(app) or dict(context=toggl_projects.context(app), fetched_at=0,
+                                           entries=[], local_entries=[])
             for e in (e for key in ('entries', 'local_entries') for e in data.get(key, [])):
                 if _same_interval(e, edited):
                     e.update(fields)

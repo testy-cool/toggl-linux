@@ -349,3 +349,29 @@ def test_history_reply_fetched_before_an_edit_does_not_undo_it(tmp_state_dir):
     with patch.object(app,'_api',side_effect=slow_history):
         assert m.refresh(app,force=True) is False
     assert [e['description'] for e in m.cached_entries(app)]==['Corrected']
+
+
+def test_two_remote_intervals_with_identical_text_are_corrected_separately(tmp_state_dir):
+    m=module()
+    first=entry(101,7,'Same task'); second=dict(entry(102,7,'Same task'),start=first['start'])
+    app._atomic_write_text(tmp_state_dir/'task-history.json',json.dumps(dict(context=toggl_projects.context(app),fetched_at=0,entries=[first,second])))
+    m.correct(app,first,{'description':'Corrected'})
+    assert sorted(e['description'] for e in m.cached_entries(app))==['Corrected','Same task']
+
+
+def test_edit_during_the_first_history_fetch_is_not_undone(tmp_state_dir):
+    m=module()
+    old=entry(101,7,'Old')
+    def slow_history(*_a,**_k):
+        m.correct(app,old,{'description':'Corrected'})
+        return [old]
+    with patch.object(app,'_api',side_effect=slow_history):
+        assert m.refresh(app,force=True) is False
+
+
+def test_offline_edit_of_a_synced_interval_updates_its_cached_copy(tmp_state_dir):
+    m=module()
+    synced=entry(101,7,'Old')
+    app._atomic_write_text(tmp_state_dir/'task-history.json',json.dumps(dict(context=toggl_projects.context(app),fetched_at=0,entries=[synced])))
+    m.correct(app,dict(synced,id='pending:0',_remote_entry_id=101),{'description':'Corrected'})
+    assert [e['description'] for e in m.cached_entries(app)]==['Corrected']
