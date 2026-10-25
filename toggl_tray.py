@@ -2996,6 +2996,8 @@ def main():
     load_state()
 
     api_token = get_api_token()
+    if api_token and state.get("start_time") and state.get("_account_start") != state.get("start_time"):
+        save_state()  # A timer saved by an older version gets stamped with the account it was running under.
     if not api_token:
         print("No API token found. Set TOGGL_API_TOKEN env var or use the tray menu.", file=sys.stderr)
         print("You can also run: secret-tool store --label='Toggl API Token' service toggl username api_token", file=sys.stderr)
