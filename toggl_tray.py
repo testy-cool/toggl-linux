@@ -1455,6 +1455,11 @@ def on_toggle_panel_description(icon, item):
         _set_tray_menu(build_menu())
 
 
+def on_open_timer(icon, item):
+    import toggl_timer_window
+    GLib.idle_add(toggl_timer_window.show, sys.modules[__name__])
+
+
 def on_toggle(icon, item):
     threading.Thread(target=toggle_tracking, daemon=True).start()
 
@@ -1990,6 +1995,7 @@ def on_quit(icon, item):
 def build_menu():
     toggle_label = "Stop tracking" if state["tracking"] else "Start tracking"
     return pystray.Menu(
+        pystray.MenuItem("Open Timer", on_open_timer, default=True),
         pystray.MenuItem(
             "Show timer in panel",
             on_toggle_panel_timer,
@@ -2000,7 +2006,7 @@ def build_menu():
             on_toggle_panel_description,
             checked=lambda _item: get_panel_description_enabled(),
         ),
-        pystray.MenuItem(toggle_label, on_toggle, default=True),
+        pystray.MenuItem(toggle_label, on_toggle),
         pystray.MenuItem("Edit description...", on_set_description),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Today's entries", on_view_today),
@@ -2595,7 +2601,7 @@ def _build_cli_parser():
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("run", help="run the tray app")
     control = sub.add_parser("control", help="control the running tray using its private socket")
-    control.add_argument("action", choices=["snapshot", "refresh", "start", "stop", "edit-current", "edit-entry"])
+    control.add_argument("action", choices=["snapshot", "refresh", "start", "switch", "stop", "edit-current", "edit-entry"])
     control.add_argument("payload", nargs="?", default="{}", help="JSON command payload")
     sub.add_parser("status", help="show local state and pending queue")
     doctor = sub.add_parser("doctor", help="diagnose local state, pending queue, token, and optional cloud state")

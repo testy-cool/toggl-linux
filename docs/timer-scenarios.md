@@ -1,0 +1,34 @@
+# Timer scenarios
+
+Provisional priorities based on the user's request; frequency has not been measured.
+
+```text
+Manage my time
+|
++-- 1. Switch projects
+|   +-- Choose the project and task description
+|   +-- Stop the previous interval and start a new one
+|   +-- Show the new project's saved icon color
+|
++-- 2. Start working
+|   +-- Keep the selected project or choose another
+|   +-- Enter a task description and start
+|
++-- 3. Correct the current timer
+|   +-- Edit project, description, or start time together
+|   +-- Save without creating another interval
+|
++-- 4. Pause or finish
+|   +-- Stop with one action
+|
++-- 5. Review today
+|   +-- Open entries and durations
+|   +-- Correct cloud or pending entries
+|
++-- Occasional settings
+    +-- Panel timer and description visibility
+    +-- Sync status and retry
+    +-- Account connection
+```
+
+The native timer window groups project, description, start time and Start/Stop together. **Save Changes** corrects the current interval; **Start New Task** ends it and starts another. Today's entries, sync and panel visibility are directly accessible. Vicinae exposes the same common timer actions through searchable native lists/forms. Stale forms must not edit a replacement timer, and offline actions remain recoverable.

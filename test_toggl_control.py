@@ -135,3 +135,34 @@ def test_stopped_entry_snapshot_has_a_stop_time(tmp_state_dir):
         result=control.dispatch(app,"stop",{})
     assert result["entries"][0]["stop"] is not None
     assert result["entries"][0]["duration"]>=0
+
+
+def test_switch_task_closes_previous_interval_and_starts_new_offline(tmp_state_dir):
+    app.api_token=None
+    with patch.object(app,"_play_sound"),patch.object(app,"_notify"):
+        control.dispatch(app,"start",{"changes":{"description":"First"}})
+        original=dict(app.state)
+        result=control.dispatch(app,"switch",{"expected":original,"changes":{"description":"Next"}})
+    assert result["state"]["tracking"] is True
+    assert result["state"]["description"]=="Next"
+    assert result["state"]["start_time"]!=original["start_time"]
+    assert [item['action'] for item in app._load_pending()]==['start','stop','start']
+    assert app._pending_as_entries()[0]['description']=='First'
+
+
+def test_edit_start_time_updates_pending_start_and_running_timer(tmp_state_dir):
+    app.api_token=None
+    app.state.update(tracking=True,start_time="2026-10-25T10:00:00+00:00",description="Work")
+    app.queue_action("start",start_time=app.state["start_time"],description="Work")
+    control.dispatch(app,"edit-current",{"changes":{"start":"2026-10-25T09:00:00+00:00"}})
+    assert app.state["start_time"]=="2026-10-25T09:00:00+00:00"
+    assert app._load_pending()[0]["start_time"]==app.state["start_time"]
+
+
+def test_invalid_start_time_does_not_partially_edit_description(tmp_state_dir):
+    app.state.update(tracking=True,description="Original",entry_id=5,start_time="2026-10-25T10:00:00+00:00")
+    with patch.object(app,"update_entry") as update:
+        with pytest.raises(control.ControlError):
+            control.dispatch(app,"edit-current",{"changes":{"start":"bad","description":"Changed"}})
+        update.assert_not_called()
+    assert app.state['description']=='Original'
