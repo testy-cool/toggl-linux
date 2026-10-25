@@ -397,6 +397,11 @@ def _read_ledger_events(limit=None):
 
 
 def save_state():
+    # Stamp each new interval with the account it started under, so a later token change cannot hand it to another account.
+    if state.get("start_time") != state.get("_account_start"):
+        import toggl_projects
+        state["_account"] = toggl_projects.account(sys.modules[__name__]) if state.get("start_time") else None
+        state["_account_start"] = state.get("start_time")
     _atomic_write_text(STATE_FILE, json.dumps(state, indent=2))
 
 

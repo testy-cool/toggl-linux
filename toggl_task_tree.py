@@ -93,7 +93,9 @@ def _save(app, data):
 
 
 def _other_account(app, current, scope):
-    """True when the running interval is a queued start made under a different account."""
+    """True when the running interval was started under a different account."""
+    if current.get('_account') not in (None, scope['account']):
+        return True
     start = _stamp(current.get('start_time'))
     return any(_stamp(e.get('start')) == start and e.get('_task_context') not in (None, scope)
                for e in app._pending_as_entries())

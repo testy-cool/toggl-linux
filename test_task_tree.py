@@ -318,3 +318,14 @@ def test_running_task_with_no_description_gets_the_dot(tmp_state_dir):
          patch.object(app.pystray,'Menu',Menu),patch.object(app.pystray,'MenuItem',side_effect=item):
         labels=[i.text for i in app.build_menu() if isinstance(i,SimpleNamespace)]
     assert labels[:3]==['● DPF','  ├─ ● No description','  └─ No description']
+
+
+def test_cloud_timer_from_previous_account_is_not_suggested_after_token_change(tmp_state_dir):
+    m=module()
+    app.state.update(tracking=True,entry_id=101,start_time=NOW.isoformat(),description='Private A',project_id=None)
+    app.save_state()
+    app.api_token='account-b'
+    with patch.object(app,'_cached_projects',return_value=PROJECTS):
+        assert all(not p['tasks'] for p in m.tree(app,now=NOW))
+    m.remember(app,dict(app.state))
+    assert m.cached_entries(app)==[]
