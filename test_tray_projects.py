@@ -17,7 +17,7 @@ def test_tray_project_choices_include_no_project_and_current_workspace_only(tmp_
     with patch.object(app, '_cached_projects', return_value=PROJECTS), \
          patch.object(app.pystray, 'MenuItem', side_effect=item):
         items = app._tray_project_items()
-    assert [i.text for i in items if getattr(i, 'radio', False)] == ['No project', 'DPF']
+    assert [i.text for i in items if isinstance(i, SimpleNamespace) and getattr(i, 'radio', False)] == ['No project', 'DPF']
     assert items[0].checked(None) is True
     assert items[1].checked(None) is False
 

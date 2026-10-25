@@ -225,14 +225,14 @@ def _auth():
     return HTTPBasicAuth(api_token, "api_token")
 
 
-def _api(method, path, json=None, params=None, token=None):
+def _api(method, path, json=None, params=None, token=None, base_url=None):
     """Single API wrapper. 429s are deferred instead of retried inline."""
     global rate_limited_until
     if not (token or api_token):
         raise MissingApiTokenError("No Toggl API token configured")
     _record_api_request()
     r = requests.request(
-        method, f"{API_BASE}{path}",
+        method, f"{base_url if base_url is not None else API_BASE}{path}",
         auth=_auth() if token is None else HTTPBasicAuth(token, "api_token"), json=json, params=params, timeout=10,
     )
     if r.status_code == 429:
@@ -251,12 +251,12 @@ def api_get(path, **kw):
     return _api("GET", path, **kw)
 
 
-def api_post(path, data):
-    return _api("POST", path, json=data)
+def api_post(path, data, **kw):
+    return _api("POST", path, json=data, **kw)
 
 
-def api_put(path, data):
-    return _api("PUT", path, json=data)
+def api_put(path, data, **kw):
+    return _api("PUT", path, json=data, **kw)
 
 
 def api_patch(path, data):
@@ -2046,6 +2046,21 @@ def on_refresh_tray_projects(_icon, _item):
     threading.Thread(target=refresh, daemon=True).start()
 
 
+def on_new_project(_icon, _item):
+    import toggl_project_window
+    GLib.idle_add(toggl_project_window.show, sys.modules[__name__])
+
+
+def on_edit_selected_project(_icon, _item):
+    import toggl_project_window
+    GLib.idle_add(toggl_project_window.edit_selected, sys.modules[__name__])
+
+
+def on_manage_projects(_icon, _item):
+    import toggl_project_window
+    GLib.idle_add(toggl_project_window.manage, sys.modules[__name__])
+
+
 def _tray_project_items():
     with state_lock:
         current = dict(state)
@@ -2061,7 +2076,13 @@ def _tray_project_items():
         items.append(choice(project["id"], project.get("name") or str(project["id"])))
     if current.get("project_id") is not None and not any(str(p["id"]) == str(current["project_id"]) for p in projects):
         items.append(choice(current["project_id"], "Current project (not cached)"))
-    items.append(pystray.MenuItem("Refresh projects", on_refresh_tray_projects))
+    items.extend((pystray.Menu.SEPARATOR,
+                  pystray.MenuItem("New Project…", on_new_project),
+                  pystray.MenuItem("Edit Selected Project…", on_edit_selected_project,
+                                   enabled=current.get("project_id") is not None and any(
+                                       str(p["id"]) == str(current["project_id"]) for p in projects)),
+                  pystray.MenuItem("Manage Projects…", on_manage_projects),
+                  pystray.MenuItem("Refresh projects", on_refresh_tray_projects)))
     return items
 
 
@@ -2676,7 +2697,7 @@ def _build_cli_parser():
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("run", help="run the tray app")
     control = sub.add_parser("control", help="control the running tray using its private socket")
-    control.add_argument("action", choices=["snapshot", "refresh", "sync", "start", "switch", "resume", "stop", "edit-current", "edit-entry"])
+    control.add_argument("action", choices=["snapshot", "refresh", "sync", "start", "switch", "resume", "stop", "edit-current", "edit-entry", "project-create", "project-update"])
     control.add_argument("payload", nargs="?", default="{}", help="JSON command payload")
     sub.add_parser("status", help="show local state and pending queue")
     doctor = sub.add_parser("doctor", help="diagnose local state, pending queue, token, and optional cloud state")

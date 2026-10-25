@@ -7,6 +7,9 @@ export interface Entry { workspace_id?: number | string; id: number | string; de
 export interface Snapshot {
   state: { tracking: boolean; description: string; project_id: number | string | null; workspace_id: number | string | null; start_time: string | null; entry_id: number | string | null };
   projects: Project[]; entries: Entry[]; pending_count: number; warning: string;
+  project_context: { workspace_id: number | string | null; account: string | null };
+  projects_url: string | null;
+  saved_project?: Project;
 }
 
 export function control(cliPath: string | undefined, action: string, payload: object = {}): Promise<Snapshot> {
@@ -60,4 +63,19 @@ export function timerChanges(current: Pick<Entry, "description" | "project_id">,
     if (project !== previous) changes.project_id = project;
   }
   return changes;
+}
+
+export function projectCommand(context: Snapshot["project_context"], name: string, color: string, project?: Project) {
+  name = name.trim();
+  color = color.trim().toLowerCase();
+  if (!name || name.length > 200) throw new Error("Enter a project name of 1 to 200 characters.");
+  if (!/^#[0-9a-f]{6}$/.test(color)) throw new Error("Enter the color as #RRGGBB, for example #3b82f6.");
+  return {
+    action: project ? "project-update" : "project-create",
+    payload: {
+      context: { ...context },
+      ...(project ? { project: { id: project.id, workspace_id: project.workspace_id, name: project.name, color: project.color } } : {}),
+      name, color,
+    },
+  };
 }

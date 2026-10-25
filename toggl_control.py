@@ -5,6 +5,7 @@ import socket
 import socketserver
 import threading
 import time
+import toggl_projects
 from pathlib import Path
 
 MAX_MESSAGE = 2 * 1024 * 1024
@@ -26,7 +27,8 @@ def snapshot(app):
     entries = [e for e in entries if e not in stale]
     warning = getattr(app, "_control_warning", "") or ("Today's entries changed; refresh to update durations" if stale else "")
     return {"state": current, "projects": app._cached_projects(), "entries": entries,
-            "pending_count": len(app._load_pending()), "warning": warning}
+            "pending_count": len(app._load_pending()), "warning": warning,
+            "project_context": toggl_projects.context(app), "projects_url": toggl_projects.projects_url(app)}
 
 
 def _changes(app, values, context=None):
@@ -152,6 +154,17 @@ def dispatch(app, action, payload):
         raise ControlError("Command payload must be an object")
     if action == "snapshot":
         return snapshot(app)
+    if action in {"project-create", "project-update"}:
+        with app.toggle_lock:
+            try:
+                saved = toggl_projects.write(app, action, payload)
+            except toggl_projects.ProjectError as error:
+                raise ControlError(str(error)) from error
+        if app.icon_ref:
+            app.GLib.idle_add(_refresh_ui, app)
+        result = snapshot(app)
+        result["saved_project"] = saved
+        return result
     if action == "sync":
         with app.toggle_lock:
             app._run_sync_cycle()

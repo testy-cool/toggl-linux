@@ -80,3 +80,34 @@ test('form edits send an explicitly changed project but omit unchanged values', 
   assert.deepEqual(timerChanges(entry, {description:'Work', project:'8'}), {project_id:'8'});
   assert.deepEqual(timerChanges(entry, {description:'Renamed'}), {description:'Renamed'});
 });
+
+test('new projects preserve the displayed account context without changing the timer', () => {
+  const { projectCommand } = compiled.exports;
+  const context = {workspace_id:12, account:'account-fingerprint'};
+  const command = projectCommand(context, '  Client work  ', '#AABBCC');
+  assert.deepEqual(command, {action:'project-create', payload:{context, name:'Client work', color:'#aabbcc'}});
+  context.workspace_id = 99;
+  assert.equal(command.payload.context.workspace_id, 12);
+  assert.equal('changes' in command.payload, false);
+});
+
+test('project updates retain the original metadata for stale-edit protection', () => {
+  const { projectCommand } = compiled.exports;
+  const project = {id:7, workspace_id:12, name:'Before', color:'#112233', active:true};
+  const command = projectCommand({workspace_id:12, account:'account-fingerprint'}, 'After', '#445566', project);
+  assert.deepEqual(command.payload.project, {id:7, workspace_id:12, name:'Before', color:'#112233'});
+  assert.equal(command.action, 'project-update');
+  assert.equal(command.payload.name, 'After');
+  project.name = 'External edit';
+  assert.equal(command.payload.project.name, 'Before');
+});
+
+test('invalid project fields are rejected before a mutation command is constructed', () => {
+  const { projectCommand } = compiled.exports;
+  const context = {workspace_id:12, account:'account-fingerprint'};
+  assert.throws(() => projectCommand(context, '   ', '#123456'), /name/i);
+  assert.throws(() => projectCommand(context, 'x'.repeat(201), '#123456'), /200/);
+  for (const color of ['red', '#abc', '#12345g', '123456']) {
+    assert.throws(() => projectCommand(context, 'Valid', color), /#RRGGBB/);
+  }
+});
