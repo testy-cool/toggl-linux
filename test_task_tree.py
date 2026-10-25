@@ -329,3 +329,23 @@ def test_cloud_timer_from_previous_account_is_not_suggested_after_token_change(t
         assert all(not p['tasks'] for p in m.tree(app,now=NOW))
     m.remember(app,dict(app.state))
     assert m.cached_entries(app)==[]
+
+
+def test_editing_one_interval_leaves_others_with_the_same_start_alone(tmp_state_dir):
+    m=module()
+    first=entry(101,7,'First'); other=dict(entry(102,8,'Unrelated'),start=first['start'])
+    app._atomic_write_text(tmp_state_dir/'task-history.json',json.dumps(dict(context=toggl_projects.context(app),fetched_at=0,entries=[first,other])))
+    m.correct(app,first,{'description':'Corrected'})
+    assert sorted(e['description'] for e in m.cached_entries(app))==['Corrected','Unrelated']
+
+
+def test_history_reply_fetched_before_an_edit_does_not_undo_it(tmp_state_dir):
+    m=module()
+    old=entry(101,7,'Old')
+    app._atomic_write_text(tmp_state_dir/'task-history.json',json.dumps(dict(context=toggl_projects.context(app),fetched_at=0,entries=[old])))
+    def slow_history(*_a,**_k):
+        m.correct(app,old,{'description':'Corrected'})  # the edit lands while the history request is in flight
+        return [old]
+    with patch.object(app,'_api',side_effect=slow_history):
+        assert m.refresh(app,force=True) is False
+    assert [e['description'] for e in m.cached_entries(app)]==['Corrected']

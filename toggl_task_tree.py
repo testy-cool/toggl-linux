@@ -60,6 +60,7 @@ def refresh(app, force=False):
         if not force and 0 <= now - cache.get('fetched_at', 0) < app.CLOUD_POLL_INTERVAL_SECONDS:
             return False
         _attempts[key] = now
+        started = time.time()
         end = datetime.now(timezone.utc)
         entries = app._api('GET', '/me/time_entries', token=token, base_url=base,
                            params={'start_date': (end-timedelta(days=HISTORY_DAYS)).isoformat(),
@@ -70,6 +71,8 @@ def refresh(app, force=False):
             cache = _cache(app)
             if toggl_projects.context(app) != scope:
                 return False
+            if cache.get('edited_at', 0) >= started:
+                return False  # An interval was edited while this reply was in flight; it is stale.
             cloud = _bounded(entries)
             cloud_starts = {_stamp(e.get('start')) for e in cloud}
             local = [e for e in cache.get('local_entries', []) if _stamp(e.get('start')) not in cloud_starts]
@@ -182,21 +185,32 @@ def tree(app, query='', now=None):
     return group_projects(app._cached_projects(), entries, current.get('workspace_id'), query, now)
 
 
-def correct(app, start, changes):
-    """Apply an interval edit to its cached copy, so the tree never offers the old text."""
+def _same_interval(cached, edited):
+    """Same remote id, or same start with the same old project and text (offline copies have no shared id)."""
+    if cached.get('id') is not None and str(cached.get('id')) == str(edited.get('id')):
+        return True
+    return (_stamp(cached.get('start')) == _stamp(edited.get('start'))
+            and str(cached.get('project_id')) == str(edited.get('project_id'))
+            and (cached.get('description') or '') == (edited.get('description') or ''))
+
+
+def correct(app, edited, changes):
+    """Apply an interval edit to its cached copy, so the tree never offers the old text.
+
+    `edited` is the interval as it was before the edit."""
     fields = {k: changes[k] for k in ('description', 'project_id') if k in changes}
-    stamp = _stamp(start)
-    if not fields or stamp is None:
+    if not fields or _stamp(edited.get('start')) is None:
         return
     try:
         with _cache_lock:
             data = _cache(app)
-            hits = [e for key in ('entries', 'local_entries') for e in data.get(key, [])
-                    if _stamp(e.get('start')) == stamp]
-            if hits:
-                for e in hits:
+            if not data:
+                return
+            for e in (e for key in ('entries', 'local_entries') for e in data.get(key, [])):
+                if _same_interval(e, edited):
                     e.update(fields)
-                _save(app, data)
+            data['edited_at'] = time.time()
+            _save(app, data)
     except OSError as error:
         print(f'Project/task history not saved: {error}', file=app.sys.stderr)
 
