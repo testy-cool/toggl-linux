@@ -227,3 +227,7 @@ MIT
 ### Project colors
 
 While tracking a project, the tray icon uses that project’s saved six-digit hex color. Stopped timers stay grey; timers without a project or a valid color keep the default active icon. Project metadata is cached locally in `~/.local/share/toggl-tray/projects.json`, scoped to the account, and refreshed at most hourly while API quota is available. Cached colors work offline, and rendering never makes network requests. Changing a project or its color updates the panel icon automatically after the next cloud/project refresh.
+
+### Vicinae extension
+
+The [`vicinae/`](vicinae/) extension manages the running timer, project selection, descriptions, and today's cloud/pending entries. See its README for installation, upgrades, and removal. It uses the tray's private `control.sock` (owner access only), with the same state and offline queue. The tray must be running; the extension does not require a second API token.

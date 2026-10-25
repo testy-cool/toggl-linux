@@ -19,7 +19,8 @@ def snapshot(app):
         current = dict(app.state)
     today = app.datetime.now().date()
     pending = app._pending_as_entries(today)
-    entries = app._merge_entries_with_pending(getattr(app, "_control_entries", []), pending)
+    cached = getattr(app, "_control_entries", []) if getattr(app, "_control_entries_date", "") == today.isoformat() else []
+    entries = app._merge_entries_with_pending(cached, pending)
     return {"state": current, "projects": app._cached_projects(), "entries": entries,
             "pending_count": len(app._load_pending()), "warning": getattr(app, "_control_warning", "")}
 
@@ -31,9 +32,12 @@ def _changes(app, values):
         raise ControlError("Description must be text of at most 10000 characters")
     result = dict(values)
     if result.get("project_id") is not None:
+        if str(result["project_id"]) == str(app.state.get("project_id")):
+            result["project_id"] = app.state["project_id"]
+            return result
         project = next((p for p in app._cached_projects() if str(p.get("id")) == str(result["project_id"])
                         and str(p.get("workspace_id")) == str(app.state.get("workspace_id"))
-                        and p.get("active") is not False), None)
+                        ), None)
         if not project:
             raise ControlError("Project is unavailable; refresh the project list")
         result["project_id"] = project["id"]
@@ -109,6 +113,7 @@ def dispatch(app, action, payload):
                 if not app.api_token or app._rate_limit_active() or app._request_budget_remaining() <= app.REQUEST_BUDGET_BACKGROUND_RESERVE:
                     raise ControlError("Cloud refresh unavailable; showing cached and pending entries")
                 app._control_entries = app.fetch_today_entries()
+                app._control_entries_date = app.datetime.now().date().isoformat()
                 app._control_warning = ""
             except Exception:
                 app._control_warning = "Cloud refresh unavailable; showing cached and pending entries"
@@ -128,6 +133,15 @@ def dispatch(app, action, payload):
             _edit_current(app, _changes(app, payload.get("changes", {})))
         elif action == "edit-entry":
             _edit_entry(app, payload.get("entry"), _changes(app, payload.get("changes", {})))
+    if app.state.get("tracking") and app.state.get("entry_id"):
+        current = app.state
+        entry = {"id": current["entry_id"], "workspace_id": current["workspace_id"],
+                 "description": current.get("description", ""), "project_id": current.get("project_id"),
+                 "start": current["start_time"], "stop": None,
+                 "duration": -int(app._coerce_datetime(current["start_time"]).timestamp())}
+        cache = getattr(app, "_control_entries", [])
+        app._control_entries = [e for e in cache if e.get("id") != entry["id"]] + [entry]
+        app._control_entries_date = app.datetime.now().date().isoformat()
     if app.icon_ref:
         app.GLib.idle_add(app._refresh_tray_menu)
     return snapshot(app)
@@ -151,7 +165,11 @@ def start_server(app):
                 response = {"ok": False, "error": str(error)[:500]}
             self.wfile.write(json.dumps(response).encode() + b"\n")
 
-    server = socketserver.UnixStreamServer(str(path), Handler)
+    previous_mask = os.umask(0o177)
+    try:
+        server = socketserver.UnixStreamServer(str(path), Handler)
+    finally:
+        os.umask(previous_mask)
     os.chmod(path, 0o600)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server

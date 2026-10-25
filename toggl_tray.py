@@ -835,6 +835,7 @@ def _pending_as_entries(date_obj=None):
             "duration": duration,
             "description": op.get("description", ""),
             "workspace_id": op.get("workspace_id") or state.get("workspace_id"),
+            "project_id": op.get("project_id"),
             "_offline": True,
             "_pending_indexes": op["indexes"],
             "_pending_kind": op["kind"],

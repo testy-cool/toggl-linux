@@ -72,3 +72,10 @@ def test_snapshot_does_not_make_network_calls(tmp_state_dir):
     with patch.object(app, "api_get") as api:
         control.dispatch(app, "snapshot", {})
         api.assert_not_called()
+
+
+def test_description_edit_preserves_existing_uncached_project(tmp_state_dir):
+    app.state.update(project_id=17)
+    result = control.dispatch(app, "edit-current", {"changes": {"description": "Changed offline", "project_id": "17"}})
+    assert result["state"]["project_id"] == 17
+    assert result["state"]["description"] == "Changed offline"

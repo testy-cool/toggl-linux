@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/vicinaehq/vicinae/refs/heads/main/extra/schemas/extension.json",
+  "name": "toggl-tray",
+  "title": "Toggl Tray",
+  "description": "Manage your tray timer, projects, and today's entries",
+  "categories": ["Productivity"],
+  "license": "MIT",
+  "author": "testycool",
+  "icon": "extension_icon.png",
+  "commands": [{"name":"timer", "title":"Manage Timer", "description":"Start, stop, and edit your Toggl Tray timer", "mode":"view"}],
+  "preferences": [{"name":"cliPath", "title":"Toggl CLI path", "description":"Path to the installed toggl launcher. Leave empty to use ~/.local/bin/toggl.", "type":"textfield", "required":false}],
+  "scripts": {"build":"vici build", "check":"tsc --noEmit", "test":"node --test tests/*.test.cjs"},
+  "dependencies": {"@vicinae/api":"0.19.9"},
+  "devDependencies": {"@types/react":"19.0.10", "react":"19.0.0", "typescript":"5.9.2", "@types/node":"22.15.30"}
+}
