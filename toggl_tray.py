@@ -408,7 +408,7 @@ def load_state():
 # ── Offline queue ──────────────────────────────────────────────────────────
 
 pending_lock = threading.Lock()
-toggle_lock = threading.Lock()
+toggle_lock = threading.RLock()
 state_lock = threading.Lock()
 _sync_wakeup = threading.Event()
 
@@ -520,6 +520,7 @@ def _pending_operations(queue):
                     "stop_time": stop_time,
                     "duration": _duration_seconds(item.get("start_time"), stop_time),
                     "description": item.get("description"),
+                    **({"project_id": item["project_id"]} if "project_id" in item else {}),
                     "workspace_id": item.get("workspace_id", state.get("workspace_id")),
                 })
             elif open_start:
@@ -667,6 +668,8 @@ def sync_pending():
                         data["duration"] = op["duration"]
                     if op.get("description") is not None:
                         data["description"] = op["description"]
+                    if "project_id" in op:
+                        data["project_id"] = op["project_id"]
                     try:
                         update_entry(workspace_id, op["entry_id"], data)
                     except requests.exceptions.HTTPError as e:
@@ -835,6 +838,7 @@ def _pending_as_entries(date_obj=None):
             "duration": duration,
             "description": op.get("description", ""),
             "workspace_id": op.get("workspace_id") or state.get("workspace_id"),
+            "project_id": op.get("project_id"),
             "_offline": True,
             "_pending_indexes": op["indexes"],
             "_pending_kind": op["kind"],
@@ -1183,7 +1187,7 @@ def _local_save_reason(action):
     return f"Offline — {action} queued locally"
 
 
-def toggle_tracking(*_args):
+def toggle_tracking(*_args, prompt_for_description=True):
     """Start or stop tracking locally, queuing failed cloud writes."""
     global icon_ref
 
@@ -1239,6 +1243,8 @@ def toggle_tracking(*_args):
                 state["entry_id"] = None
                 state["start_time"] = None
                 save_state()
+            import toggl_control
+            toggl_control.record_stop(sys.modules[__name__], entry_id, start_time, description, workspace_id, project_id, now)
             _append_event("toggle_stopped", source="tray", entry_id=entry_id, stop_time=now)
             _play_sound(SOUND_STOP)
         else:
@@ -1291,7 +1297,7 @@ def toggle_tracking(*_args):
                     mode="local",
                 )
             _play_sound(SOUND_START)
-            if not description:
+            if prompt_for_description and not description:
                 _notify("Tracking with no description — right-click to set one")
 
         if icon_ref:
@@ -2590,6 +2596,9 @@ def _build_cli_parser():
     )
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("run", help="run the tray app")
+    control = sub.add_parser("control", help="control the running tray using its private socket")
+    control.add_argument("action", choices=["snapshot", "refresh", "start", "stop", "edit-current", "edit-entry"])
+    control.add_argument("payload", nargs="?", default="{}", help="JSON command payload")
     sub.add_parser("status", help="show local state and pending queue")
     doctor = sub.add_parser("doctor", help="diagnose local state, pending queue, token, and optional cloud state")
     doctor.add_argument("--cloud", action="store_true", help="spend one API request to check Toggl's current timer")
@@ -2626,6 +2635,15 @@ def _run_cli(argv):
         return None
     parser = _build_cli_parser()
     args = parser.parse_args(argv)
+    if args.command == "control":
+        import toggl_control
+        try:
+            result = toggl_control.request(STATE_DIR, args.action, json.loads(args.payload))
+            print(json.dumps({"ok": True, "result": result}))
+            return 0
+        except Exception as error:
+            print(json.dumps({"ok": False, "error": str(error)}))
+            return 2
     if args.command == "run":
         return None
     if args.command == "status":
@@ -2759,6 +2777,9 @@ def main():
 
     _refresh_projects()
 
+    import toggl_control
+    control_server = toggl_control.start_server(sys.modules[__name__])
+
     # Start hotkey listener
     start_hotkey_listener()
 
@@ -2778,6 +2799,8 @@ def main():
     else:
         _update_panel_timer_label()
         icon_ref.run()
+    control_server.shutdown()
+    control_server.server_close()
     lock_fp.close()
     return 0
 

@@ -1,0 +1,51 @@
+import { execFile } from "node:child_process";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+export interface Project { id: number | string; workspace_id: number | string; name: string; color: string | null; active?: boolean }
+export interface Entry { workspace_id?: number | string; id: number | string; description: string; project_id?: number | string | null; start: string; stop?: string | null; duration: number; _offline?: boolean; [key: string]: unknown }
+export interface Snapshot {
+  state: { tracking: boolean; description: string; project_id: number | string | null; workspace_id: number | string | null; start_time: string | null; entry_id: number | string | null };
+  projects: Project[]; entries: Entry[]; pending_count: number; warning: string;
+}
+
+export function control(cliPath: string | undefined, action: string, payload: object = {}): Promise<Snapshot> {
+  const configured = cliPath?.trim() || join(homedir(), ".local", "bin", "toggl");
+  const executable = configured.startsWith("~/") ? join(homedir(), configured.slice(2)) : configured;
+  return new Promise((resolve, reject) => {
+    execFile(executable, ["control", action, JSON.stringify(payload)], { timeout: 45000, maxBuffer: 2 * 1024 * 1024 }, (error, stdout) => {
+      let response;
+      try { response = JSON.parse(stdout); } catch {
+        reject(new Error(error ? "Could not reach Toggl Tray. Check the CLI path and launch the tray app." : "Invalid response from Toggl Tray.")); return;
+      }
+      if (!response.ok) { reject(new Error(response.error || "Timer command failed")); return; }
+      if (error) { reject(new Error("Timer command failed. Refresh before trying again.")); return; }
+      resolve(response.result as Snapshot);
+    });
+  });
+}
+
+export function elapsed(start: string | null, stop?: string | null): string {
+  if (!start) return "0:00:00";
+  const seconds = Math.max(0, Math.floor(((stop ? Date.parse(stop) : Date.now()) - Date.parse(start)) / 1000));
+  if (!Number.isFinite(seconds)) return "0:00:00";
+  return `${Math.floor(seconds / 3600)}:${String(Math.floor(seconds / 60) % 60).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+export function queueCommands(send: (action: string, payload: object) => Promise<Snapshot>) {
+  let tail: Promise<unknown> = Promise.resolve();
+  let pending = 0;
+  return (action: string, payload: object = {}): Promise<Snapshot | undefined> => {
+    if (pending && ["snapshot", "refresh"].includes(action)) return Promise.resolve(undefined);
+    pending += 1;
+    const result = tail.then(() => send(action, payload)).finally(() => { pending -= 1; });
+    tail = result.catch(() => undefined);
+    return result;
+  };
+}
+
+export function projectChoices(snapshot: Snapshot, current: { workspace_id?: number | string | null; project_id?: number | string | null }): Project[] {
+  const workspace = current.workspace_id ?? snapshot.state.workspace_id;
+  return snapshot.projects.filter(p => String(p.workspace_id) === String(workspace)
+    && (p.active !== false || String(p.id) === String(current.project_id)));
+}
