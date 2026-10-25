@@ -228,6 +228,8 @@ MIT
 
 Right-click the tray icon and open **Project** to select a saved project or **No project** directly. The current choice is checked. Selection updates the current interval, or the remembered project while stopped, without starting a new interval. **Refresh projects** reloads the choices. Pending offline timers remain editable; cloud edits show a notification if they cannot be saved.
 
+The same submenu includes **New Project…**, **Edit Selected Project…**, and **Manage Projects…**. New/Edit opens a name and color form; Manage opens your account's project page for archives, deletion, and advanced settings. The timer window's **Projects** button and Vicinae's **Projects** section offer the same actions. Creating a project adds it to the choices without assigning it to the timer. Saving a name or color immediately refreshes shared project lists and the selected project's tray color while keeping existing time entries attached. Creation/editing requires a connection; failed or uncertain writes keep the form text and ask you to refresh before retrying.
+
 While tracking a project, the tray icon uses that project’s saved six-digit hex color. Stopped timers stay grey; timers without a project or a valid color keep the default active icon. Project metadata is cached locally in `~/.local/share/toggl-tray/projects.json`, scoped to the account, and refreshed at most hourly while API quota is available. Cached colors work offline, and rendering never makes network requests. Changing a project or its color updates the panel icon automatically after the next cloud/project refresh.
 
 ### Vicinae extension

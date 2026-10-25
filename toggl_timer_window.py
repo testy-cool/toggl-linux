@@ -92,8 +92,23 @@ class TimerEditor:
             label = Gtk.Label(label=title, xalign=0)
             grid.attach(label, 0, row, 1, 1)
             widget.set_hexpand(True)
-            grid.attach(widget, 1, row, 1, 1)
+            grid.attach(widget, 1, row, 1 if row == 0 else 2, 1)
             widget.connect("changed", self._changed)
+        self.project_tools = Gtk.MenuButton(label="Projects")
+        project_menu = Gtk.Menu()
+        project_menu.get_style_context().add_class("toggl-editor")
+        for title, callback in (("New Project…", self._new_project),
+                                ("Edit Selected Project…", self._edit_project),
+                                ("Manage Projects…", self._manage_projects)):
+            item = Gtk.MenuItem(label=title)
+            item.connect("activate", callback)
+            project_menu.append(item)
+            if title.startswith("Edit"):
+                self.edit_project_item = item
+        project_menu.connect("show", self._project_menu_opened)
+        project_menu.show_all()
+        self.project_tools.set_popup(project_menu)
+        grid.attach(self.project_tools, 2, 0, 1, 1)
         self.description.connect("activate", lambda *_: self._save())
         self.start.connect("activate", lambda *_: self._save())
         actions = Gtk.Box(spacing=10)
@@ -158,16 +173,7 @@ class TimerEditor:
         self.baseline = dict(snapshot["state"])
         self.projects_snapshot = list(snapshot["projects"])
         self.description.set_text(self.baseline.get("description", ""))
-        self.project.remove_all()
-        self.project.append("none", "No project")
-        projects = [p for p in snapshot["projects"] if str(p.get("workspace_id")) == str(self.baseline.get("workspace_id"))
-                    and (p.get("active") is not False or p.get("id") == self.baseline.get("project_id"))]
-        for p in projects:
-            self.project.append(str(p["id"]), p.get("name") or str(p["id"]))
-        selected = self.baseline.get("project_id")
-        if selected is not None and not any(str(p["id"]) == str(selected) for p in projects):
-            self.project.append(str(selected), "Current project (not cached)")
-        self.project.set_active_id("none" if selected is None else str(selected))
+        self._load_project_choices(snapshot, self.baseline.get("project_id"))
         self.start.set_text(self.app._coerce_datetime(self.baseline["start_time"]).astimezone().strftime("%Y-%m-%d %H:%M") if self.baseline.get("tracking") else "")
         self.start.set_sensitive(bool(self.baseline.get("tracking")))
         self.updating = False
@@ -175,6 +181,53 @@ class TimerEditor:
         self.message.set_text("")
         self.reload.hide()
         self._headers(snapshot)
+
+    def _load_project_choices(self, snapshot, selected):
+        self.project.remove_all()
+        self.project.append("none", "No project")
+        projects = [p for p in snapshot["projects"] if str(p.get("workspace_id")) == str(self.baseline.get("workspace_id"))
+                    and (p.get("active") is not False or str(p.get("id")) == str(selected))]
+        for p in projects:
+            self.project.append(str(p["id"]), p.get("name") or str(p["id"]))
+        if selected is not None and not any(str(p["id"]) == str(selected) for p in projects):
+            self.project.append(str(selected), "Current project (not cached)")
+        self.project.set_active_id("none" if selected is None else str(selected))
+
+    def _project_menu_opened(self, *_):
+        selected = self.project.get_active_id()
+        snapshot = toggl_control.snapshot(self.app)
+        self.edit_project_item.set_sensitive(selected not in (None, "none") and any(
+            str(p.get("id")) == str(selected)
+            and str(p.get("workspace_id")) == str(snapshot["state"].get("workspace_id")) for p in snapshot["projects"]))
+
+    def _new_project(self, *_):
+        import toggl_project_window
+        toggl_project_window.show(self.app, parent=self.window, on_saved=self._project_saved)
+
+    def _edit_project(self, *_):
+        import toggl_project_window
+        selected = self.project.get_active_id()
+        if selected in (None, "none"):
+            self.message.set_text("Select a project to edit its name or color.")
+            return
+        toggl_project_window.edit_selected(self.app, self.window, self._project_saved, selected)
+
+    def _manage_projects(self, *_):
+        import toggl_project_window
+        toggl_project_window.manage(self.app, self.window)
+
+    def _project_saved(self, snapshot):
+        if self.window is None:
+            return
+        selected = self.project.get_active_id()
+        self.updating = True
+        try:
+            self._load_project_choices(snapshot, None if selected == "none" else selected)
+            self.projects_snapshot = list(snapshot["projects"])
+        finally:
+            self.updating = False
+        self._headers(snapshot)
+        self.message.set_text("Project saved. Choose it from Project when you want to use it.")
 
     def _headers(self, snapshot):
         current = snapshot["state"]
@@ -192,7 +245,9 @@ class TimerEditor:
         if not self.busy:
             if not self.dirty and (snapshot["state"] != self.baseline or snapshot["projects"] != self.projects_snapshot):
                 self._load(snapshot)
-            elif snapshot["state"] != self.baseline:
+            elif snapshot["projects"] != self.projects_snapshot:
+                self._project_saved(snapshot)
+            if self.dirty and snapshot["state"] != self.baseline:
                 self.message.set_text("Timer changed. Reload the current timer before saving.")
                 self.reload.show()
         return True

@@ -125,6 +125,32 @@ def test_resume_selection_keeps_the_details_displayed_when_the_chooser_opened():
     assert selected['_pending_indexes'] == [0, 1]
 
 
+def test_project_updates_refresh_picker_without_erasing_a_dirty_timer_draft():
+    view = editor.TimerEditor.__new__(editor.TimerEditor)
+    view.app = app
+    view.window = MagicMock()
+    view.busy = False
+    view.dirty = True
+    view.updating = False
+    view.baseline = dict(app.state)
+    view.projects_snapshot = []
+    view.project = MagicMock()
+    view.project.get_active_id.return_value = '7'
+    view.description = MagicMock()
+    view.start = MagicMock()
+    view.message = MagicMock()
+    view.reload = MagicMock()
+    view._headers = MagicMock()
+    view._load_project_choices = MagicMock()
+    snapshot = dict(state=dict(app.state), projects=[dict(id=7, name='New name')])
+    with patch.object(editor.toggl_control, 'snapshot', return_value=snapshot):
+        view._tick()
+    view._load_project_choices.assert_called_once_with(snapshot, '7')
+    view.description.set_text.assert_not_called()
+    view.start.set_text.assert_not_called()
+    assert view.dirty is True
+
+
 def test_unchanged_fields_make_no_request():
     state=dict(description="Work",project_id=7,tracking=False)
     assert editor.editor_changes(app,state,"Work","7","")=={}

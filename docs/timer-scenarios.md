@@ -36,6 +36,24 @@ Manage my time
     +-- Account connection
 ```
 
+```text
+Project lifecycle (tray, timer window, Vicinae)
+|
++-- Choose an existing project or No project
++-- New Project
+|   +-- Enter name and choose color
+|   +-- Create; project becomes available in every picker
+|   +-- Select it explicitly when ready to assign the current interval
++-- Edit Selected Project
+|   +-- Change name or color; keep the same project ID and history
+|   +-- Refresh names and icon colors immediately
++-- Manage Projects
+    +-- Open the configured web Projects page
+    +-- Archive, restore, delete, or change advanced settings there
+```
+
+Project name/color forms retain drafts on failure and detect changed accounts, workspaces, and project metadata. Project writes are not queued for replay. The native timer's unsaved description, start time, and project selection survive project-list refreshes.
+
 The native timer window groups project, description, start time and Start/Stop together. **Save Changes** corrects the current interval; **Start New Task** ends it and starts another. Enter or Ctrl+Enter saves corrections; Ctrl+Shift+Enter starts a new task while tracking. Start time shows its date: enter a full date and time to correct an older interval, or HH:MM for today. Stop, Sync and Refresh preserve unsaved drafts.
 
 Today's entries stay visible. **More** holds panel visibility, Sync Now, Refresh Projects and Connection inside the timer window. Panel selections reload from the saved configuration whenever More opens. Vicinae exposes the same common timer actions through searchable native lists/forms. Stale forms must not edit a replacement timer, and offline actions remain recoverable.

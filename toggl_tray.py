@@ -2046,6 +2046,21 @@ def on_refresh_tray_projects(_icon, _item):
     threading.Thread(target=refresh, daemon=True).start()
 
 
+def on_new_project(_icon, _item):
+    import toggl_project_window
+    GLib.idle_add(toggl_project_window.show, sys.modules[__name__])
+
+
+def on_edit_selected_project(_icon, _item):
+    import toggl_project_window
+    GLib.idle_add(toggl_project_window.edit_selected, sys.modules[__name__])
+
+
+def on_manage_projects(_icon, _item):
+    import toggl_project_window
+    GLib.idle_add(toggl_project_window.manage, sys.modules[__name__])
+
+
 def _tray_project_items():
     with state_lock:
         current = dict(state)
@@ -2061,7 +2076,13 @@ def _tray_project_items():
         items.append(choice(project["id"], project.get("name") or str(project["id"])))
     if current.get("project_id") is not None and not any(str(p["id"]) == str(current["project_id"]) for p in projects):
         items.append(choice(current["project_id"], "Current project (not cached)"))
-    items.append(pystray.MenuItem("Refresh projects", on_refresh_tray_projects))
+    items.extend((pystray.Menu.SEPARATOR,
+                  pystray.MenuItem("New Project…", on_new_project),
+                  pystray.MenuItem("Edit Selected Project…", on_edit_selected_project,
+                                   enabled=current.get("project_id") is not None and any(
+                                       str(p["id"]) == str(current["project_id"]) for p in projects)),
+                  pystray.MenuItem("Manage Projects…", on_manage_projects),
+                  pystray.MenuItem("Refresh projects", on_refresh_tray_projects)))
     return items
 
 
