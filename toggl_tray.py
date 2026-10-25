@@ -879,6 +879,7 @@ def _merge_entries_with_pending(entries, pending_entries):
 _icon_path_active = None
 _icon_path_inactive = None
 _last_tray_icon_path = None
+_last_menu_key = None
 _project_cache = None
 _last_project_refresh_attempt = None
 _project_cache_lock = threading.Lock()
@@ -936,17 +937,34 @@ def _refresh_projects(force=False):
         _project_cache_lock.release()
 
 
-def _current_icon_path():
-    """Choose a cached icon without making any network requests."""
-    _init_icons()
-    if not state.get("tracking"):
-        return _icon_path_inactive
+# Toggl's project palette; tasks without a project get a stable colour from it.
+TASK_COLORS = ("#0b83d9", "#9e5bd9", "#d94182", "#e36a00", "#bf7000", "#2da608", "#06a893",
+               "#c9806b", "#465bb3", "#990099", "#c7af14", "#566614", "#d92b2b", "#525266")
+
+
+def _tracking_color():
+    """The running project's colour, or a colour derived from the task when there is no project."""
     project_id = state.get("project_id")
     project = next((p for p in _cached_projects() if isinstance(p, dict)
                     and project_id is not None and str(p.get("id")) == str(project_id)
                     and str(p.get("workspace_id")) == str(state.get("workspace_id"))), {})
     color = project.get("color")
-    if not isinstance(color, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+    if isinstance(color, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+        return color
+    description = " ".join((state.get("description") or "").split())
+    if project_id is not None or not description:
+        return None
+    digest = hashlib.sha256(description.encode()).digest()
+    return TASK_COLORS[digest[0] % len(TASK_COLORS)]
+
+
+def _current_icon_path():
+    """Choose a cached icon without making any network requests."""
+    _init_icons()
+    if not state.get("tracking"):
+        return _icon_path_inactive
+    color = _tracking_color()
+    if color is None:
         return _icon_path_active
     path = str(STATE_DIR / "icons" / f"project-{color[1:].lower()}.png")
     if not Path(path).exists():
@@ -958,7 +976,13 @@ def _current_icon_path():
 
 
 def _update_tray_icon_once():
-    global _last_tray_icon_path
+    global _last_tray_icon_path, _last_menu_key
+    # Rebuild the menu when the running task changes, so its active dot follows the timer.
+    key = (state.get("tracking"), state.get("project_id"), state.get("description"))
+    if key != _last_menu_key:
+        if _last_menu_key is not None:
+            _set_tray_menu(build_menu())
+        _last_menu_key = key
     path = _current_icon_path()
     if path != _last_tray_icon_path:
         update_tray_icon()
@@ -2149,18 +2173,24 @@ def _tray_recent_items():
     used = [p for p in groups if p['count']]
     remaining = [p for p in groups if p not in used and p['id'] is not None]
     rows = (used+remaining)[:2]
+    tracking = bool(current.get('tracking'))
+    running = ' '.join((current.get('description') or '').split())
     items = []
     for project in rows:
         if items:
             items.append(pystray.Menu.SEPARATOR)
-        items.append(pystray.MenuItem(project.get('name') or str(project['id']),
+        on_project = tracking and str(current.get('project_id')) == str(project['id'])
+        items.append(pystray.MenuItem(('● ' if on_project else '')+(project.get('name') or str(project['id'])),
                      _project_choice_action(project['id'], current, context)))
         recent, frequent = toggl_task_tree.quick_choices(project['tasks'], recent=2, frequent=1)
-        for task in recent+frequent:
+        tasks = recent+frequent
+        for index, task in enumerate(tasks):
             name = ' '.join(task['description'].split()) or 'No description'
+            active = on_project and name == running
             if len(name) > 70:
                 name = name[:67]+'…'
-            items.append(pystray.MenuItem('    Start: '+name,
+            branch = '└─ ' if index == len(tasks)-1 else '├─ '
+            items.append(pystray.MenuItem('  '+branch+('● ' if active else '')+name,
                          _task_choice_action(project['id'], task['description'], context)))
     if items:
         items.append(pystray.Menu.SEPARATOR)

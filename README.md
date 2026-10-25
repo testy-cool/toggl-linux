@@ -246,7 +246,10 @@ Use **Resume Previous Task** in the timer window, or **Start Again** on a comple
 
 Right-click the tray icon. The last two projects and up to three recent/frequent
 tasks per project are directly visible at the top of the first menu, ready to
-click without hovering or opening a submenu. Open **Project** for more projects
+click without hovering or opening a submenu. They are drawn as a tree, and a dot
+marks the project and task that are running. Clicking a task there switches to it.
+While tracking, the tray icon takes the project's colour; a task with no project
+gets a fixed colour of its own. Open **Project** for more projects
 and their recent/frequent task descriptions. **Start: …** ends the current interval and starts
 a new one with that project and description; **Use this project** changes only
 the current interval's project.
