@@ -183,5 +183,9 @@ def select_task(app, project_id, description, context, expected):
     import toggl_control
     if context != toggl_projects.context(app):
         raise ValueError('Account or workspace changed; reopen projects and tasks')
+    # Choosing the task that is already running keeps its timer instead of restarting it.
+    if (expected.get('tracking') and str(expected.get('project_id')) == str(project_id)
+            and ' '.join((expected.get('description') or '').split()) == ' '.join(description.split())):
+        return None
     return toggl_control.dispatch(app, 'switch', {'changes': {'project_id': project_id, 'description': description},
                                                 'expected': expected, 'context': context})

@@ -227,6 +227,16 @@ def test_tray_icon_colour_follows_project_or_task(tmp_state_dir):
         assert app._tracking_color() is None
 
 
+def test_choosing_the_running_task_keeps_its_timer(tmp_state_dir):
+    m=module()
+    running=dict(app.state,tracking=True,start_time=NOW.isoformat(),project_id=None,description='Stay Safe')
+    with patch('toggl_control.dispatch') as dispatch:
+        assert m.select_task(app,None,'Stay Safe',toggl_projects.context(app),running) is None
+        dispatch.assert_not_called()
+        m.select_task(app,None,'Other task',toggl_projects.context(app),running)
+        dispatch.assert_called_once()
+
+
 def test_pending_correction_replaces_remembered_description(tmp_state_dir):
     m=module()
     start=NOW.isoformat()
