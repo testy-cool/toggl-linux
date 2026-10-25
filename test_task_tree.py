@@ -177,6 +177,28 @@ def test_task_switch_closes_offline_interval_and_creates_distinct_pending_start(
     assert operations[1].get('stop_time') is None
 
 
+def test_last_two_projects_and_tasks_are_clickable_in_first_tray_menu_without_submenus(tmp_state_dir):
+    from types import SimpleNamespace
+    m=module()
+    class Menu(list):
+        SEPARATOR=object()
+        def __init__(self,*items): super().__init__(items)
+    def item(text,action,**options):return SimpleNamespace(text=text,action=action,**options)
+    rows=m.group_projects(PROJECTS,[entry(1,7,'Write FAQ'),entry(2,8,'Build selector',days=1)],'ws_123',now=NOW)
+    with patch.object(m,'tree',return_value=rows),patch.object(app,'_cached_projects',return_value=PROJECTS), \
+         patch.object(app.pystray,'Menu',Menu),patch.object(app.pystray,'MenuItem',side_effect=item):
+        menu=app.build_menu()
+    direct=[i for i in menu if isinstance(i,SimpleNamespace)]
+    labels=[i.text for i in direct]
+    assert 'DPF' in labels and 'Tools' in labels
+    tasks=[i for i in direct if 'Start: ' in i.text]
+    assert any('Write FAQ' in i.text for i in tasks)
+    assert any('Build selector' in i.text for i in tasks)
+    assert all(callable(i.action) and not isinstance(i.action,Menu) for i in tasks)
+    assert callable(next(i for i in direct if i.text=='DPF').action)
+    assert 'Unused' not in labels
+
+
 def test_pending_correction_replaces_remembered_description(tmp_state_dir):
     m=module()
     start=NOW.isoformat()

@@ -2145,10 +2145,41 @@ def _tray_project_items():
     return items
 
 
+def _tray_recent_items():
+    """Two project/task branches flattened into the first menu: no hovering."""
+    import toggl_projects
+    app = sys.modules[__name__]
+    with state_lock:
+        current = dict(state)
+    context = toggl_projects.context(app)
+    groups = toggl_task_tree.tree(app)
+    used = [p for p in groups if p['count']]
+    remaining = [p for p in groups if p not in used and p['id'] is not None]
+    rows = (used+remaining)[:2]
+    items = []
+    for project in rows:
+        if items:
+            items.append(pystray.Menu.SEPARATOR)
+        items.append(pystray.MenuItem(project.get('name') or str(project['id']),
+                     _project_choice_action(project['id'], current, context)))
+        recent, frequent = toggl_task_tree.quick_choices(project['tasks'], recent=2, frequent=1)
+        for task in recent+frequent:
+            name = ' '.join(task['description'].split()) or 'No description'
+            if len(name) > 70:
+                name = name[:67]+'…'
+            items.append(pystray.MenuItem('    Start: '+name,
+                         _task_choice_action(project['id'], task['description'], context)))
+    if items:
+        items.append(pystray.Menu.SEPARATOR)
+    return items
+
+
 def build_menu():
     toggle_label = "Stop tracking" if state["tracking"] else "Start tracking"
     return pystray.Menu(
+        *_tray_recent_items(),
         pystray.MenuItem("Open Timer", on_open_timer, default=True),
+        pystray.MenuItem("Find Project or Task…", on_find_project_task),
         pystray.MenuItem("Project", pystray.Menu(*_tray_project_items())),
         pystray.MenuItem(
             "Show timer in panel",

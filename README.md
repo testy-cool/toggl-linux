@@ -244,9 +244,10 @@ Use **Resume Previous Task** in the timer window, or **Start Again** on a comple
 
 ### Quick project and task selection from the tray
 
-Right-click the tray icon and open **Project**. Recent projects appear first,
-followed by frequently used alternatives. Each project expands into its recent
-and frequent task descriptions. **Start: …** ends the current interval and starts
+Right-click the tray icon. The last two projects and up to three recent/frequent
+tasks per project are directly visible at the top of the first menu, ready to
+click without hovering or opening a submenu. Open **Project** for more projects
+and their recent/frequent task descriptions. **Start: …** ends the current interval and starts
 a new one with that project and description; **Use this project** changes only
 the current interval's project.
 
