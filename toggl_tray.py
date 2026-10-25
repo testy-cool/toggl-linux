@@ -225,15 +225,15 @@ def _auth():
     return HTTPBasicAuth(api_token, "api_token")
 
 
-def _api(method, path, json=None, params=None):
+def _api(method, path, json=None, params=None, token=None):
     """Single API wrapper. 429s are deferred instead of retried inline."""
     global rate_limited_until
-    if not api_token:
+    if not (token or api_token):
         raise MissingApiTokenError("No Toggl API token configured")
     _record_api_request()
     r = requests.request(
         method, f"{API_BASE}{path}",
-        auth=_auth(), json=json, params=params, timeout=10,
+        auth=_auth() if token is None else HTTPBasicAuth(token, "api_token"), json=json, params=params, timeout=10,
     )
     if r.status_code == 429:
         try:
@@ -619,6 +619,7 @@ def sync_pending():
                                 state["start_time"] = current["start"]
                                 state["description"] = current.get("description", "")
                                 state["project_id"] = current.get("project_id")
+                                state["workspace_id"] = current.get("workspace_id") or state.get("workspace_id")
                                 save_state()
                             synced_indexes.update(op["indexes"])
                         else:
@@ -867,9 +868,10 @@ _last_project_refresh_attempt = None
 _project_cache_lock = threading.Lock()
 
 
-def _project_account():
+def _project_account(token=None):
     # Scope persisted metadata to the credential without storing the credential.
-    return hashlib.sha256(api_token.encode()).hexdigest() if api_token else None
+    token = api_token if token is None else token
+    return hashlib.sha256(token.encode()).hexdigest() if token else None
 
 
 def _cached_projects():
@@ -890,7 +892,8 @@ def _refresh_projects(force=False):
     if not _project_cache_lock.acquire(blocking=False):
         return
     try:
-        account = _project_account()
+        token = api_token
+        account = _project_account(token)
         _cached_projects()
         now = time.monotonic()
         if not force:
@@ -901,7 +904,7 @@ def _refresh_projects(force=False):
                 if isinstance(fetched_at, (int, float)) and 0 <= time.time() - fetched_at < CLOUD_POLL_INTERVAL_SECONDS:
                     return
         _last_project_refresh_attempt = now
-        projects = api_get("/me/projects")
+        projects = _api("GET", "/me/projects", token=token)
         if not isinstance(projects, list):
             return
         cache = {
@@ -1152,6 +1155,7 @@ def _sync_cloud_state():
                 state["start_time"] = current["start"]
                 state["description"] = current.get("description", "")
                 state["project_id"] = current.get("project_id")
+                state["workspace_id"] = current.get("workspace_id") or state.get("workspace_id")
             else:
                 state["tracking"] = False
                 state["entry_id"] = None
@@ -2714,6 +2718,7 @@ def _init_workspace():
             state["start_time"] = current["start"]
             state["description"] = current.get("description", "")
             state["project_id"] = current.get("project_id")
+            state["workspace_id"] = current.get("workspace_id") or state.get("workspace_id")
         else:
             state["tracking"] = False
             state["entry_id"] = None
