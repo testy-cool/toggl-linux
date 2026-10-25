@@ -1114,6 +1114,7 @@ def _update_native_status_menu():
         return False
     native_status_menu_ref = create_menu(icon_ref.menu)
     native_status_icon_ref.set_primary_menu(native_status_menu_ref)
+    native_status_icon_ref.set_secondary_menu(native_status_menu_ref)
     return False
 
 
