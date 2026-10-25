@@ -56,9 +56,12 @@ def _changes(app, values, context=None):
     return result
 
 
-def _edit_current(app, changes):
+def _edit_current(app, changes, expected=None):
     with app.state_lock:
         current = dict(app.state)
+        if expected is not None and any(current.get(k) != expected.get(k) for k in
+                                       ("tracking", "entry_id", "start_time", "description", "project_id", "workspace_id")):
+            raise ControlError("Timer changed; refresh before editing")
     if "start" in changes and not current.get("tracking"):
         raise ControlError("Start time can only be changed while tracking")
     remote_changes = dict(changes)
@@ -205,7 +208,7 @@ def dispatch(app, action, payload):
             if app.state.get("tracking"):
                 app.toggle_tracking(prompt_for_description=False)
         elif action == "edit-current":
-            _edit_current(app, _changes(app, payload.get("changes", {})))
+            _edit_current(app, _changes(app, payload.get("changes", {}), before), expected=before)
         elif action == "edit-entry":
             _edit_entry(app, payload.get("entry"), payload.get("changes", {}))
     if app.state.get("tracking") and app.state.get("entry_id"):

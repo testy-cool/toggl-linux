@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from test_toggl_tray import reset_state, tmp_state_dir
 import toggl_tray as app
+import toggl_control as control
 
 
 PROJECTS = [dict(id=7, workspace_id='ws_123', name='DPF', active=True),
@@ -60,3 +61,43 @@ def test_selecting_the_checked_project_spends_no_cloud_request(tmp_state_dir):
     with patch.object(app, 'update_entry') as update:
         assert app._apply_tray_project(7, dict(app.state)) is True
     update.assert_not_called()
+
+
+def test_cloud_switch_during_project_validation_cannot_edit_the_replacement(tmp_state_dir):
+    app.state.update(tracking=True, entry_id=101, start_time='2026-10-25T10:00:00+00:00')
+    before = dict(app.state)
+    original = control._changes
+    def change_timer(*args, **kwargs):
+        changes = original(*args, **kwargs)
+        app.state.update(entry_id=202, description='Replacement')
+        return changes
+    with patch.object(app, '_cached_projects', return_value=PROJECTS), \
+         patch.object(control, '_changes', side_effect=change_timer), \
+         patch.object(app, 'update_entry') as update, patch.object(app, '_notify'):
+        assert app._apply_tray_project(7, before) is False
+    update.assert_not_called()
+    assert app.state['project_id'] is None
+
+
+def test_project_menu_uses_the_timer_current_at_click_time(tmp_state_dir):
+    app.state.update(tracking=True, entry_id=101, start_time='2026-10-25T10:00:00+00:00')
+    menu_state = dict(app.state)
+    callback = app._project_choice_action(7, menu_state)
+    app.state.update(entry_id=202, description='Current when clicked')
+    def immediate_thread(target, args, daemon):
+        return SimpleNamespace(start=lambda: target(*args))
+    with patch.object(app.threading, 'Thread', side_effect=immediate_thread), \
+         patch.object(app, '_cached_projects', return_value=PROJECTS), \
+         patch.object(app, 'update_entry') as update, patch.object(app, '_notify') as notify:
+        callback(None, None)
+    update.assert_called_once_with('ws_123', 202, {'project_id': 7})
+    notify.assert_not_called()
+
+
+def test_old_workspace_menu_cannot_assign_a_project_in_the_new_workspace(tmp_state_dir):
+    callback = app._project_choice_action(7, dict(app.state))
+    app.state['workspace_id'] = 'elsewhere'
+    with patch.object(app, '_apply_tray_project') as apply, patch.object(app, '_notify') as notify:
+        callback(None, None)
+    apply.assert_not_called()
+    assert 'changed' in notify.call_args.args[0].lower()

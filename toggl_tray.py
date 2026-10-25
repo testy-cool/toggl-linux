@@ -2026,8 +2026,15 @@ def _refresh_project_menu():
     return False
 
 
-def _project_choice_action(project_id, expected):
+def _project_choice_action(project_id, context):
     def selected(_icon, _item):
+        with state_lock:
+            expected = dict(state)
+        if str(expected.get("workspace_id")) != str(context.get("workspace_id")):
+            _notify("Project list changed; reopen Project and choose again")
+            if icon_ref:
+                GLib.idle_add(_refresh_project_menu)
+            return
         threading.Thread(target=_apply_tray_project, args=(project_id, expected), daemon=True).start()
     return selected
 
