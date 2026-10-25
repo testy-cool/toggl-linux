@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 export interface Project { id: number | string; workspace_id: number | string; name: string; color: string | null; active?: boolean }
-export interface Entry { id: number | string; description: string; project_id?: number | string | null; start: string; stop?: string | null; duration: number; _offline?: boolean; [key: string]: unknown }
+export interface Entry { workspace_id?: number | string; id: number | string; description: string; project_id?: number | string | null; start: string; stop?: string | null; duration: number; _offline?: boolean; [key: string]: unknown }
 export interface Snapshot {
   state: { tracking: boolean; description: string; project_id: number | string | null; workspace_id: number | string | null; start_time: string | null; entry_id: number | string | null };
   projects: Project[]; entries: Entry[]; pending_count: number; warning: string;
@@ -42,4 +42,10 @@ export function queueCommands(send: (action: string, payload: object) => Promise
     tail = result.catch(() => undefined);
     return result;
   };
+}
+
+export function projectChoices(snapshot: Snapshot, current: { workspace_id?: number | string | null; project_id?: number | string | null }): Project[] {
+  const workspace = current.workspace_id ?? snapshot.state.workspace_id;
+  return snapshot.projects.filter(p => String(p.workspace_id) === String(workspace)
+    && (p.active !== false || String(p.id) === String(current.project_id)));
 }

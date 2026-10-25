@@ -166,3 +166,23 @@ def test_invalid_start_time_does_not_partially_edit_description(tmp_state_dir):
             control.dispatch(app,"edit-current",{"changes":{"start":"bad","description":"Changed"}})
         update.assert_not_called()
     assert app.state['description']=='Original'
+
+
+def test_tray_stop_closes_cached_running_entry(tmp_state_dir):
+    app.state.update(tracking=True,entry_id=101,start_time="2026-10-25T10:00:00+00:00",description="Work")
+    app._control_entries=[{"id":101,"start":app.state["start_time"],"stop":None,"duration":-1,"description":"Work"}]
+    app._control_entries_date=app.datetime.now().date().isoformat()
+    with patch.object(app,"stop_entry",return_value={}),patch.object(app,"_play_sound"):
+        app.toggle_tracking()
+    result=control.snapshot(app)
+    assert result["entries"][0]["stop"] is not None
+    assert result["entries"][0]["duration"]>=0
+
+
+def test_external_timer_switch_does_not_display_previous_timer_as_running(tmp_state_dir):
+    app.state.update(tracking=True,entry_id=102,start_time="2026-10-25T11:00:00+00:00",description="New")
+    app._control_entries=[{"id":101,"start":"2026-10-25T10:00:00+00:00","stop":None,"duration":-1,"description":"Old"}]
+    app._control_entries_date=app.datetime.now().date().isoformat()
+    result=control.snapshot(app)
+    assert not any(e['id']==101 for e in result['entries'])
+    assert 'refresh' in result['warning'].lower()

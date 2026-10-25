@@ -1243,6 +1243,8 @@ def toggle_tracking(*_args, prompt_for_description=True):
                 state["entry_id"] = None
                 state["start_time"] = None
                 save_state()
+            import toggl_control
+            toggl_control.record_stop(sys.modules[__name__], entry_id, start_time, description, workspace_id, project_id, now)
             _append_event("toggle_stopped", source="tray", entry_id=entry_id, stop_time=now)
             _play_sound(SOUND_STOP)
         else:

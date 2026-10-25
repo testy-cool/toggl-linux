@@ -21,8 +21,12 @@ def snapshot(app):
     pending = app._pending_as_entries(today)
     cached = getattr(app, "_control_entries", []) if getattr(app, "_control_entries_date", "") == today.isoformat() else []
     entries = app._merge_entries_with_pending(cached, pending)
+    stale = [e for e in entries if not e.get("_offline") and e.get("duration", 0) < 0
+             and (not current.get("tracking") or e.get("id") != current.get("entry_id"))]
+    entries = [e for e in entries if e not in stale]
+    warning = getattr(app, "_control_warning", "") or ("Today's entries changed; refresh to update durations" if stale else "")
     return {"state": current, "projects": app._cached_projects(), "entries": entries,
-            "pending_count": len(app._load_pending()), "warning": getattr(app, "_control_warning", "")}
+            "pending_count": len(app._load_pending()), "warning": warning}
 
 
 def _changes(app, values, context=None):
@@ -168,15 +172,6 @@ def dispatch(app, action, payload):
             _edit_current(app, _changes(app, payload.get("changes", {})))
         elif action == "edit-entry":
             _edit_entry(app, payload.get("entry"), payload.get("changes", {}))
-    if action == "stop" and before.get("tracking") and before.get("entry_id") and not app.state.get("tracking"):
-        stop = app.datetime.now(app.timezone.utc).isoformat()
-        entry = {"id": before["entry_id"], "workspace_id": before["workspace_id"],
-                 "description": before.get("description", ""), "project_id": before.get("project_id"),
-                 "start": before["start_time"], "stop": stop,
-                 "duration": app._duration_seconds(before["start_time"], stop)}
-        cache = getattr(app, "_control_entries", [])
-        app._control_entries = [e for e in cache if e.get("id") != entry["id"]] + [entry]
-        app._control_entries_date = app.datetime.now().date().isoformat()
     if app.state.get("tracking") and app.state.get("entry_id"):
         current = app.state
         entry = {"id": current["entry_id"], "workspace_id": current["workspace_id"],
@@ -189,6 +184,19 @@ def dispatch(app, action, payload):
     if app.icon_ref:
         app.GLib.idle_add(_refresh_ui, app)
     return snapshot(app)
+
+
+def record_stop(app, entry_id, start, description, workspace_id, project_id, stop):
+    """Keep cached durations correct when stopping through any tray path."""
+    if not entry_id or not start:
+        return
+    today = app.datetime.now().date().isoformat()
+    cache = getattr(app, "_control_entries", []) if getattr(app, "_control_entries_date", "") == today else []
+    entry = {"id": entry_id, "workspace_id": workspace_id, "project_id": project_id,
+             "description": description, "start": start, "stop": stop,
+             "duration": app._duration_seconds(start, stop)}
+    app._control_entries = [e for e in cache if e.get("id") != entry_id] + [entry]
+    app._control_entries_date = today
 
 
 def _refresh_ui(app):
