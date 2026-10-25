@@ -2193,8 +2193,9 @@ def _tray_recent_items():
         recent, frequent = toggl_task_tree.quick_choices(project['tasks'], recent=2, frequent=1)
         tasks = recent+frequent
         for index, task in enumerate(tasks):
-            name = ' '.join(task['description'].split()) or 'No description'
+            name = ' '.join(task['description'].split())
             active = on_project and name == running
+            name = name or 'No description'
             if len(name) > 70:
                 name = name[:67]+'…'
             branch = '└─ ' if index == len(tasks)-1 else '├─ '

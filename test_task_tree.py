@@ -303,3 +303,18 @@ def test_corrected_interval_stays_corrected_after_its_upload(tmp_state_dir):
     with patch.object(app,'_cached_projects',return_value=PROJECTS):
         group=next(p for p in m.tree(app,now=NOW) if p['id']==7)
     assert [t['description'] for t in group['tasks']]==['Corrected']
+
+
+def test_running_task_with_no_description_gets_the_dot(tmp_state_dir):
+    from types import SimpleNamespace
+    m=module()
+    class Menu(list):
+        SEPARATOR=object()
+        def __init__(self,*items): super().__init__(items)
+    def item(text,action,**options):return SimpleNamespace(text=text,action=action,**options)
+    rows=m.group_projects(PROJECTS,[entry(1,7,''),entry(2,7,'No description',days=1)],'ws_123',now=NOW)
+    app.state.update(tracking=True,start_time=NOW.isoformat(),project_id=7,description='',workspace_id='ws_123')
+    with patch.object(m,'tree',return_value=rows),patch.object(app,'_cached_projects',return_value=PROJECTS), \
+         patch.object(app.pystray,'Menu',Menu),patch.object(app.pystray,'MenuItem',side_effect=item):
+        labels=[i.text for i in app.build_menu() if isinstance(i,SimpleNamespace)]
+    assert labels[:3]==['● DPF','  ├─ ● No description','  └─ No description']
