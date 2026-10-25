@@ -268,3 +268,13 @@ def test_pending_suggestions_do_not_cross_accounts_with_identical_project_ids(tm
     app.api_token='replacement-account'
     with patch.object(app,'_cached_projects',return_value=PROJECTS):
         assert all(not p['tasks'] for p in m.tree(app,now=NOW))
+
+
+def test_stale_cloud_reply_does_not_undo_a_switch_made_during_the_request(tmp_state_dir):
+    app.state.update(tracking=True,entry_id=101,start_time=NOW.isoformat(),description='Old',project_id=None)
+    def slow_reply():
+        app.state.update(entry_id=202,description='Next')  # the user switched while the request was in flight
+        return dict(id=101,start=NOW.isoformat(),description='Old',workspace_id='ws_123')
+    with patch.object(app,'fetch_current_entry',side_effect=slow_reply),patch.object(app,'_load_pending',return_value=[]):
+        app._sync_cloud_state()
+    assert (app.state['entry_id'],app.state['description'])==(202,'Next')

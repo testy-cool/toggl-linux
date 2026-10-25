@@ -804,8 +804,12 @@ def _health_check():
     if _load_pending():
         return
     try:
+        with state_lock:
+            before = dict(state)
         current = fetch_current_entry()
         with state_lock:
+            if state != before:
+                return  # A start, stop or switch happened during the request; its reply is stale.
             if current:
                 state["entry_id"] = current["id"]
                 state["start_time"] = current["start"]
@@ -1188,8 +1192,12 @@ def _sync_cloud_state():
     if any(item.get("action") in ("start", "stop") for item in pending):
         return
     try:
+        with state_lock:
+            before = dict(state)
         current = fetch_current_entry()
         with state_lock:
+            if state != before:
+                return  # A start, stop or switch happened during the request; its reply is stale.
             if current:
                 state["tracking"] = True
                 state["entry_id"] = current["id"]
