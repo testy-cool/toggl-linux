@@ -227,6 +227,16 @@ def test_tray_icon_colour_follows_project_or_task(tmp_state_dir):
         assert app._tracking_color() is None
 
 
+def test_choosing_the_running_task_keeps_its_timer(tmp_state_dir):
+    m=module()
+    running=dict(app.state,tracking=True,start_time=NOW.isoformat(),project_id=None,description='Stay Safe')
+    with patch('toggl_control.dispatch') as dispatch:
+        assert m.select_task(app,None,'Stay Safe',toggl_projects.context(app),running) is None
+        dispatch.assert_not_called()
+        m.select_task(app,None,'Other task',toggl_projects.context(app),running)
+        dispatch.assert_called_once()
+
+
 def test_pending_correction_replaces_remembered_description(tmp_state_dir):
     m=module()
     start=NOW.isoformat()
@@ -258,3 +268,110 @@ def test_pending_suggestions_do_not_cross_accounts_with_identical_project_ids(tm
     app.api_token='replacement-account'
     with patch.object(app,'_cached_projects',return_value=PROJECTS):
         assert all(not p['tasks'] for p in m.tree(app,now=NOW))
+
+
+def test_stale_cloud_reply_does_not_undo_a_switch_made_during_the_request(tmp_state_dir):
+    app.state.update(tracking=True,entry_id=101,start_time=NOW.isoformat(),description='Old',project_id=None)
+    def slow_reply():
+        app.state.update(entry_id=202,description='Next')  # the user switched while the request was in flight
+        return dict(id=101,start=NOW.isoformat(),description='Old',workspace_id='ws_123')
+    with patch.object(app,'fetch_current_entry',side_effect=slow_reply),patch.object(app,'_load_pending',return_value=[]):
+        app._sync_cloud_state()
+    assert (app.state['entry_id'],app.state['description'])==(202,'Next')
+
+
+def test_running_task_from_previous_account_is_not_suggested_or_remembered(tmp_state_dir):
+    m=module()
+    app.queue_action('start',start_time=NOW.isoformat(),description='Account A private task',project_id=7,workspace_id='ws_123')
+    app.state.update(tracking=True,start_time=NOW.isoformat(),description='Account A private task',project_id=7)
+    app.api_token='account-b'
+    with patch.object(app,'_cached_projects',return_value=PROJECTS):
+        assert all(not p['tasks'] for p in m.tree(app,now=NOW))
+    m.remember(app,dict(app.state))
+    assert m.cached_entries(app)==[]
+
+
+def test_corrected_interval_stays_corrected_after_its_upload(tmp_state_dir):
+    m=module()
+    start=NOW.isoformat()
+    app.queue_action('start',start_time=start,description='Old',project_id=7,workspace_id='ws_123')
+    app.queue_action('stop',start_time=start,stop_time=(NOW+timedelta(minutes=1)).isoformat(),description='Old',project_id=7,workspace_id='ws_123')
+    m.remember(app,dict(app.state,tracking=True,start_time=start,description='Old',project_id=7))
+    import toggl_control
+    toggl_control.dispatch(app,'edit-entry',dict(entry=app._pending_as_entries()[0],changes={'description':'Corrected'}))
+    app._save_pending([])  # the corrected interval uploaded and left the queue
+    with patch.object(app,'_cached_projects',return_value=PROJECTS):
+        group=next(p for p in m.tree(app,now=NOW) if p['id']==7)
+    assert [t['description'] for t in group['tasks']]==['Corrected']
+
+
+def test_running_task_with_no_description_gets_the_dot(tmp_state_dir):
+    from types import SimpleNamespace
+    m=module()
+    class Menu(list):
+        SEPARATOR=object()
+        def __init__(self,*items): super().__init__(items)
+    def item(text,action,**options):return SimpleNamespace(text=text,action=action,**options)
+    rows=m.group_projects(PROJECTS,[entry(1,7,''),entry(2,7,'No description',days=1)],'ws_123',now=NOW)
+    app.state.update(tracking=True,start_time=NOW.isoformat(),project_id=7,description='',workspace_id='ws_123')
+    with patch.object(m,'tree',return_value=rows),patch.object(app,'_cached_projects',return_value=PROJECTS), \
+         patch.object(app.pystray,'Menu',Menu),patch.object(app.pystray,'MenuItem',side_effect=item):
+        labels=[i.text for i in app.build_menu() if isinstance(i,SimpleNamespace)]
+    assert labels[:3]==['● DPF','  ├─ ● No description','  └─ No description']
+
+
+def test_cloud_timer_from_previous_account_is_not_suggested_after_token_change(tmp_state_dir):
+    m=module()
+    app.state.update(tracking=True,entry_id=101,start_time=NOW.isoformat(),description='Private A',project_id=None)
+    app.save_state()
+    app.api_token='account-b'
+    with patch.object(app,'_cached_projects',return_value=PROJECTS):
+        assert all(not p['tasks'] for p in m.tree(app,now=NOW))
+    m.remember(app,dict(app.state))
+    assert m.cached_entries(app)==[]
+
+
+def test_editing_one_interval_leaves_others_with_the_same_start_alone(tmp_state_dir):
+    m=module()
+    first=entry(101,7,'First'); other=dict(entry(102,8,'Unrelated'),start=first['start'])
+    app._atomic_write_text(tmp_state_dir/'task-history.json',json.dumps(dict(context=toggl_projects.context(app),fetched_at=0,entries=[first,other])))
+    m.correct(app,first,{'description':'Corrected'})
+    assert sorted(e['description'] for e in m.cached_entries(app))==['Corrected','Unrelated']
+
+
+def test_history_reply_fetched_before_an_edit_does_not_undo_it(tmp_state_dir):
+    m=module()
+    old=entry(101,7,'Old')
+    app._atomic_write_text(tmp_state_dir/'task-history.json',json.dumps(dict(context=toggl_projects.context(app),fetched_at=0,entries=[old])))
+    def slow_history(*_a,**_k):
+        m.correct(app,old,{'description':'Corrected'})  # the edit lands while the history request is in flight
+        return [old]
+    with patch.object(app,'_api',side_effect=slow_history):
+        assert m.refresh(app,force=True) is False
+    assert [e['description'] for e in m.cached_entries(app)]==['Corrected']
+
+
+def test_two_remote_intervals_with_identical_text_are_corrected_separately(tmp_state_dir):
+    m=module()
+    first=entry(101,7,'Same task'); second=dict(entry(102,7,'Same task'),start=first['start'])
+    app._atomic_write_text(tmp_state_dir/'task-history.json',json.dumps(dict(context=toggl_projects.context(app),fetched_at=0,entries=[first,second])))
+    m.correct(app,first,{'description':'Corrected'})
+    assert sorted(e['description'] for e in m.cached_entries(app))==['Corrected','Same task']
+
+
+def test_edit_during_the_first_history_fetch_is_not_undone(tmp_state_dir):
+    m=module()
+    old=entry(101,7,'Old')
+    def slow_history(*_a,**_k):
+        m.correct(app,old,{'description':'Corrected'})
+        return [old]
+    with patch.object(app,'_api',side_effect=slow_history):
+        assert m.refresh(app,force=True) is False
+
+
+def test_offline_edit_of_a_synced_interval_updates_its_cached_copy(tmp_state_dir):
+    m=module()
+    synced=entry(101,7,'Old')
+    app._atomic_write_text(tmp_state_dir/'task-history.json',json.dumps(dict(context=toggl_projects.context(app),fetched_at=0,entries=[synced])))
+    m.correct(app,dict(synced,id='pending:0',_remote_entry_id=101),{'description':'Corrected'})
+    assert [e['description'] for e in m.cached_entries(app)]==['Corrected']

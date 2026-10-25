@@ -6,6 +6,7 @@ import socketserver
 import threading
 import time
 import toggl_projects
+import toggl_task_tree
 from pathlib import Path
 
 MAX_MESSAGE = 2 * 1024 * 1024
@@ -113,6 +114,7 @@ def _edit_entry(app, selected, changes):
             with app.state_lock:
                 app.state.update(changes)
                 app.save_state()
+        toggl_task_tree.correct(app, entry, changes)
     else:
         entries = getattr(app, "_control_entries", [])
         entry = next((e for e in entries if str(e.get("id")) == str(selected.get("id"))), None)
@@ -122,6 +124,7 @@ def _edit_entry(app, selected, changes):
         if not app.api_token or app._rate_limit_active() or app._request_budget_exhausted():
             raise ControlError("Cloud entry cannot be edited right now; retry when connected")
         app.update_entry(entry.get("workspace_id") or app.state["workspace_id"], entry["id"], changes)
+        toggl_task_tree.correct(app, dict(entry), changes)
         entry.update(changes)
         if app.state.get("entry_id") == entry["id"]:
             with app.state_lock:

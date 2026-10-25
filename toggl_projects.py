@@ -15,8 +15,17 @@ def _api_base(app):
     return str(base).rstrip("/")
 
 
+def _account(token, base_url):
+    return hashlib.sha256(json.dumps([base_url, token]).encode()).hexdigest() if token else None
+
+
+def account(app):
+    """The current server+credential identity, without taking the state lock."""
+    return _account(app.api_token, _api_base(app))
+
+
 def _context_for(app, token, base_url):
-    account = hashlib.sha256(json.dumps([base_url, token]).encode()).hexdigest() if token else None
+    account = _account(token, base_url)
     with app.state_lock:
         workspace = app.state.get("workspace_id")
     return {"workspace_id": workspace, "account": account}

@@ -397,6 +397,11 @@ def _read_ledger_events(limit=None):
 
 
 def save_state():
+    # Stamp each new interval with the account it started under, so a later token change cannot hand it to another account.
+    if state.get("start_time") != state.get("_account_start"):
+        import toggl_projects
+        state["_account"] = toggl_projects.account(sys.modules[__name__]) if state.get("start_time") else None
+        state["_account_start"] = state.get("start_time")
     _atomic_write_text(STATE_FILE, json.dumps(state, indent=2))
 
 
@@ -804,8 +809,12 @@ def _health_check():
     if _load_pending():
         return
     try:
+        with state_lock:
+            before = dict(state)
         current = fetch_current_entry()
         with state_lock:
+            if state != before:
+                return  # A start, stop or switch happened during the request; its reply is stale.
             if current:
                 state["entry_id"] = current["id"]
                 state["start_time"] = current["start"]
@@ -1188,8 +1197,12 @@ def _sync_cloud_state():
     if any(item.get("action") in ("start", "stop") for item in pending):
         return
     try:
+        with state_lock:
+            before = dict(state)
         current = fetch_current_entry()
         with state_lock:
+            if state != before:
+                return  # A start, stop or switch happened during the request; its reply is stale.
             if current:
                 state["tracking"] = True
                 state["entry_id"] = current["id"]
@@ -2185,8 +2198,9 @@ def _tray_recent_items():
         recent, frequent = toggl_task_tree.quick_choices(project['tasks'], recent=2, frequent=1)
         tasks = recent+frequent
         for index, task in enumerate(tasks):
-            name = ' '.join(task['description'].split()) or 'No description'
+            name = ' '.join(task['description'].split())
             active = on_project and name == running
+            name = name or 'No description'
             if len(name) > 70:
                 name = name[:67]+'…'
             branch = '└─ ' if index == len(tasks)-1 else '├─ '
@@ -2982,6 +2996,8 @@ def main():
     load_state()
 
     api_token = get_api_token()
+    if api_token and state.get("start_time") and state.get("_account_start") != state.get("start_time"):
+        save_state()  # A timer saved by an older version gets stamped with the account it was running under.
     if not api_token:
         print("No API token found. Set TOGGL_API_TOKEN env var or use the tray menu.", file=sys.stderr)
         print("You can also run: secret-tool store --label='Toggl API Token' service toggl username api_token", file=sys.stderr)

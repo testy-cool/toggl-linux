@@ -60,6 +60,7 @@ def refresh(app, force=False):
         if not force and 0 <= now - cache.get('fetched_at', 0) < app.CLOUD_POLL_INTERVAL_SECONDS:
             return False
         _attempts[key] = now
+        started = time.time()
         end = datetime.now(timezone.utc)
         entries = app._api('GET', '/me/time_entries', token=token, base_url=base,
                            params={'start_date': (end-timedelta(days=HISTORY_DAYS)).isoformat(),
@@ -70,6 +71,8 @@ def refresh(app, force=False):
             cache = _cache(app)
             if toggl_projects.context(app) != scope:
                 return False
+            if cache.get('edited_at', 0) >= started:
+                return False  # An interval was edited while this reply was in flight; it is stale.
             cloud = _bounded(entries)
             cloud_starts = {_stamp(e.get('start')) for e in cloud}
             local = [e for e in cache.get('local_entries', []) if _stamp(e.get('start')) not in cloud_starts]
@@ -92,9 +95,20 @@ def _save(app, data):
         backup.chmod(0o600)
 
 
+def _other_account(app, current, scope):
+    """True when the running interval was started under a different account."""
+    if current.get('_account') not in (None, scope['account']):
+        return True
+    start = _stamp(current.get('start_time'))
+    return any(_stamp(e.get('start')) == start and e.get('_task_context') not in (None, scope)
+               for e in app._pending_as_entries())
+
+
 def remember(app, current):
     """Keep a task available immediately after stopping, including while offline."""
     if not current.get('tracking') or not current.get('start_time'):
+        return
+    if _other_account(app, current, toggl_projects.context(app)):
         return
     entry = dict(id=current.get('entry_id') or 'local:'+current['start_time'],
                  start=current['start_time'], workspace_id=current.get('workspace_id'),
@@ -164,11 +178,48 @@ def tree(app, query='', now=None):
                or (e.get('_task_context') is None and _stamp(e.get('start')) in known_starts)]
     pending_starts = {_stamp(e.get('start')) for e in pending}
     entries = pending+[e for e in cached if _stamp(e.get('start')) not in pending_starts]
-    if current.get('tracking') and current.get('start_time'):
+    if current.get('tracking') and current.get('start_time') and not _other_account(app, current, scope):
         entries = [dict(id=current.get('entry_id') or 'local:'+current['start_time'], start=current['start_time'],
                         workspace_id=current.get('workspace_id'), project_id=current.get('project_id'),
                         description=current.get('description', ''))]+entries
     return group_projects(app._cached_projects(), entries, current.get('workspace_id'), query, now)
+
+
+def _remote_id(entry):
+    value = entry.get('_remote_entry_id') or entry.get('id')
+    return None if value is None or str(value).startswith(('local:', 'pending:')) else str(value)
+
+
+def _same_interval(cached, edited):
+    """Same remote id, or same start with the same old project and text (offline copies have no shared id)."""
+    if cached.get('id') is not None and str(cached.get('id')) == str(edited.get('id')):
+        return True
+    if _remote_id(cached) and _remote_id(edited):
+        return _remote_id(cached) == _remote_id(edited)  # known remote intervals match only by id
+    return (_stamp(cached.get('start')) == _stamp(edited.get('start'))
+            and str(cached.get('workspace_id')) == str(edited.get('workspace_id'))
+            and str(cached.get('project_id')) == str(edited.get('project_id'))
+            and (cached.get('description') or '') == (edited.get('description') or ''))
+
+
+def correct(app, edited, changes):
+    """Apply an interval edit to its cached copy, so the tree never offers the old text.
+
+    `edited` is the interval as it was before the edit."""
+    fields = {k: changes[k] for k in ('description', 'project_id') if k in changes}
+    if not fields or _stamp(edited.get('start')) is None:
+        return
+    try:
+        with _cache_lock:
+            data = _cache(app) or dict(context=toggl_projects.context(app), fetched_at=0,
+                                           entries=[], local_entries=[])
+            for e in (e for key in ('entries', 'local_entries') for e in data.get(key, [])):
+                if _same_interval(e, edited):
+                    e.update(fields)
+            data['edited_at'] = time.time()
+            _save(app, data)
+    except OSError as error:
+        print(f'Project/task history not saved: {error}', file=app.sys.stderr)
 
 
 def quick_choices(rows, recent=4, frequent=3):
@@ -183,5 +234,9 @@ def select_task(app, project_id, description, context, expected):
     import toggl_control
     if context != toggl_projects.context(app):
         raise ValueError('Account or workspace changed; reopen projects and tasks')
+    # Choosing the task that is already running keeps its timer instead of restarting it.
+    if (expected.get('tracking') and str(expected.get('project_id')) == str(project_id)
+            and ' '.join((expected.get('description') or '').split()) == ' '.join(description.split())):
+        return None
     return toggl_control.dispatch(app, 'switch', {'changes': {'project_id': project_id, 'description': description},
                                                 'expected': expected, 'context': context})

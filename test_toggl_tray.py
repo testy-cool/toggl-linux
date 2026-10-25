@@ -33,7 +33,11 @@ import toggl_tray
 @pytest.fixture(autouse=True)
 def reset_state(tmp_path):
     """Reset global state before each test."""
-    with patch.object(toggl_tray, "CONFIG_FILE", tmp_path / "config.json"), \
+    # Every test gets its own state directory, so none can overwrite the user's real files.
+    with patch.object(toggl_tray, "STATE_DIR", tmp_path), \
+         patch.object(toggl_tray, "STATE_FILE", tmp_path / "state.json"), \
+         patch.object(toggl_tray, "PENDING_FILE", tmp_path / "pending.json"), \
+         patch.object(toggl_tray, "CONFIG_FILE", tmp_path / "config.json"), \
          patch.object(toggl_tray, "LEDGER_FILE", tmp_path / "events.jsonl"), \
          patch.object(toggl_tray, "REQUEST_BUDGET_FILE", tmp_path / "request_budget.json", create=True):
         toggl_tray.state.update({
