@@ -1053,6 +1053,13 @@ class TestNotificationThrottling:
         assert toggl_tray._notification_allowed("same", now=101.0) is False
         assert toggl_tray._notification_allowed("same", now=3701.0) is True
 
+    @patch.object(toggl_tray.subprocess, "Popen")
+    def test_no_notification_reaches_desktop(self, mock_popen, tmp_state_dir):
+        toggl_tray._last_notification_at.clear()
+        toggl_tray._notify("Tracking with no description — right-click tray icon to set one")
+        toggl_tray._notify(toggl_tray.AUTH_FAILED_SYNC_MESSAGE)
+        mock_popen.assert_not_called()
+
     @patch.object(toggl_tray, "_notify")
     def test_sync_failure_notifies_once_until_success(self, mock_notify):
         toggl_tray._record_sync_failure(Exception("down 1"))

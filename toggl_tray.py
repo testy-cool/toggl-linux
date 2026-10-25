@@ -1345,15 +1345,8 @@ def _notification_allowed(body, now=None):
 
 
 def _notify(body):
-    if not _notification_allowed(body):
-        return
-    try:
-        subprocess.Popen(
-            ["notify-send", "-a", "Toggl Tray", "Toggl Tray", body],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-    except Exception:
-        pass
+    # Desktop notifications are off: the user asked for none.
+    return
 
 
 def _play_sound(path):
