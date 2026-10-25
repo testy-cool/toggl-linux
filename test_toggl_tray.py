@@ -914,6 +914,96 @@ class TestStartEntryPayload:
 
 
 class TestTrayIcon:
+    def test_refresh_uses_the_credential_that_owns_its_cache(self):
+        def request(method, path, **kwargs):
+            assert kwargs.get("token") == "tok"
+            toggl_tray.api_token = "other_account"
+            return [{"id": 7, "workspace_id": "ws_123", "name": "Original", "color": "#123456"}]
+        with patch.object(toggl_tray, "_api", side_effect=request):
+            toggl_tray._refresh_projects()
+        assert toggl_tray._cached_projects() == []
+        toggl_tray.api_token = "tok"
+        assert toggl_tray._cached_projects()[0]["name"] == "Original"
+
+    def test_cloud_workspace_change_uses_the_running_projects_color(self):
+        toggl_tray.state.update(workspace_id=100)
+        with patch.object(toggl_tray, "_api", return_value=[
+            {"id": 7, "workspace_id": 200, "name": "Other workspace", "color": "#123456"},
+        ]):
+            toggl_tray._refresh_projects()
+        with patch.object(toggl_tray, "fetch_current_entry", return_value={
+            "id": 9, "workspace_id": 200, "project_id": 7, "description": "Work", "start": "2026-10-25T10:00:00+00:00",
+        }):
+            toggl_tray._sync_cloud_state()
+        assert toggl_tray.state["workspace_id"] == 200
+        assert toggl_tray._current_icon_path().endswith("project-123456.png")
+
+    @pytest.fixture(autouse=True)
+    def isolate_icons(self, tmp_state_dir):
+        with patch.object(toggl_tray, "_icon_path_active", None), \
+             patch.object(toggl_tray, "_icon_path_inactive", None), \
+             patch.object(toggl_tray, "_project_cache", None, create=True), \
+             patch.object(toggl_tray, "_last_project_refresh_attempt", None, create=True), \
+             patch.object(toggl_tray, "_last_tray_icon_path", None, create=True):
+            yield
+
+    @patch.object(toggl_tray, "_api", return_value=[
+        {"id": 7, "workspace_id": "ws_123", "name": "Example", "color": "#e28c1c", "active": True},
+    ])
+    def test_saved_project_color_tints_running_icon_and_survives_offline_restart(self, mock_get):
+        from PIL import Image
+        toggl_tray.state.update(tracking=True, project_id=7)
+        toggl_tray._refresh_projects()
+        path = toggl_tray._current_icon_path()
+        with Image.open(path) as im:
+            assert im.getpixel((toggl_tray.ICON_SIZE // 2, toggl_tray.ICON_PADDING + 2)) == (226, 140, 28, 255)
+            assert im.getpixel((0, 0))[3] == 0
+        with patch.object(toggl_tray, "_project_cache", None), \
+             patch.object(toggl_tray, "_api", side_effect=requests.ConnectionError):
+            assert toggl_tray._current_icon_path() == path
+        mock_get.assert_called_once_with("GET", "/me/projects", token="tok")
+
+    @pytest.mark.parametrize("project_id,color,tracking", [(None, "#ff0000", True), (7, "bad", True), (7, "#ff0000", False)])
+    def test_missing_invalid_or_stopped_project_uses_default_icon(self, project_id, color, tracking):
+        toggl_tray.state.update(tracking=tracking, project_id=project_id)
+        with patch.object(toggl_tray, "_api", return_value=[
+            {"id": 7, "workspace_id": "ws_123", "name": "Example", "color": color},
+        ]):
+            toggl_tray._refresh_projects()
+        toggl_tray._init_icons()
+        expected = toggl_tray._icon_path_active if tracking else toggl_tray._icon_path_inactive
+        assert toggl_tray._current_icon_path() == expected
+
+    @patch.object(toggl_tray, "_api", return_value=[])
+    def test_project_refresh_respects_cache_account_and_request_budget(self, mock_get):
+        toggl_tray._refresh_projects()
+        toggl_tray._refresh_projects()
+        mock_get.assert_called_once_with("GET", "/me/projects", token="tok")
+        with patch.object(toggl_tray, "api_token", "another_account"):
+            assert toggl_tray._cached_projects() == []
+        with patch.object(toggl_tray, "_request_budget_remaining", return_value=6):
+            toggl_tray._refresh_projects(force=True)
+        assert mock_get.call_count == 1
+
+    def test_native_and_appindicator_paths_use_project_icon(self):
+        with patch.object(toggl_tray, "_current_icon_path", return_value="project.png"):
+            native = MagicMock()
+            toggl_tray.native_status_icon_ref = native
+            toggl_tray.update_tray_icon()
+            toggl_tray.GLib.idle_add.assert_called_with(toggl_tray._set_native_status_icon_path, "project.png")
+            toggl_tray.native_status_icon_ref = None
+            indicator = MagicMock()
+            toggl_tray.icon_ref = type("Icon", (), {"_appindicator": indicator})()
+            toggl_tray.update_tray_icon()
+            indicator.set_icon_full.assert_called_once_with("project.png", "Toggl")
+
+    def test_icon_refresh_runs_once_per_color_change(self):
+        with patch.object(toggl_tray, "_current_icon_path", side_effect=["first.png", "first.png", "second.png"]), \
+             patch.object(toggl_tray, "update_tray_icon") as update:
+            for _ in range(3):
+                assert toggl_tray._update_tray_icon_once() is False
+            assert update.call_count == 2
+
     @patch.object(toggl_tray, "_init_icons")
     @patch.object(toggl_tray, "render_icon", return_value="new-icon")
     def test_update_tray_icon_fallback_sets_icon(self, mock_render, mock_init):

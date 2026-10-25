@@ -223,3 +223,7 @@ Pending billable entries are not expired or garbage-collected automatically.
 ## License
 
 MIT
+
+### Project colors
+
+While tracking a project, the tray icon uses that project’s saved six-digit hex color. Stopped timers stay grey; timers without a project or a valid color keep the default active icon. Project metadata is cached locally in `~/.local/share/toggl-tray/projects.json`, scoped to the account, and refreshed at most hourly while API quota is available. Cached colors work offline, and rendering never makes network requests. Changing a project or its color updates the panel icon automatically after the next cloud/project refresh.
