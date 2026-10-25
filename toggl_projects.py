@@ -15,12 +15,15 @@ def _api_base(app):
     return str(base).rstrip("/")
 
 
-def context(app):
-    identity = app._project_account()
-    account = hashlib.sha256(json.dumps([_api_base(app), identity]).encode()).hexdigest() if identity else None
+def _context_for(app, token, base_url):
+    account = hashlib.sha256(json.dumps([base_url, token]).encode()).hexdigest() if token else None
     with app.state_lock:
         workspace = app.state.get("workspace_id")
     return {"workspace_id": workspace, "account": account}
+
+
+def context(app):
+    return _context_for(app, app.api_token, _api_base(app))
 
 
 def projects_url(app):
@@ -43,13 +46,13 @@ def _fields(name, color):
     return {"name": name.strip(), "color": color}
 
 
-def _check_context(app, expected):
-    current = context(app)
+def _check_context(app, expected, token, base_url):
+    current = _context_for(app, token, base_url)
     if not isinstance(expected, dict) or expected != current:
-        raise ProjectError("Account or workspace changed; refresh projects before saving")
+        raise ProjectError("Account or workspace changed; refresh projects and reopen the editor before saving")
     if not current["workspace_id"]:
         raise ProjectError("No workspace is available; connect your account and refresh projects")
-    if not current["account"] or not app.api_token:
+    if not current["account"] or not token:
         raise ProjectError("Connect your account before saving projects")
     return current
 
@@ -57,7 +60,7 @@ def _check_context(app, expected):
 def _target(app, selected, workspace):
     fields = ("id", "workspace_id", "name", "color")
     if not isinstance(selected, dict) or not all(k in selected for k in fields):
-        raise ProjectError("Project changed; refresh projects before editing")
+        raise ProjectError("Project changed; refresh projects and reopen the editor before editing")
     project = next((p for p in app._cached_projects() if isinstance(p, dict)
                     and p.get("id") is not None
                     and str(p.get("workspace_id")) == str(workspace)
@@ -65,7 +68,7 @@ def _target(app, selected, workspace):
                     and str(p.get("workspace_id")) == str(selected.get("workspace_id"))
                     and all(p.get(k) == selected.get(k) for k in ("name", "color"))), None)
     if project is None:
-        raise ProjectError("Project changed; refresh projects before editing")
+        raise ProjectError("Project changed; refresh projects and reopen the editor before editing")
     return project
 
 
@@ -89,7 +92,7 @@ def _saved_project(response, expected, values, original):
 def _cache_saved_project(app, saved, expected):
     with app._project_cache_lock:
         if context(app) != expected:
-            raise ProjectError("Project was saved, but account or workspace changed; refresh projects before continuing")
+            raise ProjectError("Project was saved, but account or workspace changed; refresh projects and reopen the editor before continuing")
         existing = [dict(p) for p in app._cached_projects() if isinstance(p, dict)]
         replaced = False
         for idx, project in enumerate(existing):
@@ -113,8 +116,9 @@ def _cache_saved_project(app, saved, expected):
 
 
 def write(app, action, payload):
+    token, base_url = app.api_token, _api_base(app)
     values = _fields(payload.get("name"), payload.get("color"))
-    expected = _check_context(app, payload.get("context"))
+    expected = _check_context(app, payload.get("context"), token, base_url)
     original = _target(app, payload.get("project"), expected["workspace_id"]) if action == "project-update" else None
     if app._rate_limit_active() or app._request_budget_exhausted():
         raise ProjectError("Project changes are unavailable while requests are limited; wait and refresh projects")
@@ -122,7 +126,8 @@ def write(app, action, payload):
     if original:
         path += "/" + quote(str(original["id"]), safe="")
     try:
-        response = app.api_put(path, values) if original else app.api_post(path, dict(values, active=True))
+        response = (app.api_put(path, values, token=token, base_url=base_url) if original else
+                    app.api_post(path, dict(values, active=True), token=token, base_url=base_url))
     except Exception as error:
         status = getattr(getattr(error, "response", None), "status_code", None)
         if status in (401, 403):

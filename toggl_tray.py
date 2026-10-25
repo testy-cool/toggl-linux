@@ -225,14 +225,14 @@ def _auth():
     return HTTPBasicAuth(api_token, "api_token")
 
 
-def _api(method, path, json=None, params=None, token=None):
+def _api(method, path, json=None, params=None, token=None, base_url=None):
     """Single API wrapper. 429s are deferred instead of retried inline."""
     global rate_limited_until
     if not (token or api_token):
         raise MissingApiTokenError("No Toggl API token configured")
     _record_api_request()
     r = requests.request(
-        method, f"{API_BASE}{path}",
+        method, f"{base_url if base_url is not None else API_BASE}{path}",
         auth=_auth() if token is None else HTTPBasicAuth(token, "api_token"), json=json, params=params, timeout=10,
     )
     if r.status_code == 429:
@@ -251,12 +251,12 @@ def api_get(path, **kw):
     return _api("GET", path, **kw)
 
 
-def api_post(path, data):
-    return _api("POST", path, json=data)
+def api_post(path, data, **kw):
+    return _api("POST", path, json=data, **kw)
 
 
-def api_put(path, data):
-    return _api("PUT", path, json=data)
+def api_put(path, data, **kw):
+    return _api("PUT", path, json=data, **kw)
 
 
 def api_patch(path, data):

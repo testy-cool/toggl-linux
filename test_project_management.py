@@ -62,7 +62,8 @@ def test_create_uses_one_post_and_updates_cache_without_assigning_timer(project,
          patch.object(app, "api_get", side_effect=AssertionError("No extra GET")), \
          patch.object(app, "queue_action") as queue:
         result = control.dispatch(app, "project-create", {"context": context(), "name": "  Created  ", "color": "#aabbcc"})
-    post.assert_called_once_with("/workspaces/123/projects", {"name": "Created", "color": "#aabbcc", "active": True})
+    post.assert_called_once_with("/workspaces/123/projects", {"name": "Created", "color": "#aabbcc", "active": True},
+                                 token=app.api_token, base_url=app.API_BASE)
     queue.assert_not_called()
     assert app.state == before
     assert result["saved_project"] == saved
@@ -83,7 +84,8 @@ def test_update_preserves_id_timer_history_and_other_workspace_projects(project)
          patch.object(app, "api_get", side_effect=AssertionError("No extra GET")):
         result = control.dispatch(app, "project-update", {"context": context(), "project": dict(project),
                                   "name": "Renamed", "color": "#fedcba"})
-    put.assert_called_once_with("/workspaces/123/projects/7", {"name": "Renamed", "color": "#fedcba"})
+    put.assert_called_once_with("/workspaces/123/projects/7", {"name": "Renamed", "color": "#fedcba"},
+                                token=app.api_token, base_url=app.API_BASE)
     assert app.state == before
     assert result["saved_project"]["id"] == 7
     assert result["projects"] == [saved, other]
@@ -154,7 +156,7 @@ def test_unavailable_connection_fails_before_write(project, kind):
 
 def test_account_change_during_response_does_not_cache_into_new_account(project):
     original = context()
-    def changed_account(*args):
+    def changed_account(*args, **kwargs):
         app.api_token = "other-test-token"
         return {"id": 9, "workspace_id": 123, "name": "Created", "color": "#123456"}
     with patch.object(app, "api_post", side_effect=changed_account):
@@ -235,3 +237,41 @@ def test_cache_write_failure_warns_saved_without_losing_updated_memory(project):
                                   "name": "Renamed", "color": "#fedcba"})
     assert put.call_count == 1
     assert app._cached_projects()[0]["color"] == "#fedcba"
+
+
+@pytest.mark.parametrize("action", ["project-create", "project-update"])
+def test_project_write_pins_validated_token_and_base_during_request_budget_hook(project, action):
+    validated = context()
+    original_token = app.api_token
+    original_base = app.API_BASE
+    response = MagicMock(status_code=200, content=b"json")
+    response.json.return_value = dict(project, name="Changed", color="#abcdef")
+    def replace_account():
+        app.api_token = "replacement-test-token"
+        app.API_BASE = "https://replacement.example.test/api/v9"
+    with patch.object(app, "_record_api_request", side_effect=replace_account), \
+         patch.object(app.requests, "request", return_value=response) as request:
+        with pytest.raises(control.ControlError, match="saved"):
+            control.dispatch(app, action, {"context": validated, "project": dict(project),
+                             "name": "Changed", "color": "#abcdef"})
+    assert request.call_count == 1
+    method, url = request.call_args.args
+    assert method == ("POST" if action == "project-create" else "PUT")
+    expected_path = "/workspaces/123/projects" + ("/7" if action == "project-update" else "")
+    assert url == original_base + expected_path
+    assert request.call_args.kwargs["auth"].username == original_token
+    assert request.call_args.kwargs["auth"].username != app.api_token
+
+
+def test_stale_project_edit_requires_reopening_frozen_form(project):
+    stale = dict(project, name="Stale name")
+    with pytest.raises(control.ControlError, match="reopen"):
+        control.dispatch(app, "project-update", {"context": context(), "project": stale,
+                         "name": "Changed", "color": "#abcdef"})
+
+
+def test_stale_context_requires_reopening_frozen_form(project):
+    stale = context()
+    app.state["workspace_id"] = 456
+    with pytest.raises(control.ControlError, match="reopen"):
+        control.dispatch(app, "project-create", {"context": stale, "name": "Changed", "color": "#abcdef"})
