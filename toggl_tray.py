@@ -11,6 +11,8 @@ import argparse
 import shutil
 import shlex
 import contextlib
+import hashlib
+import re
 import threading
 import subprocess
 from datetime import datetime, timezone, timedelta
@@ -757,6 +759,8 @@ def _run_sync_cycle(now=None):
             _last_cloud_poll_at = now
 
     _health_check()
+    if icon_ref:
+        _refresh_projects()
     _record_sync_success()
 
 
@@ -857,6 +861,90 @@ def _merge_entries_with_pending(entries, pending_entries):
 
 _icon_path_active = None
 _icon_path_inactive = None
+_last_tray_icon_path = None
+_project_cache = None
+_last_project_refresh_attempt = None
+_project_cache_lock = threading.Lock()
+
+
+def _project_account():
+    # Scope persisted metadata to the credential without storing the credential.
+    return hashlib.sha256(api_token.encode()).hexdigest() if api_token else None
+
+
+def _cached_projects():
+    global _project_cache
+    if _project_cache is None:
+        _project_cache = _load_json_with_backup(STATE_DIR / "projects.json", {})
+    if not isinstance(_project_cache, dict) or _project_cache.get("account") != _project_account():
+        return []
+    projects = _project_cache.get("projects", [])
+    return projects if isinstance(projects, list) else []
+
+
+def _refresh_projects(force=False):
+    """Cache project metadata off the render thread, at most once an hour."""
+    global _project_cache, _last_project_refresh_attempt
+    if not api_token or _rate_limit_active() or _request_budget_remaining() <= REQUEST_BUDGET_BACKGROUND_RESERVE:
+        return
+    if not _project_cache_lock.acquire(blocking=False):
+        return
+    try:
+        account = _project_account()
+        _cached_projects()
+        now = time.monotonic()
+        if not force:
+            if _last_project_refresh_attempt is not None and now - _last_project_refresh_attempt < SYNC_INTERVAL_SECONDS:
+                return
+            if isinstance(_project_cache, dict) and _project_cache.get("account") == account:
+                fetched_at = _project_cache.get("fetched_at")
+                if isinstance(fetched_at, (int, float)) and 0 <= time.time() - fetched_at < CLOUD_POLL_INTERVAL_SECONDS:
+                    return
+        _last_project_refresh_attempt = now
+        projects = api_get("/me/projects")
+        if not isinstance(projects, list):
+            return
+        cache = {
+            "account": account, "fetched_at": time.time(),
+            "projects": [{k: p.get(k) for k in ("id", "workspace_id", "name", "color", "active")}
+                         for p in projects if isinstance(p, dict) and p.get("id") is not None],
+        }
+        _atomic_write_text(STATE_DIR / "projects.json", json.dumps(cache, indent=2))
+        _project_cache = cache
+    except Exception as error:
+        print(f"Project colors unavailable: {error}", file=sys.stderr)
+    finally:
+        _project_cache_lock.release()
+
+
+def _current_icon_path():
+    """Choose a cached icon without making any network requests."""
+    _init_icons()
+    if not state.get("tracking"):
+        return _icon_path_inactive
+    project_id = state.get("project_id")
+    project = next((p for p in _cached_projects() if isinstance(p, dict)
+                    and project_id is not None and str(p.get("id")) == str(project_id)
+                    and str(p.get("workspace_id")) == str(state.get("workspace_id"))), {})
+    color = project.get("color")
+    if not isinstance(color, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+        return _icon_path_active
+    path = str(STATE_DIR / "icons" / f"project-{color[1:].lower()}.png")
+    if not Path(path).exists():
+        with Image.open(_icon_path_active) as original:
+            tinted = Image.new("RGBA", original.size, color)
+            tinted.putalpha(original.getchannel("A"))
+            tinted.save(path)
+    return path
+
+
+def _update_tray_icon_once():
+    global _last_tray_icon_path
+    path = _current_icon_path()
+    if path != _last_tray_icon_path:
+        update_tray_icon()
+        _last_tray_icon_path = path
+    return False
 
 
 def _init_icons():
@@ -895,14 +983,12 @@ def _init_icons():
 
 def render_icon():
     """Return current icon as PIL image."""
-    _init_icons()
-    return Image.open(_icon_path_active if state["tracking"] else _icon_path_inactive)
+    return Image.open(_current_icon_path())
 
 
 def update_tray_icon():
     """Force appindicator to pick up the icon change."""
-    _init_icons()
-    path = _icon_path_active if state["tracking"] else _icon_path_inactive
+    path = _current_icon_path()
     if native_status_icon_ref:
         GLib.idle_add(_set_native_status_icon_path, path)
     elif icon_ref and hasattr(icon_ref, '_appindicator'):
@@ -1034,7 +1120,7 @@ def _init_native_status_icon():
         return False
     try:
         native_status_icon_ref = XApp.StatusIcon.new()
-        path = _icon_path_active if state["tracking"] else _icon_path_inactive
+        path = _current_icon_path()
         native_status_icon_ref.set_icon_name(path)
         native_status_icon_ref.set_tooltip_text(get_tooltip())
         _update_native_status_menu()
@@ -1990,6 +2076,7 @@ def update_loop():
             if native_status_icon_ref:
                 GLib.idle_add(native_status_icon_ref.set_tooltip_text, tooltip)
             GLib.idle_add(_update_panel_timer_label_once)
+            GLib.idle_add(_update_tray_icon_once)
 
 
 # ── Command-line recovery tools ─────────────────────────────────────────────
@@ -2664,6 +2751,8 @@ def main():
         print("You can also run: secret-tool store --label='Toggl API Token' service toggl username api_token", file=sys.stderr)
     else:
         _init_workspace()
+
+    _refresh_projects()
 
     # Start hotkey listener
     start_hotkey_listener()
