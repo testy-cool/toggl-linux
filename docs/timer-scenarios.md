@@ -31,4 +31,6 @@ Manage my time
     +-- Account connection
 ```
 
-The native timer window groups project, description, start time and Start/Stop together. **Save Changes** corrects the current interval; **Start New Task** ends it and starts another. Today's entries, sync and panel visibility are directly accessible. Vicinae exposes the same common timer actions through searchable native lists/forms. Stale forms must not edit a replacement timer, and offline actions remain recoverable.
+The native timer window groups project, description, start time and Start/Stop together. **Save Changes** corrects the current interval; **Start New Task** ends it and starts another. Enter or Ctrl+Enter saves corrections; Ctrl+Shift+Enter starts a new task while tracking. Start time shows its date: enter a full date and time to correct an older interval, or HH:MM for today. Stop, Sync and Refresh preserve unsaved drafts.
+
+Today's entries stay visible. **More** holds panel visibility, Sync Now, Refresh Projects and Connection inside the timer window. Panel selections reload from the saved configuration whenever More opens. Vicinae exposes the same common timer actions through searchable native lists/forms. Stale forms must not edit a replacement timer, and offline actions remain recoverable.

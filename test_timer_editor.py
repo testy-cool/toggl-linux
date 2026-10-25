@@ -2,6 +2,92 @@ import pytest
 import test_toggl_tray
 import toggl_tray as app
 import toggl_timer_window as editor
+from unittest.mock import MagicMock, patch
+
+
+def test_clock_only_start_correction_uses_today_after_midnight():
+    yesterday = app.datetime.now().astimezone() - app.timedelta(days=1)
+    baseline = dict(tracking=True, description='Work', project_id=7,
+                    start_time=yesterday.replace(hour=18, minute=0).isoformat())
+    changes = editor.editor_changes(app, baseline, 'Work', '7', '08:55')
+    assert app._parse_iso(changes['start']).date() == app.datetime.now().astimezone().date()
+
+
+def test_start_correction_can_explicitly_keep_the_previous_date():
+    previous = app.datetime.now().astimezone() - app.timedelta(days=1)
+    baseline = dict(tracking=True, description='Work', project_id=7,
+                    start_time=previous.replace(hour=18, minute=0).isoformat())
+    requested = previous.strftime('%Y-%m-%d') + ' 17:55'
+    changes = editor.editor_changes(app, baseline, 'Work', '7', requested)
+    parsed = app._parse_iso(changes['start'])
+    assert parsed.date() == previous.date()
+    assert (parsed.hour, parsed.minute) == (17, 55)
+
+
+def test_clock_only_start_uses_today_even_when_the_clock_matches_yesterday():
+    yesterday = (app.datetime.now() - app.timedelta(days=1)).astimezone()
+    baseline = dict(tracking=True, description='Work', project_id=7,
+                    start_time=yesterday.isoformat())
+    changes = editor.editor_changes(app, baseline, 'Work', '7', yesterday.strftime('%H:%M'))
+    assert app._parse_iso(changes['start']).date() == app.datetime.now().astimezone().date()
+
+
+def test_unchanged_dated_start_preserves_seconds():
+    previous = app.datetime.now().astimezone().replace(second=37)
+    baseline = dict(tracking=True, description='Work', project_id=7, start_time=previous.isoformat())
+    assert editor.editor_changes(app, baseline, 'Work', '7', previous.strftime('%Y-%m-%d %H:%M')) == {}
+
+
+@pytest.mark.parametrize('action', ['stop', 'sync', 'refresh'])
+def test_non_edit_actions_preserve_a_dirty_description_and_project(action):
+    view = editor.TimerEditor.__new__(editor.TimerEditor)
+    view.app = app
+    view.busy = True
+    view.dirty = True
+    view.pending_action = action
+    view.window = MagicMock()
+    view.baseline = dict(tracking=True, description='Saved', project_id=7,
+                         start_time='2026-10-25T10:00:00+00:00')
+    for name in ['toggle', 'new_task', 'save', 'description', 'project', 'start', 'message', 'reload']:
+        setattr(view, name, MagicMock())
+    view.description.get_text.return_value = 'Unsaved next task'
+    view.project.get_active_id.return_value = '8'
+    view._headers = MagicMock()
+    view._load = MagicMock()
+    state = dict(view.baseline, tracking=action != 'stop')
+    view._finish({'state': state}, None)
+    view._load.assert_not_called()
+    view.description.set_text.assert_not_called()
+    view.project.set_active_id.assert_not_called()
+    assert view.dirty is True
+    if action == 'stop':
+        assert view.baseline['tracking'] is False
+
+
+def test_more_settings_follow_current_tray_configuration():
+    view = editor.TimerEditor.__new__(editor.TimerEditor)
+    view.app = app
+    view.updating = False
+    view.panel_timer = MagicMock()
+    view.panel_description = MagicMock()
+    with patch.object(app, 'get_panel_timer_enabled', return_value=False), \
+         patch.object(app, 'get_panel_description_enabled', return_value=True):
+        view._settings_opened()
+    view.panel_timer.set_active.assert_called_once_with(False)
+    view.panel_description.set_active.assert_called_once_with(True)
+
+
+def test_new_task_has_a_separate_keyboard_shortcut():
+    view = editor.TimerEditor.__new__(editor.TimerEditor)
+    view._new_task = MagicMock()
+    view._save = MagicMock()
+    view.rendered_state = {'tracking': True}
+    with patch.object(editor.Gdk, 'KEY_Return', 65293), \
+         patch.object(editor.Gdk.ModifierType, 'CONTROL_MASK', 4), \
+         patch.object(editor.Gdk.ModifierType, 'SHIFT_MASK', 1):
+        assert view._key(None, MagicMock(keyval=65293, state=5)) is True
+    view._new_task.assert_called_once_with()
+    view._save.assert_not_called()
 
 
 def test_unchanged_fields_make_no_request():

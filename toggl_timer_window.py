@@ -15,10 +15,16 @@ def editor_changes(app, baseline, description, project, start):
         changes["project_id"] = project
     if baseline.get("tracking"):
         previous = app._coerce_datetime(baseline["start_time"]).astimezone()
-        if start != previous.strftime("%H:%M"):
-            parsed = app._parse_hhmm(start, previous)
-            if parsed is None:
-                raise ValueError("Enter the start time as HH:MM")
+        unchanged = start.strip() == previous.strftime("%Y-%m-%d %H:%M") or (
+            previous.date() == app.datetime.now().astimezone().date() and start.strip() == previous.strftime("%H:%M"))
+        if not unchanged:
+            try:
+                text = start.strip()
+                if " " not in text:
+                    text = app.datetime.now().astimezone().strftime("%Y-%m-%d ") + text
+                parsed = app.datetime.strptime(text, "%Y-%m-%d %H:%M").astimezone()
+            except ValueError:
+                raise ValueError("Enter HH:MM for today, or YYYY-MM-DD HH:MM") from None
             changes["start"] = parsed.isoformat()
     return changes
 
@@ -38,7 +44,7 @@ class TimerEditor:
         self.busy = False
         self.baseline = {}
         self.window = Gtk.Window(title="Toggl Timer")
-        self.window.set_default_size(560, 550)
+        self.window.set_default_size(560, 480)
         self.window.get_style_context().add_class("toggl-editor")
         css = Gtk.CssProvider()
         self.css = css
@@ -60,7 +66,8 @@ class TimerEditor:
         self.project = Gtk.ComboBoxText()
         self.description = Gtk.Entry()
         self.start = Gtk.Entry()
-        self.start.set_placeholder_text("HH:MM")
+        self.start.set_placeholder_text("YYYY-MM-DD HH:MM")
+        self.start.set_tooltip_text("Enter a date and time, or HH:MM for today")
         for row, (title, widget) in enumerate((("Project", self.project), ("Description", self.description), ("Start time", self.start))):
             label = Gtk.Label(label=title, xalign=0)
             grid.attach(label, 0, row, 1, 1)
@@ -74,6 +81,8 @@ class TimerEditor:
         self.toggle = Gtk.Button(label="Start Timer")
         self.new_task = Gtk.Button(label="Start New Task")
         self.save = Gtk.Button(label="Save Changes")
+        self.save.set_tooltip_text("Correct this interval · Ctrl+Enter")
+        self.new_task.set_tooltip_text("End this interval and start another · Ctrl+Shift+Enter")
         self.toggle.connect("clicked", self._toggle)
         self.new_task.connect("clicked", lambda *_: self._new_task())
         self.save.connect("clicked", lambda *_: self._save())
@@ -86,21 +95,29 @@ class TimerEditor:
         self.reload = Gtk.Button(label="Reload Current Timer")
         self.reload.connect("clicked", lambda *_: self._load(toggl_control.snapshot(app)))
         box.pack_start(self.reload, False, False, 0)
-        self.panel_timer = Gtk.CheckButton(label="Show elapsed time in panel")
-        self.panel_timer.set_active(app.get_panel_timer_enabled())
-        self.panel_timer.connect("toggled", lambda b: self._panel("timer", b.get_active()))
-        self.panel_description = Gtk.CheckButton(label="Show description in panel")
-        self.panel_description.set_active(app.get_panel_description_enabled())
-        self.panel_description.connect("toggled", lambda b: self._panel("description", b.get_active()))
-        box.pack_start(self.panel_timer, False, False, 0)
-        box.pack_start(self.panel_description, False, False, 0)
         secondary = Gtk.Box(spacing=10)
-        for title, callback in (("Today's Entries", lambda *_: app.on_view_today(None, None)),
-                                ("Sync Now", lambda *_: self._act("sync", {})),
+        today = Gtk.Button(label="Today's Entries")
+        today.connect("clicked", lambda *_: app.on_view_today(None, None))
+        secondary.pack_start(today, True, True, 0)
+        self.more = Gtk.MenuButton(label="More")
+        menu = Gtk.Menu()
+        menu.get_style_context().add_class("toggl-editor")
+        self.panel_timer = Gtk.CheckMenuItem(label="Show elapsed time in panel")
+        self.panel_description = Gtk.CheckMenuItem(label="Show description in panel")
+        self.panel_timer.connect("toggled", lambda b: self._panel("timer", b.get_active()))
+        self.panel_description.connect("toggled", lambda b: self._panel("description", b.get_active()))
+        for item in (self.panel_timer, self.panel_description):
+            menu.append(item)
+        for title, callback in (("Sync Now", lambda *_: self._act("sync", {})),
+                                ("Refresh Projects", lambda *_: self._act("refresh", {})),
                                 ("Connection…", lambda *_: app.on_set_token(None, None))):
-            button = Gtk.Button(label=title)
-            button.connect("clicked", callback)
-            secondary.pack_start(button, True, True, 0)
+            item = Gtk.MenuItem(label=title)
+            item.connect("activate", callback)
+            menu.append(item)
+        menu.connect("show", self._settings_opened)
+        menu.show_all()
+        self.more.set_popup(menu)
+        secondary.pack_start(self.more, True, True, 0)
         box.pack_end(secondary, False, False, 0)
         self.window.connect("destroy", self._destroy)
         self.window.connect("key-press-event", self._key)
@@ -128,7 +145,7 @@ class TimerEditor:
         if selected is not None and not any(str(p["id"]) == str(selected) for p in projects):
             self.project.append(str(selected), "Current project (not cached)")
         self.project.set_active_id("none" if selected is None else str(selected))
-        self.start.set_text(self.app._coerce_datetime(self.baseline["start_time"]).astimezone().strftime("%H:%M") if self.baseline.get("tracking") else "")
+        self.start.set_text(self.app._coerce_datetime(self.baseline["start_time"]).astimezone().strftime("%Y-%m-%d %H:%M") if self.baseline.get("tracking") else "")
         self.start.set_sensitive(bool(self.baseline.get("tracking")))
         self.updating = False
         self.dirty = False
@@ -178,13 +195,26 @@ class TimerEditor:
         self._act("switch", {"expected": self.baseline, "changes": {"description": self.description.get_text(), "project_id": None if self.project.get_active_id() == "none" else self.project.get_active_id()}})
 
     def _panel(self, kind, active):
+        if self.updating:
+            return
         (self.app.set_panel_timer_enabled if kind == "timer" else self.app.set_panel_description_enabled)(active)
         self.app._update_panel_timer_label()
+        if self.app.icon_ref:
+            self.app._set_tray_menu(self.app.build_menu())
+
+    def _settings_opened(self, *_):
+        self.updating = True
+        try:
+            self.panel_timer.set_active(self.app.get_panel_timer_enabled())
+            self.panel_description.set_active(self.app.get_panel_description_enabled())
+        finally:
+            self.updating = False
 
     def _act(self, action, payload):
         if self.busy:
             return
         self.busy = True
+        self.pending_action = action
         for button in (self.toggle, self.new_task, self.save, self.description, self.project, self.start):
             button.set_sensitive(False)
         self.message.set_text("Saving…" if action != "refresh" else "Refreshing…")
@@ -208,6 +238,16 @@ class TimerEditor:
         if error:
             self.message.set_text(error)
             self.reload.show()
+        elif self.dirty and getattr(self, "pending_action", None) in {"stop", "sync", "refresh"}:
+            if self.pending_action == "stop":
+                self.baseline = dict(result["state"])
+            self._headers(result)
+            self.start.set_sensitive(bool(result["state"].get("tracking")))
+            self.message.set_text("Draft kept. Use Save Changes or Start New Task when ready." if result["state"].get("tracking")
+                                  else "Draft kept. Use Start Timer when ready.")
+            if result["state"] != self.baseline:
+                self.message.set_text("Draft kept. Timer changed; reload before saving.")
+                self.reload.show()
         else:
             self._load(result)
         return False
@@ -217,7 +257,11 @@ class TimerEditor:
             self.window.destroy()
             return True
         if event.keyval == Gdk.KEY_Return and event.state & Gdk.ModifierType.CONTROL_MASK:
-            self._save()
+            if event.state & Gdk.ModifierType.SHIFT_MASK:
+                if self.rendered_state.get("tracking"):
+                    self._new_task()
+            else:
+                self._save()
             return True
         return False
 
