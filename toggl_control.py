@@ -25,18 +25,19 @@ def snapshot(app):
             "pending_count": len(app._load_pending()), "warning": getattr(app, "_control_warning", "")}
 
 
-def _changes(app, values):
+def _changes(app, values, context=None):
+    context = app.state if context is None else context
     if not isinstance(values, dict) or set(values) - {"description", "project_id"}:
         raise ControlError("Only description and project may be edited")
     if "description" in values and (not isinstance(values["description"], str) or len(values["description"]) > 10000):
         raise ControlError("Description must be text of at most 10000 characters")
     result = dict(values)
     if result.get("project_id") is not None:
-        if str(result["project_id"]) == str(app.state.get("project_id")):
-            result["project_id"] = app.state["project_id"]
+        if str(result["project_id"]) == str(context.get("project_id")):
+            result["project_id"] = context["project_id"]
             return result
         project = next((p for p in app._cached_projects() if str(p.get("id")) == str(result["project_id"])
-                        and str(p.get("workspace_id")) == str(app.state.get("workspace_id"))
+                        and str(p.get("workspace_id")) == str(context.get("workspace_id"))
                         ), None)
         if not project:
             raise ControlError("Project is unavailable; refresh the project list")
@@ -62,6 +63,8 @@ def _edit_current(app, changes):
                 queue[idx].update(changes)
             app._save_pending(queue)
     with app.state_lock:
+        if any(app.state.get(k) != current.get(k) for k in ("tracking", "entry_id", "start_time")):
+            raise ControlError("Timer changed while saving; refresh before editing again")
         app.state.update(changes)
         app.save_state()
 
@@ -77,6 +80,7 @@ def _edit_entry(app, selected, changes):
                          for k in ("id", "start", "stop", "description"))), None)
             if not entry:
                 raise ControlError("Pending entry changed; refresh before editing")
+            changes = _changes(app, changes, entry)
             for idx in entry["_pending_indexes"]:
                 queue[idx].update(changes)
             app._save_pending(queue)
@@ -89,6 +93,7 @@ def _edit_entry(app, selected, changes):
         entry = next((e for e in entries if str(e.get("id")) == str(selected.get("id"))), None)
         if not entry:
             raise ControlError("Entry changed; refresh before editing")
+        changes = _changes(app, changes, entry)
         if not app.api_token or app._rate_limit_active() or app._request_budget_exhausted():
             raise ControlError("Cloud entry cannot be edited right now; retry when connected")
         app.update_entry(entry.get("workspace_id") or app.state["workspace_id"], entry["id"], changes)
@@ -122,6 +127,12 @@ def dispatch(app, action, payload):
         raise ControlError("Unknown action")
     # Share the tray's mutation lock, including its existing toggle implementation.
     with app.toggle_lock:
+        before = dict(app.state)
+        if action == "edit-current" and "expected" in payload:
+            expected = payload["expected"]
+            if not isinstance(expected, dict) or any(expected.get(k) != before.get(k)
+                    for k in ("tracking", "entry_id", "start_time", "description", "project_id")):
+                raise ControlError("Timer changed; refresh before editing")
         if action == "start":
             if not app.state.get("tracking"):
                 _edit_current(app, _changes(app, payload.get("changes", {})))
@@ -132,7 +143,16 @@ def dispatch(app, action, payload):
         elif action == "edit-current":
             _edit_current(app, _changes(app, payload.get("changes", {})))
         elif action == "edit-entry":
-            _edit_entry(app, payload.get("entry"), _changes(app, payload.get("changes", {})))
+            _edit_entry(app, payload.get("entry"), payload.get("changes", {}))
+    if action == "stop" and before.get("tracking") and before.get("entry_id") and not app.state.get("tracking"):
+        stop = app.datetime.now(app.timezone.utc).isoformat()
+        entry = {"id": before["entry_id"], "workspace_id": before["workspace_id"],
+                 "description": before.get("description", ""), "project_id": before.get("project_id"),
+                 "start": before["start_time"], "stop": stop,
+                 "duration": app._duration_seconds(before["start_time"], stop)}
+        cache = getattr(app, "_control_entries", [])
+        app._control_entries = [e for e in cache if e.get("id") != entry["id"]] + [entry]
+        app._control_entries_date = app.datetime.now().date().isoformat()
     if app.state.get("tracking") and app.state.get("entry_id"):
         current = app.state
         entry = {"id": current["entry_id"], "workspace_id": current["workspace_id"],
@@ -143,8 +163,16 @@ def dispatch(app, action, payload):
         app._control_entries = [e for e in cache if e.get("id") != entry["id"]] + [entry]
         app._control_entries_date = app.datetime.now().date().isoformat()
     if app.icon_ref:
-        app.GLib.idle_add(app._refresh_tray_menu)
+        app.GLib.idle_add(_refresh_ui, app)
     return snapshot(app)
+
+
+def _refresh_ui(app):
+    if app.icon_ref:
+        app.update_tray_icon()
+        app.icon_ref.title = app.get_tooltip()
+        app._set_tray_menu(app.build_menu())
+    return False
 
 
 def start_server(app):

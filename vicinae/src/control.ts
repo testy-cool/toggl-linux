@@ -31,3 +31,15 @@ export function elapsed(start: string | null, stop?: string | null): string {
   if (!Number.isFinite(seconds)) return "0:00:00";
   return `${Math.floor(seconds / 3600)}:${String(Math.floor(seconds / 60) % 60).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 }
+
+export function queueCommands(send: (action: string, payload: object) => Promise<Snapshot>) {
+  let tail: Promise<unknown> = Promise.resolve();
+  let pending = 0;
+  return (action: string, payload: object = {}): Promise<Snapshot | undefined> => {
+    if (pending && ["snapshot", "refresh"].includes(action)) return Promise.resolve(undefined);
+    pending += 1;
+    const result = tail.then(() => send(action, payload)).finally(() => { pending -= 1; });
+    tail = result.catch(() => undefined);
+    return result;
+  };
+}

@@ -520,6 +520,7 @@ def _pending_operations(queue):
                     "stop_time": stop_time,
                     "duration": _duration_seconds(item.get("start_time"), stop_time),
                     "description": item.get("description"),
+                    **({"project_id": item["project_id"]} if "project_id" in item else {}),
                     "workspace_id": item.get("workspace_id", state.get("workspace_id")),
                 })
             elif open_start:
@@ -667,6 +668,8 @@ def sync_pending():
                         data["duration"] = op["duration"]
                     if op.get("description") is not None:
                         data["description"] = op["description"]
+                    if "project_id" in op:
+                        data["project_id"] = op["project_id"]
                     try:
                         update_entry(workspace_id, op["entry_id"], data)
                     except requests.exceptions.HTTPError as e:

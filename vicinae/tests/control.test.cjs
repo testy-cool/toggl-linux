@@ -37,3 +37,22 @@ test('elapsed handles completed entries and invalid dates', () => {
   assert.equal(elapsed('2026-10-25T10:00:00Z', '2026-10-25T11:02:03Z'), '1:02:03');
   assert.equal(elapsed('invalid'), '0:00:00');
 });
+
+test('a user edit waits for status polling instead of being dropped', async () => {
+  const { queueCommands } = compiled.exports;
+  const order = [];
+  let finishPoll;
+  const poll = new Promise(resolve => { finishPoll = resolve; });
+  const send = queueCommands(async action => {
+    order.push(action);
+    if (action === 'snapshot') await poll;
+    return { action };
+  });
+  const first = send('snapshot', {});
+  const edit = send('edit-current', {});
+  assert.equal(await send('snapshot', {}), undefined);
+  finishPoll();
+  await first;
+  assert.deepEqual(await edit, { action: 'edit-current' });
+  assert.deepEqual(order, ['snapshot', 'edit-current']);
+});

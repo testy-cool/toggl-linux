@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Action, ActionPanel, Form, Icon, List, Toast, getPreferenceValues, showToast, useNavigation } from "@vicinae/api";
-import { control, elapsed, Entry, Snapshot } from "./control";
+import { control, elapsed, Entry, Snapshot, queueCommands } from "./control";
 
 function TimerForm({ snapshot, entry, start, submit }: { snapshot: Snapshot; entry?: Entry; start?: boolean; submit: (action: string, payload: object) => Promise<boolean> }) {
   const { pop } = useNavigation();
@@ -11,7 +11,7 @@ function TimerForm({ snapshot, entry, start, submit }: { snapshot: Snapshot; ent
     setSaving(true);
     const changes = { description: String(values.description || ""), project_id: values.project === "none" ? null : String(values.project) };
     const action = start ? "start" : entry ? "edit-entry" : "edit-current";
-    if (await submit(action, entry ? { entry, changes } : { changes })) pop();
+    if (await submit(action, entry ? { entry, changes } : start ? { changes } : { changes, expected: snapshot.state })) pop();
     setSaving(false);
   }
   return <Form isLoading={saving} navigationTitle={start ? "Start Timer" : "Edit Timer"} actions={<ActionPanel><Action.SubmitForm title={start ? "Start Timer" : "Save Changes"} onSubmit={save} /></ActionPanel>}>
@@ -29,12 +29,12 @@ export default function Timer() {
   const [snapshot, setSnapshot] = useState<Snapshot>();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
-  const busy = useRef(false);
+  const [send] = useState(() => queueCommands((action, payload) => control(prefs.cliPath, action, payload)));
   async function run(action: string, payload: object = {}): Promise<boolean> {
-    if (busy.current) return false;
-    busy.current = true;
     try {
-      setSnapshot(await control(prefs.cliPath, action, payload)); setError("");
+      const result = await send(action, payload);
+      if (!result) return false;
+      setSnapshot(result); setError("");
       if (!["snapshot", "refresh"].includes(action)) await showToast({ style: Toast.Style.Success, title: "Timer updated" });
       return true;
     } catch (e) {
@@ -42,7 +42,7 @@ export default function Timer() {
       setError(message);
       if (action !== "snapshot") await showToast({ style: Toast.Style.Failure, title: "Could not update timer", message });
       return false;
-    } finally { busy.current = false; setLoading(false); }
+    } finally { setLoading(false); }
   }
   useEffect(() => {
     void (async () => { if (await run("snapshot")) await run("refresh"); })();

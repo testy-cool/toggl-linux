@@ -79,3 +79,59 @@ def test_description_edit_preserves_existing_uncached_project(tmp_state_dir):
     result = control.dispatch(app, "edit-current", {"changes": {"description": "Changed offline", "project_id": "17"}})
     assert result["state"]["project_id"] == 17
     assert result["state"]["description"] == "Changed offline"
+
+
+def test_stale_current_form_does_not_overwrite_a_new_timer(tmp_state_dir):
+    original = dict(app.state, tracking=True, entry_id=101, start_time="2026-10-25T10:00:00+00:00")
+    app.state.update(original, entry_id=102, description="New timer")
+    with patch.object(app, "update_entry") as update:
+        with pytest.raises(control.ControlError, match="changed"):
+            control.dispatch(app, "edit-current", {"expected": original, "changes": {"description": "Old form"}})
+        update.assert_not_called()
+    assert app.state["description"] == "New timer"
+
+
+def test_cloud_timer_change_during_save_does_not_overwrite_new_local_timer(tmp_state_dir):
+    app.state.update(tracking=True, entry_id=101, start_time="2026-10-25T10:00:00+00:00", description="A")
+    def change_timer(*args):
+        app.state.update(entry_id=102, start_time="2026-10-25T11:00:00+00:00", description="B")
+    with patch.object(app, "update_entry", side_effect=change_timer):
+        with pytest.raises(control.ControlError, match="changed"):
+            control.dispatch(app, "edit-current", {"changes": {"description": "A edited"}})
+    assert app.state["entry_id"] == 102
+    assert app.state["description"] == "B"
+
+
+def test_pending_stop_project_edit_survives_sync(tmp_state_dir):
+    app._save_pending([{"action": "stop", "entry_id": 101, "workspace_id": "ws_123", "start_time": "2026-10-25T10:00:00+00:00", "stop_time": "2026-10-25T11:00:00+00:00", "description": "Work"}])
+    with patch.object(app, "_cached_projects", return_value=[{"id": 8, "workspace_id": "ws_123"}]):
+        entry = app._pending_as_entries()[0]
+        control.dispatch(app, "edit-entry", {"entry": entry, "changes": {"project_id": 8}})
+    assert app._pending_as_entries()[0]["project_id"] == 8
+    with patch.object(app, "update_entry", return_value={}) as update:
+        assert app.sync_pending() == 0
+    assert update.call_args.args[2]["project_id"] == 8
+
+
+def test_entry_in_other_workspace_can_keep_its_project(tmp_state_dir):
+    app._save_pending([{"action":"start", "workspace_id":2, "project_id":9, "description":"Before", "start_time":"2026-10-25T10:00:00+00:00"}])
+    entry=app._pending_as_entries()[0]
+    control.dispatch(app,"edit-entry",{"entry":entry,"changes":{"description":"After", "project_id":"9"}})
+    assert app._load_pending()[0]["description"]=="After"
+    assert app._load_pending()[0]["project_id"]==9
+
+
+def test_live_icon_edit_does_not_require_unpublished_menu_helper(tmp_state_dir):
+    app.icon_ref = MagicMock()
+    result=control.dispatch(app,"edit-current",{"changes":{"description":"Saved"}})
+    assert result["state"]["description"]=="Saved"
+
+
+def test_stopped_entry_snapshot_has_a_stop_time(tmp_state_dir):
+    app.state.update(tracking=True, entry_id=101, start_time="2026-10-25T10:00:00+00:00", description="Work")
+    app._control_entries=[{"id":101,"start":app.state["start_time"],"stop":None,"duration":-1,"description":"Work"}]
+    app._control_entries_date=app.datetime.now().date().isoformat()
+    with patch.object(app,"stop_entry",return_value={}), patch.object(app,"_play_sound"):
+        result=control.dispatch(app,"stop",{})
+    assert result["entries"][0]["stop"] is not None
+    assert result["entries"][0]["duration"]>=0
