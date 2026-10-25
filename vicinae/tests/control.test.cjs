@@ -56,3 +56,13 @@ test('a user edit waits for status polling instead of being dropped', async () =
   assert.deepEqual(await edit, { action: 'edit-current' });
   assert.deepEqual(order, ['snapshot', 'edit-current']);
 });
+
+test('historical entry forms offer projects from that entry workspace', () => {
+  const { projectChoices } = compiled.exports;
+  const snapshot = { state: { workspace_id: 1, project_id: 7 }, projects: [
+    {id:7, workspace_id:1, active:true, name:'Current'},
+    {id:8, workspace_id:2, active:true, name:'Other'},
+    {id:9, workspace_id:2, active:false, name:'Archived'},
+  ]};
+  assert.deepEqual(projectChoices(snapshot, {workspace_id:2, project_id:9}).map(p => p.id), [8,9]);
+});

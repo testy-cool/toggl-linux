@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { Action, ActionPanel, Form, Icon, List, Toast, getPreferenceValues, showToast, useNavigation } from "@vicinae/api";
-import { control, elapsed, Entry, Snapshot, queueCommands } from "./control";
+import { control, elapsed, Entry, Snapshot, queueCommands, projectChoices } from "./control";
 
 function TimerForm({ snapshot, entry, start, submit }: { snapshot: Snapshot; entry?: Entry; start?: boolean; submit: (action: string, payload: object) => Promise<boolean> }) {
   const { pop } = useNavigation();
   const current = entry || snapshot.state;
   const [saving, setSaving] = useState(false);
+  const projects = projectChoices(snapshot, current);
   async function save(values: Form.Values) {
     if (saving) return;
     setSaving(true);
@@ -18,8 +19,8 @@ function TimerForm({ snapshot, entry, start, submit }: { snapshot: Snapshot; ent
     <Form.TextField id="description" title="Description" defaultValue={current.description || ""} />
     <Form.Dropdown id="project" title="Project" defaultValue={current.project_id == null ? "none" : String(current.project_id)}>
       <Form.Dropdown.Item value="none" title="No project" />
-      {current.project_id != null && !snapshot.projects.some(p => String(p.id) === String(current.project_id)) && <Form.Dropdown.Item value={String(current.project_id)} title="Current project (not cached)" />}
-      {snapshot.projects.filter(p => (p.active !== false || String(p.id) === String(current.project_id)) && String(p.workspace_id) === String(snapshot.state.workspace_id)).map(p => <Form.Dropdown.Item key={String(p.id)} value={String(p.id)} title={p.name} icon={{source: Icon.CircleFilled, tintColor: p.color || undefined}} />)}
+      {current.project_id != null && !projects.some(p => String(p.id) === String(current.project_id)) && <Form.Dropdown.Item value={String(current.project_id)} title="Current project (not cached)" />}
+      {projects.map(p => <Form.Dropdown.Item key={String(p.id)} value={String(p.id)} title={p.name} icon={{source: Icon.CircleFilled, tintColor: p.color || undefined}} />)}
     </Form.Dropdown>
   </Form>;
 }
