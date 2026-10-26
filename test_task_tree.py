@@ -109,15 +109,6 @@ def test_stale_task_tree_cannot_switch_a_new_account(tmp_state_dir):
     dispatch.assert_not_called()
 
 
-def test_frequent_alternatives_are_offered_even_when_many_projects_were_used_more_recently():
-    m=module()
-    rows=[dict(id=i,count=1,last_used=20-i) for i in range(6)]+[dict(id=99,count=50,last_used=1)]
-    recent,frequent=m.quick_choices(rows)
-    assert [r['id'] for r in recent]==[0,1,2,3]
-    assert frequent[0]['id']==99
-    assert len({r['id'] for r in recent+frequent})==len(recent+frequent)
-
-
 def test_task_context_is_checked_again_inside_mutation_lock(tmp_state_dir):
     m=module()
     import toggl_control
@@ -176,44 +167,6 @@ def test_task_switch_closes_offline_interval_and_creates_distinct_pending_start(
     assert operations[0]['stop_time'] is not None
     assert operations[1]['description']=='Next task'
     assert operations[1].get('stop_time') is None
-
-
-def test_last_two_projects_and_tasks_are_clickable_in_first_tray_menu_without_submenus(tmp_state_dir):
-    from types import SimpleNamespace
-    m=module()
-    class Menu(list):
-        SEPARATOR=object()
-        def __init__(self,*items): super().__init__(items)
-    def item(text,action,**options):return SimpleNamespace(text=text,action=action,**options)
-    rows=m.group_projects(PROJECTS,[entry(1,7,'Write FAQ'),entry(2,8,'Build selector',days=1)],'ws_123',now=NOW)
-    with patch.object(m,'tree',return_value=rows),patch.object(app,'_cached_projects',return_value=PROJECTS), \
-         patch.object(app.pystray,'Menu',Menu),patch.object(app.pystray,'MenuItem',side_effect=item):
-        menu=app.build_menu()
-    direct=[i for i in menu if isinstance(i,SimpleNamespace)]
-    labels=[i.text for i in direct]
-    assert 'DPF' in labels and 'Tools' in labels
-    tasks=[i for i in direct if '─ ' in i.text]
-    assert any('Write FAQ' in i.text for i in tasks)
-    assert any('Build selector' in i.text for i in tasks)
-    assert all(callable(i.action) and not isinstance(i.action,Menu) for i in tasks)
-    assert callable(next(i for i in direct if i.text=='DPF').action)
-    assert 'Unused' not in labels
-
-
-def test_tray_tree_marks_only_the_running_project_and_task_with_a_dot(tmp_state_dir):
-    from types import SimpleNamespace
-    m=module()
-    class Menu(list):
-        SEPARATOR=object()
-        def __init__(self,*items): super().__init__(items)
-    def item(text,action,**options):return SimpleNamespace(text=text,action=action,**options)
-    rows=m.group_projects(PROJECTS,[entry(1,7,'Write FAQ'),entry(2,7,'Review',days=1),entry(3,8,'Build selector',days=2)],'ws_123',now=NOW)
-    app.state.update(tracking=True,start_time=NOW.isoformat(),project_id=7,description='Write FAQ',workspace_id='ws_123')
-    with patch.object(m,'tree',return_value=rows),patch.object(app,'_cached_projects',return_value=PROJECTS), \
-         patch.object(app.pystray,'Menu',Menu),patch.object(app.pystray,'MenuItem',side_effect=item):
-        labels=[i.text for i in app.build_menu() if isinstance(i,SimpleNamespace)]
-    assert labels[:5]==['● DPF','  ├─ ● Write FAQ','  └─ Review','Tools','  └─ Build selector']
-    assert sum('●' in l for l in labels)==2
 
 
 def test_tray_icon_colour_follows_project_or_task(tmp_state_dir):
@@ -304,21 +257,6 @@ def test_corrected_interval_stays_corrected_after_its_upload(tmp_state_dir):
     with patch.object(app,'_cached_projects',return_value=PROJECTS):
         group=next(p for p in m.tree(app,now=NOW) if p['id']==7)
     assert [t['description'] for t in group['tasks']]==['Corrected']
-
-
-def test_running_task_with_no_description_gets_the_dot(tmp_state_dir):
-    from types import SimpleNamespace
-    m=module()
-    class Menu(list):
-        SEPARATOR=object()
-        def __init__(self,*items): super().__init__(items)
-    def item(text,action,**options):return SimpleNamespace(text=text,action=action,**options)
-    rows=m.group_projects(PROJECTS,[entry(1,7,''),entry(2,7,'No description',days=1)],'ws_123',now=NOW)
-    app.state.update(tracking=True,start_time=NOW.isoformat(),project_id=7,description='',workspace_id='ws_123')
-    with patch.object(m,'tree',return_value=rows),patch.object(app,'_cached_projects',return_value=PROJECTS), \
-         patch.object(app.pystray,'Menu',Menu),patch.object(app.pystray,'MenuItem',side_effect=item):
-        labels=[i.text for i in app.build_menu() if isinstance(i,SimpleNamespace)]
-    assert labels[:3]==['● DPF','  ├─ ● No description','  └─ No description']
 
 
 def test_cloud_timer_from_previous_account_is_not_suggested_after_token_change(tmp_state_dir):

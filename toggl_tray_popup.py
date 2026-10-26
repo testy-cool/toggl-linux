@@ -206,6 +206,13 @@ class TrayPopup:
         Gtk.StyleContext.remove_provider_for_screen(Gdk.Screen.get_default(), self.css)
 
 
+def toggle_at_pointer(app):
+    """Open the popup where the mouse is, for the menu item and desktops without a left-click hook."""
+    display = Gdk.Display.get_default()
+    _screen, x, y = display.get_default_seat().get_pointer().get_position()
+    return toggle(app, x, y)
+
+
 def toggle(app, x, y):
     """Open the popup at the icon, or close it when it is already open."""
     global _popup

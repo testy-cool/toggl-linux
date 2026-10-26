@@ -1402,11 +1402,11 @@ class TestTrayMenu:
 
         toggl_tray.build_menu()
 
-        first_item = toggl_tray.pystray.MenuItem.call_args_list[0]
-        assert first_item.args[0] == "Open timer"
-        assert first_item.kwargs["default"] is True
-
-        labels = [call.args[0] for call in toggl_tray.pystray.MenuItem.call_args_list]
+        calls = toggl_tray.pystray.MenuItem.call_args_list
+        labels = [call.args[0] for call in calls]
+        assert labels[0] == "Projects and tasks…"
+        assert next(c for c in calls if c.args[0] == "Open timer").kwargs["default"] is True
+        assert not any(label.startswith(("Start: ", "  ├─", "  └─", "Find Project")) for label in labels)
         assert "Show timer in panel" in labels
         assert "Show description in panel" in labels
         assert "Start tracking" in labels

@@ -238,14 +238,6 @@ def forget(app, deleted):
         print(f'Project/task history not saved: {error}', file=app.sys.stderr)
 
 
-def quick_choices(rows, recent=4, frequent=3):
-    """Show recent rows plus frequent alternatives without duplicate choices."""
-    used = [r for r in rows if r.get('count')]
-    first = sorted(used, key=lambda r: (-r['last_used'], -r['count']))[:recent]
-    rest = sorted((r for r in used if r not in first), key=lambda r: (-r['count'], -r['last_used']))[:frequent]
-    return first, rest
-
-
 def select_task(app, project_id, description, context, expected):
     import toggl_control
     if context != toggl_projects.context(app):
