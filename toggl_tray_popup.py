@@ -209,7 +209,14 @@ class TrayPopup:
 def toggle_at_pointer(app):
     """Open the popup where the mouse is, for the menu item and desktops without a left-click hook."""
     display = Gdk.Display.get_default()
-    _screen, x, y = display.get_default_seat().get_pointer().get_position()
+    seat = display.get_default_seat() if display else None
+    pointer = seat.get_pointer() if seat else None
+    if pointer is None:  # no mouse: open near the top middle of the primary screen
+        monitor = display.get_primary_monitor() or display.get_monitor(0) if display else None
+        area = monitor.get_workarea() if monitor else None
+        x, y = (area.x+area.width//2, area.y) if area else (0, 0)
+    else:
+        _screen, x, y = pointer.get_position()
     return toggle(app, x, y)
 
 
