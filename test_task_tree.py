@@ -419,3 +419,26 @@ def test_delete_in_entries_window_removes_the_task_from_the_tray(tmp_state_dir):
     app._atomic_write_text(tmp_state_dir/'task-history.json', json.dumps(dict(context=toggl_projects.context(app), fetched_at=0, entries=[gone, kept])))
     _edit_from_entries_window(dict(gone), 'delete')
     assert _cached_tasks(m) == {(7, 'Kept task')}
+
+
+def test_offline_rename_with_new_start_can_still_be_deleted(tmp_state_dir):
+    m = module()
+    start, earlier = NOW.isoformat(), (NOW-timedelta(hours=1)).isoformat()
+    app.queue_action('start', start_time=start, description='Old', project_id=7, workspace_id='ws_123')
+    app.queue_action('stop', start_time=start, stop_time=(NOW+timedelta(minutes=1)).isoformat(), description='Old', project_id=7, workspace_id='ws_123')
+    m.remember(app, dict(app.state, tracking=True, start_time=start, description='Old', project_id=7))
+    _edit_from_entries_window(app._pending_as_entries()[0], {'description': 'Renamed', 'start': earlier})
+    with patch.object(app, '_cached_projects', return_value=PROJECTS):
+        assert next(p for p in m.tree(app, now=NOW) if p['id'] == 7)['count'] == 1
+    _edit_from_entries_window(app._pending_as_entries()[0], 'delete')
+    assert _cached_tasks(m) == set()
+
+
+def test_delete_during_the_first_history_fetch_is_not_undone(tmp_state_dir):
+    m = module()
+    gone = entry(101, 7, 'Deleted')
+    def slow_history(*_a, **_k):
+        _edit_from_entries_window(dict(gone), 'delete')
+        return [gone]
+    with patch.object(app, '_api', side_effect=slow_history):
+        assert m.refresh(app, force=True) is False

@@ -206,7 +206,7 @@ def correct(app, edited, changes):
     """Apply an interval edit to its cached copy, so the tree never offers the old text.
 
     `edited` is the interval as it was before the edit."""
-    fields = {k: changes[k] for k in ('description', 'project_id') if k in changes}
+    fields = {k: changes[k] for k in ('description', 'project_id', 'start') if k in changes}
     if not fields or _stamp(edited.get('start')) is None:
         return
     try:
@@ -228,9 +228,8 @@ def forget(app, deleted):
         return
     try:
         with _cache_lock:
-            data = _cache(app)
-            if not data:
-                return
+            data = _cache(app) or dict(context=toggl_projects.context(app), fetched_at=0,
+                                       entries=[], local_entries=[])
             for key in ('entries', 'local_entries'):
                 data[key] = [e for e in data.get(key, []) if not _same_interval(e, deleted)]
             data['edited_at'] = time.time()
