@@ -244,7 +244,12 @@ Use **Resume Previous Task** in the timer window, or **Start Again** on a comple
 
 ### Quick project and task selection from the tray
 
-Right-click the tray icon. The last two projects and up to three recent/frequent
+Left-click the tray icon to open a small window under it: every recent project
+with its colour dot and its recent tasks beneath it as a tree. Click a task to
+switch to it, or a project to give the running timer that project. Type to search;
+Enter starts the first matching task, Escape or another click on the icon closes it.
+
+Right-click the tray icon for the full menu. The last two projects and up to three recent/frequent
 tasks per project are directly visible at the top of the first menu, ready to
 click without hovering or opening a submenu. They are drawn as a tree, and a dot
 marks the project and task that are running. Clicking a task there switches to it.

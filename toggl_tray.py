@@ -1153,7 +1153,8 @@ def _update_native_status_menu():
     if not callable(create_menu):
         return False
     native_status_menu_ref = create_menu(icon_ref.menu)
-    native_status_icon_ref.set_primary_menu(native_status_menu_ref)
+    # Left click opens the project/task popup; right click keeps the full menu.
+    native_status_icon_ref.set_primary_menu(None)
     native_status_icon_ref.set_secondary_menu(native_status_menu_ref)
     return False
 
@@ -1166,6 +1167,12 @@ def _set_tray_menu(menu):
         GLib.idle_add(_update_native_status_menu)
 
 
+def _on_native_status_icon_press(_icon, x, y, button, _time, _position):
+    if button == 1:
+        import toggl_tray_popup
+        GLib.idle_add(toggl_tray_popup.toggle, sys.modules[__name__], x, y)
+
+
 def _init_native_status_icon():
     """Use Cinnamon's XApp icon so its panel can render a live text label."""
     global native_status_icon_ref
@@ -1176,6 +1183,7 @@ def _init_native_status_icon():
         path = _current_icon_path()
         native_status_icon_ref.set_icon_name(path)
         native_status_icon_ref.set_tooltip_text(get_tooltip())
+        native_status_icon_ref.connect("button-press-event", _on_native_status_icon_press)
         _update_native_status_menu()
         _update_panel_timer_label()
         native_status_icon_ref.set_visible(True)
