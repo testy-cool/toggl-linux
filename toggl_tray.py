@@ -1910,25 +1910,13 @@ def on_manage_projects(_icon, _item):
     GLib.idle_add(toggl_project_window.manage, sys.modules[__name__])
 
 
-def on_find_project_task(_icon, _item):
-    import toggl_task_picker
-    GLib.idle_add(toggl_task_picker.show, sys.modules[__name__])
-
-
-def _task_choice_action(project_id, description, context):
-    def selected(_icon, _item):
-        with state_lock:
-            expected = dict(state)
-        def start():
-            try:
-                toggl_task_tree.select_task(sys.modules[__name__], project_id, description, context, expected)
-            except Exception as error:
-                _notify(f"Task not started: {error}")
-        threading.Thread(target=start, daemon=True).start()
-    return selected
+def on_open_task_popup(_icon, _item):
+    import toggl_tray_popup
+    GLib.idle_add(toggl_tray_popup.toggle_at_pointer, sys.modules[__name__])
 
 
 def _tray_project_items():
+    """Project choices and project management; tasks are picked in the popup."""
     import toggl_projects
     with state_lock:
         current = dict(state)
@@ -1936,40 +1924,12 @@ def _tray_project_items():
     projects = [p for p in _cached_projects() if isinstance(p, dict)
                 and str(p.get("workspace_id")) == str(current.get("workspace_id"))
                 and (p.get("active") is not False or str(p.get("id")) == str(current.get("project_id")))]
-    groups = toggl_task_tree.tree(sys.modules[__name__])
     def choice(project_id, name):
         return pystray.MenuItem(name, _project_choice_action(project_id, current, context), radio=True,
                                checked=lambda _item: str(state.get("workspace_id")) == str(current.get("workspace_id"))
                                and str(state.get("project_id")) == str(project_id))
-    def project_item(project):
-        children = [choice(project['id'], 'Use this project')]
-        recent, frequent = toggl_task_tree.quick_choices(project['tasks'], recent=4, frequent=3)
-        for label, tasks in (('Recent tasks', recent), ('Frequent tasks', frequent)):
-            if tasks:
-                children.extend((pystray.Menu.SEPARATOR, pystray.MenuItem(label, None, enabled=False)))
-            for task in tasks:
-                name = ' '.join(task['description'].split()) or 'No description'
-                if len(name) > 70:
-                    name = name[:67]+'…'
-                children.append(pystray.MenuItem('Start: '+name,
-                    _task_choice_action(project['id'], task['description'], context)))
-        children.extend((pystray.Menu.SEPARATOR, pystray.MenuItem('Find Project or Task…', on_find_project_task)))
-        return pystray.MenuItem(project.get('name') or str(project['id']), pystray.Menu(*children))
-    items = [pystray.MenuItem('Find Project or Task…', on_find_project_task)]
-    recent, frequent = toggl_task_tree.quick_choices(groups)
-    for title, rows in (('Recent projects', recent), ('Frequent projects', frequent)):
-        if rows:
-            items.extend((pystray.Menu.SEPARATOR, pystray.MenuItem(title, None, enabled=False)))
-            items.extend(project_item(p) for p in rows)
-    if recent or frequent:
-        items.append(pystray.Menu.SEPARATOR)
-    items.append(choice(None, 'No project'))
-    # Unused projects stay directly available until the list gets large.
-    remaining = [p for p in groups if p['id'] is not None and p not in recent+frequent]
-    if len(remaining) <= 8:
-        items.extend(project_item(p) for p in remaining)
-    else:
-        items.append(pystray.MenuItem('All projects', pystray.Menu(*(project_item(p) for p in remaining))))
+    items = [choice(None, "No project")]
+    items.extend(choice(p["id"], p.get("name") or str(p["id"])) for p in projects)
     if current.get("project_id") is not None and not any(str(p["id"]) == str(current["project_id"]) for p in projects):
         items.append(choice(current["project_id"], "Current project (not cached)"))
     items.extend((pystray.Menu.SEPARATOR,
@@ -1982,48 +1942,11 @@ def _tray_project_items():
     return items
 
 
-def _tray_recent_items():
-    """Two project/task branches flattened into the first menu: no hovering."""
-    import toggl_projects
-    app = sys.modules[__name__]
-    with state_lock:
-        current = dict(state)
-    context = toggl_projects.context(app)
-    groups = toggl_task_tree.tree(app)
-    used = [p for p in groups if p['count']]
-    remaining = [p for p in groups if p not in used and p['id'] is not None]
-    rows = (used+remaining)[:2]
-    tracking = bool(current.get('tracking'))
-    running = ' '.join((current.get('description') or '').split())
-    items = []
-    for project in rows:
-        if items:
-            items.append(pystray.Menu.SEPARATOR)
-        on_project = tracking and str(current.get('project_id')) == str(project['id'])
-        items.append(pystray.MenuItem(('● ' if on_project else '')+(project.get('name') or str(project['id'])),
-                     _project_choice_action(project['id'], current, context)))
-        recent, frequent = toggl_task_tree.quick_choices(project['tasks'], recent=2, frequent=1)
-        tasks = recent+frequent
-        for index, task in enumerate(tasks):
-            name = ' '.join(task['description'].split())
-            active = on_project and name == running
-            name = name or 'No description'
-            if len(name) > 70:
-                name = name[:67]+'…'
-            branch = '└─ ' if index == len(tasks)-1 else '├─ '
-            items.append(pystray.MenuItem('  '+branch+('● ' if active else '')+name,
-                         _task_choice_action(project['id'], task['description'], context)))
-    if items:
-        items.append(pystray.Menu.SEPARATOR)
-    return items
-
-
 def build_menu():
     toggle_label = "Stop tracking" if state["tracking"] else "Start tracking"
     return pystray.Menu(
-        *_tray_recent_items(),
+        pystray.MenuItem("Projects and tasks…", on_open_task_popup),
         pystray.MenuItem("Open timer", on_open_timer, default=True),
-        pystray.MenuItem("Find Project or Task…", on_find_project_task),
         pystray.MenuItem("Project", pystray.Menu(*_tray_project_items())),
         pystray.MenuItem(
             "Show timer in panel",

@@ -30,3 +30,15 @@ def test_rows_cap_tasks_unless_searching_and_hide_an_empty_no_project_group():
     assert sum(r['kind'] == 'task' for r in popup.rows([many], PROJECTS, stopped, query='t')) == 9
     assert popup.rows([group(None, 'No project')], PROJECTS, stopped) == []
     assert not any(r['active'] for r in popup.rows([many], PROJECTS, stopped))
+
+
+def test_menu_item_opens_the_popup_even_without_a_pointer():
+    from unittest.mock import MagicMock, patch
+    display = MagicMock()
+    display.get_default_seat.return_value.get_pointer.return_value = None
+    area = display.get_primary_monitor.return_value.get_workarea.return_value
+    area.x, area.y, area.width = 0, 0, 1000
+    with patch.object(popup.Gdk.Display, 'get_default', return_value=display), \
+         patch.object(popup, 'toggle') as toggle:
+        popup.toggle_at_pointer(app)
+    toggle.assert_called_once_with(app, 500, 0)

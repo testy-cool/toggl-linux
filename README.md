@@ -279,20 +279,15 @@ with its colour dot and its recent tasks beneath it as a tree. Click a task to
 switch to it, or a project to give the running timer that project. Type to search;
 Enter starts the first matching task, Escape or another click on the icon closes it.
 
-Right-click the tray icon for the full menu. The last two projects and up to three recent/frequent
-tasks per project are directly visible at the top of the first menu, ready to
-click without hovering or opening a submenu. They are drawn as a tree, and a dot
-marks the project and task that are running. Clicking a task there switches to it.
-While tracking, the tray icon takes the project's colour; a task with no project
-gets a fixed colour of its own. Open **Project** for more projects
-and their recent/frequent task descriptions. **Start: …** ends the current interval and starts
-a new one with that project and description; **Use this project** changes only
-the current interval's project.
+Right-click the tray icon for the full menu. **Projects and tasks…** at the top
+opens the same window (use it on desktops where left click opens the menu).
+**Project** lists the saved projects and **No project**: choosing one changes only
+the current interval's project, without starting a new one. It also holds
+**New Project…**, **Edit Selected Project…**, **Manage Projects…** and
+**Refresh projects and tasks**.
 
-Choose **Find Project or Task…** for a searchable tree. Type a project name or task
-description, expand a project, and double-click a task (or press **Start Task**).
-**Use Project** assigns the selected project without splitting the interval.
-Unused projects and **No project** remain available.
+While tracking, the tray icon takes the project's colour; a task with no project
+gets a fixed colour of its own.
 
 Suggestions use the last 30 days, limited to 1,000 fetched entries, plus local
 pending intervals. They are cached per account, API server and workspace in
