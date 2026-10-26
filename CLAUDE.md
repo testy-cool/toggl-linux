@@ -13,7 +13,7 @@ System tray Toggl Track timer for Linux Mint (Cinnamon/X11).
 - Autostart: `~/.config/autostart/toggl-tray.desktop` (if configured)
 - Manual: `source .venv/bin/activate && python toggl_tray.py`
 - Single-instance via `fcntl` lock at `~/.local/share/toggl-tray/toggl-tray.lock`. The lock releases when the process dies; never delete the file, or a second copy can start next to a running one
-- Autostart launches `.venv/bin/python <repo>/toggl_tray.py` without `run`; find the PID with `ps -eo pid,cmd | grep "[t]oggl_tray.py"`
+- The process command line varies (`install-app` writes `... toggl_tray.py run`; an older hand-written autostart file omits `run`), so find the PID with `ps -eo pid,cmd | grep "[t]oggl_tray.py"` rather than matching `run`
 
 ## State & Data
 
