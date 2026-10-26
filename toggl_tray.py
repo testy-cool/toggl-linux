@@ -1165,40 +1165,6 @@ def get_tooltip():
     return "Toggl: Stopped"
 
 
-def _timer_panel_state():
-    with state_lock:
-        tracking = state.get("tracking", False)
-        start_time = state.get("start_time")
-        description = state.get("description", "")
-
-    elapsed_seconds = 0
-    if tracking and start_time:
-        try:
-            start = datetime.fromisoformat(start_time)
-            elapsed_seconds = int((datetime.now(timezone.utc) - start).total_seconds())
-        except (TypeError, ValueError):
-            elapsed_seconds = 0
-
-    pending_count = len(_load_pending())
-    provider = "Toggl" if _api_token_service() == "toggl" else "OpenTickly"
-    if pending_count:
-        sync_text = f"{pending_count} local change{'s' if pending_count != 1 else ''} waiting to sync"
-    elif api_token:
-        sync_text = f"{provider} sync ready"
-    else:
-        sync_text = "Local mode"
-
-    return {
-        "tracking": tracking,
-        "status": "Tracking" if tracking else "Stopped",
-        "action": "Stop timer" if tracking else "Start timer",
-        "description": description,
-        "display_description": description or "No description",
-        "elapsed": _format_duration(elapsed_seconds),
-        "sync": sync_text,
-    }
-
-
 def _panel_timer_label(panel=None, show_timer=True, show_description=False):
     """Build the compact text shown by panel implementations that support it."""
     panel = panel or _panel_timer_snapshot()
@@ -1210,12 +1176,6 @@ def _panel_timer_label(panel=None, show_timer=True, show_description=False):
         if description:
             parts.append(description)
     return " · ".join(parts)
-
-
-def _timer_window_title(panel=None):
-    """Build a live title so the timer is useful when represented in the taskbar."""
-    panel = panel or _panel_timer_snapshot()
-    return f"{_panel_timer_label(panel)} — Toggl"
 
 
 def _panel_timer_snapshot():
@@ -1638,7 +1598,6 @@ def _gtk_confirm(title, text):
 # ── Menu callbacks ──────────────────────────────────────────────────────────
 
 
-
 def on_toggle_panel_timer(icon, item):
     enabled = set_panel_timer_enabled(not get_panel_timer_enabled())
     if not _update_panel_timer_label() and enabled:
@@ -1756,152 +1715,6 @@ def on_set_description(icon, item):
 
 def on_view_today(icon, item):
     GLib.idle_add(_show_entries_window)
-
-
-def _show_timer_window():
-    """Show a compact timer control panel."""
-    global timer_window_ref
-
-    if timer_window_ref:
-        try:
-            timer_window_ref.present()
-            return False
-        except Exception:
-            timer_window_ref = None
-
-    win = Gtk.Window(title="Toggl Timer")
-    timer_window_ref = win
-    win.set_default_size(TIMER_WINDOW_WIDTH, TIMER_WINDOW_HEIGHT)
-    win.set_keep_above(True)
-    try:
-        win.set_position(Gtk.WindowPosition.CENTER)
-    except Exception:
-        pass
-
-    closed = {"value": False}
-    desc_dirty = {"value": False}
-    updating_desc = {"value": False}
-
-    shell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
-    shell.set_margin_start(18)
-    shell.set_margin_end(18)
-    shell.set_margin_top(18)
-    shell.set_margin_bottom(18)
-
-    header = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-    status_label = Gtk.Label()
-    status_label.set_xalign(0)
-    timer_label = Gtk.Label()
-    timer_label.set_xalign(0)
-    description_label = Gtk.Label()
-    description_label.set_xalign(0)
-    description_label.set_ellipsize(Pango.EllipsizeMode.END)
-    header.pack_start(status_label, False, False, 0)
-    header.pack_start(timer_label, False, False, 0)
-    header.pack_start(description_label, False, False, 0)
-    shell.pack_start(header, False, False, 0)
-
-    description_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-    description_box.set_margin_top(4)
-    desc_entry = Gtk.Entry()
-    desc_entry.set_placeholder_text("What are you working on?")
-    desc_entry.set_hexpand(True)
-    desc_entry.set_activates_default(True)
-    save_desc_btn = Gtk.Button(label="Save")
-    description_box.pack_start(desc_entry, True, True, 0)
-    description_box.pack_start(save_desc_btn, False, False, 0)
-    shell.pack_start(Gtk.Label(label="Description", xalign=0), False, False, 0)
-    shell.pack_start(description_box, False, False, 0)
-
-    actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-    toggle_btn = Gtk.Button()
-    toggle_btn.get_style_context().add_class("suggested-action")
-    entries_btn = Gtk.Button(label="Today's entries")
-    actions.pack_start(toggle_btn, True, True, 0)
-    actions.pack_start(entries_btn, False, False, 0)
-    shell.pack_start(actions, False, False, 0)
-
-    sync_label = Gtk.Label()
-    sync_label.set_xalign(0)
-    sync_label.set_sensitive(False)
-    shell.pack_start(sync_label, False, False, 0)
-
-    def refresh():
-        if closed["value"]:
-            return False
-        panel = _timer_panel_state()
-        win.set_title(_timer_window_title(panel))
-        status_label.set_markup(f"<b>{GLib.markup_escape_text(panel['status'])}</b>")
-        timer_label.set_markup(
-            f"<span size='32000' weight='bold'>{GLib.markup_escape_text(panel['elapsed'])}</span>"
-        )
-        description_label.set_text(panel["display_description"])
-        sync_label.set_text(panel["sync"])
-        toggle_btn.set_label(panel["action"])
-        save_desc_btn.set_sensitive(desc_dirty["value"])
-        if not desc_dirty["value"]:
-            updating_desc["value"] = True
-            desc_entry.set_text(panel["description"])
-            updating_desc["value"] = False
-        return False
-
-    def mark_dirty(_entry):
-        if not updating_desc["value"]:
-            desc_dirty["value"] = True
-            save_desc_btn.set_sensitive(True)
-
-    def save_description(*_args):
-        _apply_description(desc_entry.get_text().strip())
-        desc_dirty["value"] = False
-        refresh()
-        return False
-
-    def toggle_from_panel(_button):
-        if desc_dirty["value"]:
-            save_description()
-        toggle_btn.set_sensitive(False)
-
-        def _do():
-            toggle_tracking(prompt_for_description=False)
-
-            def _done():
-                toggle_btn.set_sensitive(True)
-                refresh()
-                return False
-
-            GLib.idle_add(_done)
-
-        threading.Thread(target=_do, daemon=True).start()
-
-    def open_entries(_button):
-        _show_entries_window()
-
-    def on_destroy(_window):
-        global timer_window_ref
-        closed["value"] = True
-        timer_window_ref = None
-        return False
-
-    desc_entry.connect("changed", mark_dirty)
-    desc_entry.connect("activate", save_description)
-    save_desc_btn.connect("clicked", save_description)
-    toggle_btn.connect("clicked", toggle_from_panel)
-    entries_btn.connect("clicked", open_entries)
-    win.connect("destroy", on_destroy)
-
-    win.add(shell)
-    win.show_all()
-    refresh()
-    desc_entry.grab_focus()
-
-    def tick():
-        if closed["value"]:
-            return False
-        refresh()
-        return True
-
-    GLib.timeout_add_seconds(1, tick)
-    return False
 
 
 def _capture_cli_output(func, args):

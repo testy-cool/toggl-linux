@@ -137,39 +137,6 @@ class TestGetTooltip:
         assert result.startswith("Toggl: Deep work")
 
 
-# ── timer panel state ────────────────────────────────────────────────────────
-
-class TestTimerPanelState:
-    def test_stopped_panel_state(self, tmp_state_dir):
-        panel = toggl_tray._timer_panel_state()
-
-        assert panel["status"] == "Stopped"
-        assert panel["action"] == "Start timer"
-        assert panel["elapsed"] == "0:00:00"
-        assert panel["display_description"] == "No description"
-        assert panel["sync"] == "Toggl sync ready"
-
-    def test_tracking_panel_state(self, tmp_state_dir):
-        start = datetime.now(timezone.utc) - timedelta(minutes=5)
-        toggl_tray.state["tracking"] = True
-        toggl_tray.state["start_time"] = start.isoformat()
-        toggl_tray.state["description"] = "Writing"
-
-        panel = toggl_tray._timer_panel_state()
-
-        assert panel["status"] == "Tracking"
-        assert panel["action"] == "Stop timer"
-        assert panel["description"] == "Writing"
-        assert panel["display_description"] == "Writing"
-        assert panel["elapsed"].startswith("0:05:")
-
-    def test_panel_state_surfaces_pending_sync(self, tmp_state_dir):
-        toggl_tray.queue_action("start", start_time="2026-04-28T09:00:00+00:00")
-
-        panel = toggl_tray._timer_panel_state()
-
-        assert panel["sync"] == "1 local change waiting to sync"
-
 
 class TestPanelTimerLabel:
     def test_tracking_label_shows_only_elapsed_time(self):
@@ -286,15 +253,6 @@ class TestPanelTimerLabel:
 
         idle_callback = toggl_tray.GLib.idle_add.call_args_list[-1].args[0]
         assert idle_callback() is False
-
-    def test_taskbar_title_tracks_timer_and_task(self):
-        panel = {
-            "tracking": True,
-            "elapsed": "0:05:12",
-            "description": "Writing release notes",
-        }
-
-        assert toggl_tray._timer_window_title(panel) == "0:05:12 — Toggl"
 
 
 class TestDescriptionDialog:
