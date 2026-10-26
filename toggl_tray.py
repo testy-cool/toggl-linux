@@ -25,8 +25,6 @@ from PIL import Image
 import pystray
 from Xlib import X, XK
 from Xlib.display import Display
-from Xlib.ext import record
-from Xlib.protocol import rq
 import gi
 
 gi.require_version("Gtk", "3.0")
@@ -58,7 +56,6 @@ ICON_SIZE = 64
 ICON_PADDING = 6  # transparent padding around the icon
 SYNC_INTERVAL_SECONDS = 300
 CLOUD_POLL_INTERVAL_SECONDS = 3600
-NOTIFY_REPEAT_SECONDS = 3600
 NO_TOKEN_SYNC_MESSAGE = "No Toggl API token — pending entries cannot sync"
 AUTH_FAILED_SYNC_MESSAGE = "Toggl auth failed — pending entries kept locally"
 REQUEST_BUDGET_LIMIT = 30
@@ -315,10 +312,6 @@ def api_put(path, data, **kw):
     return _api("PUT", path, json=data, **kw)
 
 
-def api_patch(path, data):
-    return _api("PATCH", path, json=data)
-
-
 def api_delete(path):
     _api("DELETE", path)
 
@@ -512,11 +505,6 @@ def _save_pending(queue):
         _atomic_write_text(PENDING_FILE, "[]", backup=False)
         _backup_path(PENDING_FILE).unlink(missing_ok=True)
         PENDING_FILE.unlink(missing_ok=True)
-
-
-def _clear_pending_files():
-    PENDING_FILE.unlink(missing_ok=True)
-    _backup_path(PENDING_FILE).unlink(missing_ok=True)
 
 
 def queue_action(action, **kwargs):
@@ -1467,17 +1455,6 @@ def toggle_tracking(*_args, prompt_for_description=True):
 SOUND_START = "/usr/share/sounds/freedesktop/stereo/bell.oga"
 SOUND_STOP = "/usr/share/sounds/freedesktop/stereo/complete.oga"
 SOUND_ERROR = "/usr/share/sounds/freedesktop/stereo/dialog-warning.oga"
-
-_last_notification_at = {}
-
-
-def _notification_allowed(body, now=None):
-    now = time.monotonic() if now is None else now
-    previous = _last_notification_at.get(body)
-    if previous is not None and now - previous < NOTIFY_REPEAT_SECONDS:
-        return False
-    _last_notification_at[body] = now
-    return True
 
 
 def _reap(proc):

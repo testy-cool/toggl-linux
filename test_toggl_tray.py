@@ -75,7 +75,6 @@ class TestGetTooltip:
         assert result.startswith("Toggl: Deep work")
 
 
-
 class TestPanelTimerLabel:
     def test_tracking_label_shows_only_elapsed_time(self):
         panel = {
@@ -1094,18 +1093,13 @@ class TestHotkeyListener:
         mock_sound.assert_called_once_with(toggl_tray.SOUND_ERROR)
 
 
-# ── Notification throttling ─────────────────────────────────────────────────
+# ── Notifications ───────────────────────────────────────────────────────────
 
 class TestNotificationThrottling:
-    def test_same_notification_is_throttled(self):
-        assert toggl_tray._notification_allowed("same", now=100.0) is True
-        assert toggl_tray._notification_allowed("same", now=101.0) is False
-        assert toggl_tray._notification_allowed("same", now=3701.0) is True
 
     @patch.object(toggl_tray, "_reap")
     @patch.object(toggl_tray.subprocess, "Popen")
     def test_no_notification_reaches_desktop(self, mock_popen, _mock_reap, tmp_state_dir):
-        toggl_tray._last_notification_at.clear()
         toggl_tray._notify("Tracking with no description — right-click tray icon to set one")
         toggl_tray._notify(toggl_tray.AUTH_FAILED_SYNC_MESSAGE)
         mock_popen.assert_not_called()

@@ -59,7 +59,6 @@ def reset_state(tmp_path):
         toggl_tray._last_cloud_poll_at = 0.0
         toggl_tray._consecutive_sync_failures = 0
         toggl_tray._sync_failure_notified = False
-        toggl_tray._last_notification_at.clear()
         toggl_tray._project_cache = None
         toggl_task_tree._attempts.clear()
         if hasattr(toggl_tray, "_request_budget_lock"):
