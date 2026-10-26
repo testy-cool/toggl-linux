@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 from test_toggl_tray import reset_state, tmp_state_dir
 import toggl_tray as app
+import toggl_entries_window
 import toggl_projects
 
 NOW = datetime(2026, 10, 25, 12, tzinfo=timezone.utc)
@@ -382,11 +383,11 @@ def _edit_from_entries_window(selected, result):
     class Inline:
         def __init__(self, target, daemon=None): self.target = target
         def start(self): self.target()
-    with patch.object(app, '_gtk_edit_entry_dialog', return_value=result), \
-         patch.object(app, '_gtk_confirm', return_value=True), patch.object(app, '_refresh_entries'), \
+    with patch.object(toggl_entries_window, '_gtk_edit_entry_dialog', return_value=result), \
+         patch.object(app, '_gtk_confirm', return_value=True), patch.object(toggl_entries_window, '_refresh_entries'), \
          patch.object(app, 'update_entry'), patch.object(app, 'delete_entry'), \
          patch.object(app.threading, 'Thread', Inline):
-        app._on_edit_entry(selected, None, [], None, {'date': NOW.date()})
+        toggl_entries_window._on_edit_entry(selected, None, [], None, {'date': NOW.date()})
 
 
 def _cached_tasks(m):
