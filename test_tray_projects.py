@@ -2,7 +2,6 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from test_toggl_tray import reset_state, tmp_state_dir
 import toggl_tray as app
 import toggl_control as control
 

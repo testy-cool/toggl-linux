@@ -5,7 +5,6 @@ from unittest.mock import patch
 
 import pytest
 
-from test_toggl_tray import reset_state, tmp_state_dir
 import toggl_tray as app
 import toggl_cli
 import toggl_control as control

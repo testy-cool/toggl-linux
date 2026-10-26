@@ -1,7 +1,6 @@
 """Cinnamon tray click bindings without touching a desktop or timer."""
 from unittest.mock import MagicMock, patch
 
-from test_toggl_tray import reset_state
 import toggl_tray as app
 
 

@@ -9,71 +9,8 @@ from unittest.mock import patch, MagicMock
 import pytest
 import requests
 
-# Patch heavy imports before importing the module
-import sys
-
-_mock_xlib = MagicMock()
-sys.modules["Xlib"] = _mock_xlib
-sys.modules["Xlib.X"] = MagicMock()
-sys.modules["Xlib.XK"] = MagicMock()
-sys.modules["Xlib.display"] = MagicMock()
-sys.modules["Xlib.ext"] = MagicMock()
-sys.modules["Xlib.ext.record"] = MagicMock()
-sys.modules["Xlib.protocol"] = MagicMock()
-sys.modules["Xlib.protocol.rq"] = MagicMock()
-sys.modules["pystray"] = MagicMock()
-sys.modules["gi"] = MagicMock()
-sys.modules["gi.repository"] = MagicMock()
-
 import toggl_tray
 import toggl_cli
-
-
-# ── Fixtures ─────────────────────────────────────────────────────────────────
-
-@pytest.fixture(autouse=True)
-def reset_state(tmp_path):
-    """Reset global state before each test."""
-    # Every test gets its own state directory, so none can overwrite the user's real files.
-    with patch.object(toggl_tray, "STATE_DIR", tmp_path), \
-         patch.object(toggl_tray, "STATE_FILE", tmp_path / "state.json"), \
-         patch.object(toggl_tray, "PENDING_FILE", tmp_path / "pending.json"), \
-         patch.object(toggl_tray, "CONFIG_FILE", tmp_path / "config.json"), \
-         patch.object(toggl_tray, "LEDGER_FILE", tmp_path / "events.jsonl"), \
-         patch.object(toggl_tray, "REQUEST_BUDGET_FILE", tmp_path / "request_budget.json", create=True):
-        toggl_tray.state.update({
-            "tracking": False,
-            "entry_id": None,
-            "start_time": None,
-            "workspace_id": "ws_123",
-            "project_id": None,
-            "description": "",
-        })
-        toggl_tray.icon_ref = None
-        toggl_tray.timer_window_ref = None
-        toggl_tray.native_status_icon_ref = None
-        toggl_tray.native_status_menu_ref = None
-        toggl_tray.api_token = "tok"
-        toggl_tray.rate_limited_until = 0.0
-        toggl_tray._last_cloud_poll_at = 0.0
-        toggl_tray._consecutive_sync_failures = 0
-        toggl_tray._sync_failure_notified = False
-        toggl_tray._last_notification_at.clear()
-        if hasattr(toggl_tray, "_request_budget_lock"):
-            toggl_tray._request_budget_lock = toggl_tray.threading.Lock()
-        yield
-
-
-@pytest.fixture
-def tmp_state_dir(tmp_path):
-    """Redirect state/pending files to tmp dir."""
-    with patch.object(toggl_tray, "STATE_DIR", tmp_path), \
-         patch.object(toggl_tray, "CONFIG_FILE", tmp_path / "config.json"), \
-         patch.object(toggl_tray, "STATE_FILE", tmp_path / "state.json"), \
-         patch.object(toggl_tray, "PENDING_FILE", tmp_path / "pending.json"), \
-         patch.object(toggl_tray, "LEDGER_FILE", tmp_path / "events.jsonl"), \
-         patch.object(toggl_tray, "REQUEST_BUDGET_FILE", tmp_path / "request_budget.json", create=True):
-        yield tmp_path
 
 
 # ── elapsed_str ──────────────────────────────────────────────────────────────
@@ -1646,3 +1583,12 @@ class TestSyncCycle:
         mock_cloud.assert_not_called()
         mock_health.assert_called_once()
         mock_success.assert_called_once()
+
+
+class TestIsolation:
+    def test_tests_cannot_reach_the_network_or_real_user_files(self, tmp_path):
+        import socket
+        with pytest.raises(OSError):
+            socket.create_connection(("127.0.0.1", 9), timeout=1)
+        for name in ("STATE_DIR", "LOCK_FILE", "DESKTOP_FILE", "AUTOSTART_FILE", "CLI_FILE"):
+            assert str(getattr(toggl_tray, name)).startswith(str(tmp_path))

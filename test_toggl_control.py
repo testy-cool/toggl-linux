@@ -6,8 +6,6 @@ import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
-import test_toggl_tray
-from test_toggl_tray import reset_state, tmp_state_dir
 import toggl_tray as app
 import toggl_control as control
 
