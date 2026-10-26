@@ -49,6 +49,7 @@ def reset_state(tmp_path):
             "description": "",
         })
         toggl_tray.icon_ref = None
+        toggl_tray.timer_window_ref = None
         toggl_tray.native_status_icon_ref = None
         toggl_tray.native_status_menu_ref = None
         toggl_tray.api_token = "tok"
@@ -134,6 +135,40 @@ class TestGetTooltip:
         result = toggl_tray.get_tooltip()
         assert "Deep work" in result
         assert result.startswith("Toggl: Deep work")
+
+
+# ── timer panel state ────────────────────────────────────────────────────────
+
+class TestTimerPanelState:
+    def test_stopped_panel_state(self, tmp_state_dir):
+        panel = toggl_tray._timer_panel_state()
+
+        assert panel["status"] == "Stopped"
+        assert panel["action"] == "Start timer"
+        assert panel["elapsed"] == "0:00:00"
+        assert panel["display_description"] == "No description"
+        assert panel["sync"] == "Toggl sync ready"
+
+    def test_tracking_panel_state(self, tmp_state_dir):
+        start = datetime.now(timezone.utc) - timedelta(minutes=5)
+        toggl_tray.state["tracking"] = True
+        toggl_tray.state["start_time"] = start.isoformat()
+        toggl_tray.state["description"] = "Writing"
+
+        panel = toggl_tray._timer_panel_state()
+
+        assert panel["status"] == "Tracking"
+        assert panel["action"] == "Stop timer"
+        assert panel["description"] == "Writing"
+        assert panel["display_description"] == "Writing"
+        assert panel["elapsed"].startswith("0:05:")
+
+    def test_panel_state_surfaces_pending_sync(self, tmp_state_dir):
+        toggl_tray.queue_action("start", start_time="2026-04-28T09:00:00+00:00")
+
+        panel = toggl_tray._timer_panel_state()
+
+        assert panel["sync"] == "1 local change waiting to sync"
 
 
 class TestPanelTimerLabel:
@@ -251,6 +286,15 @@ class TestPanelTimerLabel:
 
         idle_callback = toggl_tray.GLib.idle_add.call_args_list[-1].args[0]
         assert idle_callback() is False
+
+    def test_taskbar_title_tracks_timer_and_task(self):
+        panel = {
+            "tracking": True,
+            "elapsed": "0:05:12",
+            "description": "Writing release notes",
+        }
+
+        assert toggl_tray._timer_window_title(panel) == "0:05:12 — Toggl"
 
 
 class TestDescriptionDialog:
@@ -674,6 +718,12 @@ class TestSyncPending:
 
 
 class TestPendingEntries:
+    def test_duration_seconds_matches_whole_second_api_validation(self):
+        assert toggl_tray._duration_seconds(
+            "2026-06-02T06:45:54.804899+00:00",
+            "2026-06-02T09:12:33.060614+00:00",
+        ) == 8799
+
     def test_pending_as_entries_pairs_start_stop(self, tmp_state_dir):
         toggl_tray.queue_action("start", description="draft",
                                 start_time="2026-04-28T09:00:00+00:00")
@@ -726,18 +776,60 @@ class TestPendingEntries:
 
 class TestApiWrapper:
     @patch.dict("toggl_tray.os.environ", {}, clear=True)
+    def test_get_api_base_defaults_to_toggl(self):
+        assert toggl_tray.get_api_base() == toggl_tray.DEFAULT_API_BASE
+
+    @patch.dict("toggl_tray.os.environ", {}, clear=True)
+    def test_set_api_base_persists_normalized_url(self):
+        result = toggl_tray.set_api_base("https://opentickly.example.com/api/v9/")
+        assert result == "https://opentickly.example.com/api/v9"
+        assert toggl_tray.get_api_base() == "https://opentickly.example.com/api/v9"
+
+    @patch.dict("toggl_tray.os.environ", {"TOGGL_API_BASE": "https://env.example/api/v9/"}, clear=True)
+    def test_get_api_base_prefers_environment_override(self):
+        toggl_tray.set_api_base("https://config.example/api/v9")
+        assert toggl_tray.get_api_base() == "https://env.example/api/v9"
+
+    @patch.dict("toggl_tray.os.environ", {}, clear=True)
     @patch("toggl_tray.subprocess.run")
-    def test_get_api_token_falls_back_to_legacy_keyring_key(self, mock_run):
+    def test_get_api_token_falls_back_to_service_key_without_application(self, mock_run):
         missing = MagicMock(returncode=1, stdout="")
         legacy = MagicMock(returncode=0, stdout="legacy_token\n")
         mock_run.side_effect = [missing, legacy]
 
         assert toggl_tray.get_api_token() == "legacy_token"
         assert mock_run.call_args_list[0][0][0] == [
-            "secret-tool", "lookup", "service", "toggl", "username", "api_token",
+            "secret-tool", "lookup", "service", "toggl", "username", "api_token", "application", "toggl-tray",
         ]
         assert mock_run.call_args_list[1][0][0] == [
-            "secret-tool", "lookup", "application", "toggl-tray",
+            "secret-tool", "lookup", "service", "toggl", "username", "api_token",
+        ]
+
+    @patch.dict("toggl_tray.os.environ", {}, clear=True)
+    @patch("toggl_tray.subprocess.run")
+    def test_get_api_token_keeps_opentickly_separate_from_toggl(self, mock_run):
+        toggl_tray.set_api_base("https://opentickly.example.com/api/v9")
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+
+        assert toggl_tray.get_api_token() is None
+        assert mock_run.call_args_list[0][0][0] == [
+            "secret-tool", "lookup", "service", "opentickly", "username", "api_token", "application", "toggl-tray",
+        ]
+        assert mock_run.call_args_list[1][0][0] == [
+            "secret-tool", "lookup", "service", "opentickly", "username", "api_token",
+        ]
+        assert mock_run.call_count == 2
+
+    @patch.dict("toggl_tray.os.environ", {}, clear=True)
+    @patch("toggl_tray.subprocess.run")
+    def test_store_api_token_uses_opentickly_service_when_configured(self, mock_run):
+        toggl_tray.set_api_base("https://opentickly.example.com/api/v9")
+
+        assert toggl_tray.store_api_token("tok")
+        assert mock_run.call_args[0][0] == [
+            "secret-tool", "store", "--label=OpenTickly API Token",
+            "service", "opentickly", "username", "api_token",
+            "application", "toggl-tray",
         ]
 
     @patch.object(toggl_tray, "api_token", "test_token")
@@ -749,6 +841,7 @@ class TestApiWrapper:
     @patch("toggl_tray.requests.request")
     @patch.object(toggl_tray, "api_token", "tok")
     def test_api_success(self, mock_req):
+        toggl_tray.set_api_base("https://opentickly.example.com/api/v9")
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.content = b'{"ok": true}'
@@ -756,6 +849,7 @@ class TestApiWrapper:
         mock_req.return_value = mock_resp
         result = toggl_tray._api("GET", "/test")
         assert result == {"ok": True}
+        assert mock_req.call_args.args[:2] == ("GET", "https://opentickly.example.com/api/v9/test")
 
     @patch("toggl_tray.requests.request")
     @patch.object(toggl_tray, "api_token", "tok")
@@ -826,6 +920,38 @@ class TestToggleTracking:
         assert toggl_tray.state["entry_id"] == "e1"
         mock_sound.assert_called_once_with(toggl_tray.SOUND_START)
 
+    @patch.object(toggl_tray, "start_entry", return_value={"id": "e1", "start": "2026-04-28T10:00:00+00:00"})
+    @patch.object(toggl_tray, "save_state")
+    @patch.object(toggl_tray, "_play_sound")
+    @patch.object(toggl_tray, "_prompt_for_description_async")
+    @patch.object(toggl_tray, "update_tray_icon")
+    def test_start_tracking_without_description_opens_description_prompt(
+        self, mock_icon, mock_prompt, mock_sound, mock_save, mock_start
+    ):
+        toggl_tray.icon_ref = type("Icon", (), {})()
+        toggl_tray.state["tracking"] = False
+        toggl_tray.state["description"] = ""
+
+        toggl_tray.toggle_tracking()
+
+        mock_prompt.assert_called_once()
+
+    @patch.object(toggl_tray, "start_entry", return_value={"id": "e1", "start": "2026-04-28T10:00:00+00:00"})
+    @patch.object(toggl_tray, "save_state")
+    @patch.object(toggl_tray, "_play_sound")
+    @patch.object(toggl_tray, "_prompt_for_description_async")
+    @patch.object(toggl_tray, "update_tray_icon")
+    def test_start_from_timer_panel_does_not_open_extra_description_prompt(
+        self, mock_icon, mock_prompt, mock_sound, mock_save, mock_start
+    ):
+        toggl_tray.icon_ref = type("Icon", (), {})()
+        toggl_tray.state["tracking"] = False
+        toggl_tray.state["description"] = ""
+
+        toggl_tray.toggle_tracking(prompt_for_description=False)
+
+        mock_prompt.assert_not_called()
+
     @patch.object(toggl_tray, "api_token", None)
     @patch.object(toggl_tray, "stop_entry")
     @patch.object(toggl_tray, "save_state")
@@ -880,6 +1006,29 @@ class TestToggleTracking:
         assert toggl_tray.state["tracking"] is False
         mock_queue.assert_called_once()
         assert mock_queue.call_args[0][0] == "stop"
+
+    @patch.object(toggl_tray, "update_entry")
+    @patch.object(toggl_tray, "save_state")
+    def test_apply_description_updates_running_cloud_entry(self, mock_save, mock_update):
+        toggl_tray.state["tracking"] = True
+        toggl_tray.state["entry_id"] = "e1"
+        toggl_tray.state["workspace_id"] = "ws_1"
+
+        toggl_tray._apply_description("Focused work")
+
+        assert toggl_tray.state["description"] == "Focused work"
+        mock_update.assert_called_once_with("ws_1", "e1", {"description": "Focused work"})
+
+    @patch.object(toggl_tray, "save_state")
+    def test_apply_description_updates_open_pending_entry(self, mock_save, tmp_state_dir):
+        toggl_tray.state["tracking"] = True
+        toggl_tray.state["entry_id"] = None
+        toggl_tray.queue_action("start", start_time="2026-04-28T09:00:00+00:00")
+
+        toggl_tray._apply_description("Local work")
+
+        assert toggl_tray.state["description"] == "Local work"
+        assert toggl_tray._load_pending()[0]["description"] == "Local work"
 
 
 # ── start_entry payload ─────────────────────────────────────────────────────
@@ -1057,8 +1206,9 @@ class TestNotificationThrottling:
         assert toggl_tray._notification_allowed("same", now=101.0) is False
         assert toggl_tray._notification_allowed("same", now=3701.0) is True
 
+    @patch.object(toggl_tray, "_reap")
     @patch.object(toggl_tray.subprocess, "Popen")
-    def test_no_notification_reaches_desktop(self, mock_popen, tmp_state_dir):
+    def test_no_notification_reaches_desktop(self, mock_popen, _mock_reap, tmp_state_dir):
         toggl_tray._last_notification_at.clear()
         toggl_tray._notify("Tracking with no description — right-click tray icon to set one")
         toggl_tray._notify(toggl_tray.AUTH_FAILED_SYNC_MESSAGE)
@@ -1082,6 +1232,50 @@ class TestNotificationThrottling:
 # ── CLI recovery helpers ────────────────────────────────────────────────────
 
 class TestCliRecovery:
+    @patch.dict("toggl_tray.os.environ", {}, clear=True)
+    def test_set_api_base_clears_provider_specific_ids(self, tmp_state_dir, capsys):
+        toggl_tray.state["workspace_id"] = "old_ws"
+        toggl_tray.state["project_id"] = "old_project"
+        toggl_tray.state["entry_id"] = "old_entry"
+        toggl_tray.save_state()
+        toggl_tray._save_pending([{
+            "action": "start",
+            "workspace_id": "old_ws",
+            "project_id": "old_project",
+            "entry_id": "old_entry",
+            "start_time": "2026-04-28T09:00:00+00:00",
+        }])
+
+        args = type("Args", (), {"url": "https://opentickly.example.com/api/v9/"})()
+        assert toggl_tray._cli_set_api_base(args) == 0
+
+        assert toggl_tray.get_api_base() == "https://opentickly.example.com/api/v9"
+        assert toggl_tray.state["workspace_id"] is None
+        assert toggl_tray.state["project_id"] is None
+        assert toggl_tray.state["entry_id"] is None
+        assert toggl_tray._load_pending() == [{
+            "action": "start",
+            "start_time": "2026-04-28T09:00:00+00:00",
+        }]
+        assert "Cleared 3 id field" in capsys.readouterr().out
+
+    @patch.object(toggl_tray, "get_api_token", return_value="tok")
+    @patch.object(toggl_tray, "api_post", return_value={"id": 101})
+    @patch.object(toggl_tray, "_sync_cloud_state")
+    def test_cli_sync_clears_pending_primary_and_backup(
+        self, mock_cloud, mock_post, mock_token, tmp_state_dir
+    ):
+        toggl_tray.state["workspace_id"] = "ws_1"
+        toggl_tray.save_state()
+        toggl_tray.queue_action("start", start_time="2026-04-28T09:00:00+00:00")
+        toggl_tray.queue_action("stop", stop_time="2026-04-28T10:00:00+00:00")
+
+        assert toggl_tray._cli_sync(type("Args", (), {})()) == 0
+
+        mock_post.assert_called_once()
+        assert not (tmp_state_dir / "pending.json").exists()
+        assert not (tmp_state_dir / "pending.json.bak").exists()
+
     @patch.object(toggl_tray, "get_api_token", return_value=None)
     def test_set_start_updates_running_pending_entry(self, mock_token, tmp_state_dir):
         toggl_tray.state["tracking"] = True
@@ -1249,9 +1443,14 @@ class TestTrayMenu:
 
         toggl_tray.build_menu()
 
+        first_item = toggl_tray.pystray.MenuItem.call_args_list[0]
+        assert first_item.args[0] == "Open timer"
+        assert first_item.kwargs["default"] is True
+
         labels = [call.args[0] for call in toggl_tray.pystray.MenuItem.call_args_list]
         assert "Show timer in panel" in labels
         assert "Show description in panel" in labels
+        assert "Start tracking" in labels
         assert "Edit description..." in labels
         assert "Doctor" in labels
         assert "Audit today" in labels

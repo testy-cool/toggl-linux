@@ -92,6 +92,33 @@ secret-tool store --label='Toggl API Token' service toggl username api_token app
 export TOGGL_API_TOKEN=your_token_here
 ```
 
+### OpenTickly / self-hosted Toggl-compatible API
+
+For OpenTickly, register in the web UI first, then copy your token from avatar > Profile > API Token.
+
+Point the tray app at your instance:
+
+```bash
+python3 toggl_tray.py set-api-base https://opentickly.example.com/api/v9
+```
+
+This clears saved provider-specific workspace/project/entry IDs. Local pending time ranges stay in the queue and can sync after the app learns the OpenTickly workspace.
+
+Store the OpenTickly token in GNOME Keyring:
+
+```bash
+secret-tool store --label='OpenTickly API Token' service opentickly username api_token application toggl-tray
+# Paste your OpenTickly token, press Enter, then Ctrl+D
+```
+
+The old Toggl token stays separate and will not be used against OpenTickly.
+
+Check that the app is using OpenTickly:
+
+```bash
+python3 toggl_tray.py doctor --cloud
+```
+
 ### 4. Run it
 
 ```bash
@@ -132,6 +159,8 @@ toggl audit 2026-05-01 2026-05-31
 toggl start "Task"    # start tracking from a terminal
 toggl stop            # stop tracking from a terminal
 toggl set-start 09:00 # correct the current timer start time
+toggl set-api-base https://opentickly.example.com/api/v9
+                     # use OpenTickly or another Toggl-compatible API
 toggl sync            # push pending local entries now
 ```
 
@@ -154,7 +183,8 @@ python3 toggl_tray.py install-app --autostart
 ## How It Works
 
 - **Small Python core** (`toggl_tray.py`) with focused control and editor modules
-- Talks to [Toggl Track API v9](https://engineering.toggl.com/docs/track/) using basic auth
+- Talks to [Toggl Track API v9](https://engineering.toggl.com/docs/track/) or a compatible OpenTickly instance using basic auth
+- API base defaults to `https://api.track.toggl.com/api/v9`; override it with `python3 toggl_tray.py set-api-base <url>` or temporary `TOGGL_API_BASE`
 - Global hotkey uses X11 `XGrabKey` — the key is grabbed at the X server level, so no other app sees `Ctrl+Shift+T`
 - If the API is unreachable, auth is missing, or Toggl rate-limits requests, start/stop actions are saved locally and retried
 - Pending local actions sync every 5 minutes; idle cloud polling is limited to once per hour to preserve the free-plan request budget

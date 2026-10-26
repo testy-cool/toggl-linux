@@ -45,3 +45,4 @@ Pull requests should include a clear description, test results, linked issues wh
 ## Security & Configuration Tips
 
 Never commit API tokens, local state, or pending queues. Prefer GNOME Keyring via `secret-tool`; `TOGGL_API_TOKEN` is acceptable for local sessions only. Treat `~/.local/share/toggl-tray/state.json` and `pending.json` as user data.
+- Keep pending Toggl entries editable, just like synced entries. <!-- convo-miner:1c2c265d8f6b -->
