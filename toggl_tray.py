@@ -30,7 +30,7 @@ from Xlib.protocol import rq
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, GLib
+from gi.repository import Gtk, GLib, Pango
 
 try:
     gi.require_version("XApp", "1.0")
@@ -40,7 +40,8 @@ except (ImportError, ValueError):
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
-API_BASE = "https://api.track.toggl.com/api/v9"
+DEFAULT_API_BASE = "https://api.track.toggl.com/api/v9"
+API_BASE_ENV = "TOGGL_API_BASE"
 STATE_DIR = Path.home() / ".local" / "share" / "toggl-tray"
 CONFIG_FILE = STATE_DIR / "config.json"
 STATE_FILE = STATE_DIR / "state.json"
@@ -66,6 +67,11 @@ REQUEST_BUDGET_BACKGROUND_RESERVE = 6
 REQUEST_BUDGET_SYNC_MESSAGE = "Toggl request budget exhausted — pending sync paused"
 SYNC_CONFLICT_MESSAGE = "Toggl conflict — local start kept pending"
 OPEN_START_MATCH_TOLERANCE_SECONDS = 300
+ENTRY_WINDOW_WIDTH = 560
+ENTRY_WINDOW_HEIGHT = 560
+ENTRY_ROW_DESC_CHARS = 42
+TIMER_WINDOW_WIDTH = 430
+TIMER_WINDOW_HEIGHT = 260
 PANEL_TIMER_LABEL_GUIDE = "88:88:88 · MMMMMMMMMMMMMMMMMMMMMMMMMMMM"
 
 
@@ -81,6 +87,7 @@ state = {
 }
 
 icon_ref = None
+timer_window_ref = None
 native_status_icon_ref = None
 native_status_menu_ref = None
 api_token = None
@@ -98,6 +105,77 @@ class RateLimitedError(Exception):
 
 class MissingApiTokenError(Exception):
     """Raised when an API call is attempted without a configured token."""
+
+
+# ── API Token ───────────────────────────────────────────────────────────────
+
+def get_api_token():
+    """Get API token from env or GNOME keyring."""
+    token = os.environ.get("TOGGL_API_TOKEN")
+    if token:
+        return token
+    service = _api_token_service()
+    lookups = (
+        ["secret-tool", "lookup", "service", service, "username", "api_token", "application", "toggl-tray"],
+        ["secret-tool", "lookup", "service", service, "username", "api_token"],
+        *(
+            [["secret-tool", "lookup", "application", "toggl-tray"]]
+            if service == "toggl" else []
+        ),
+    )
+    for cmd in lookups:
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            break
+    return None
+
+
+def store_api_token(token):
+    """Store token in GNOME keyring."""
+    service = _api_token_service()
+    label = "Toggl API Token" if service == "toggl" else "OpenTickly API Token"
+    try:
+        subprocess.run(
+            ["secret-tool", "store", f"--label={label}",
+             "service", service, "username", "api_token",
+             "application", "toggl-tray"],
+            input=token, text=True, timeout=10,
+        )
+        return True
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+# ── API Base ────────────────────────────────────────────────────────────────
+
+def _normalize_api_base(value):
+    base = str(value or DEFAULT_API_BASE).strip().rstrip("/")
+    return base or DEFAULT_API_BASE
+
+
+def get_api_base():
+    """Return the Toggl-compatible API base URL."""
+    env_base = os.environ.get(API_BASE_ENV)
+    if env_base:
+        return _normalize_api_base(env_base)
+    config = _load_json_with_backup(CONFIG_FILE, {})
+    if isinstance(config, dict):
+        return _normalize_api_base(config.get("api_base"))
+    return DEFAULT_API_BASE
+
+
+def set_api_base(value):
+    """Persist a non-secret Toggl-compatible API base URL."""
+    api_base = _normalize_api_base(value)
+    config = _load_json_with_backup(CONFIG_FILE, {})
+    if not isinstance(config, dict):
+        config = {}
+    config["api_base"] = api_base
+    _atomic_write_text(CONFIG_FILE, json.dumps(config, indent=2))
+    return api_base
 
 
 def get_panel_timer_enabled():
@@ -132,39 +210,8 @@ def set_panel_description_enabled(enabled):
     return config["show_description_in_panel"]
 
 
-# ── API Token ───────────────────────────────────────────────────────────────
-
-def get_api_token():
-    """Get Toggl API token from env or GNOME keyring."""
-    token = os.environ.get("TOGGL_API_TOKEN")
-    if token:
-        return token
-    lookups = (
-        ["secret-tool", "lookup", "service", "toggl", "username", "api_token"],
-        ["secret-tool", "lookup", "application", "toggl-tray"],
-    )
-    for cmd in lookups:
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            break
-    return None
-
-
-def store_api_token(token):
-    """Store token in GNOME keyring."""
-    try:
-        subprocess.run(
-            ["secret-tool", "store", "--label=Toggl API Token",
-             "service", "toggl", "username", "api_token",
-             "application", "toggl-tray"],
-            input=token, text=True, timeout=10,
-        )
-        return True
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
+def _api_token_service():
+    return "toggl" if "api.track.toggl.com" in get_api_base() else "opentickly"
 
 
 # ── Local Toggl request budget ──────────────────────────────────────────────
@@ -186,6 +233,10 @@ def _load_request_timestamps(now=None):
         if cutoff <= ts <= now + 60:
             timestamps.append(ts)
     return timestamps
+
+
+def _request_budget_applies(api_base=None):
+    return "api.track.toggl.com" in (api_base or get_api_base())
 
 
 def _save_request_timestamps(timestamps):
@@ -213,11 +264,13 @@ def _request_budget_status(now=None):
 
 
 def _request_budget_remaining(now=None):
+    if not _request_budget_applies():
+        return REQUEST_BUDGET_LIMIT
     return _request_budget_status(now=now)["remaining"]
 
 
 def _request_budget_exhausted():
-    return _request_budget_remaining() <= 0
+    return _request_budget_applies() and _request_budget_remaining() <= 0
 
 
 # ── Toggl API ───────────────────────────────────────────────────────────────
@@ -231,9 +284,11 @@ def _api(method, path, json=None, params=None, token=None, base_url=None):
     global rate_limited_until
     if not (token or api_token):
         raise MissingApiTokenError("No Toggl API token configured")
-    _record_api_request()
+    api_base = base_url if base_url is not None else get_api_base()
+    if _request_budget_applies(api_base):
+        _record_api_request()
     r = requests.request(
-        method, f"{base_url if base_url is not None else API_BASE}{path}",
+        method, f"{api_base}{path}",
         auth=_auth() if token is None else HTTPBasicAuth(token, "api_token"), json=json, params=params, timeout=10,
     )
     if r.status_code == 429:
@@ -411,6 +466,30 @@ def load_state():
         state.update(saved)
 
 
+def _clear_remote_ids():
+    """Drop provider-specific ids when switching API backends."""
+    changed = False
+    for key in ("workspace_id", "project_id", "entry_id"):
+        if state.get(key) is not None:
+            state[key] = None
+            changed = True
+    if changed:
+        save_state()
+
+    pending = _load_pending()
+    pending_changes = 0
+    for item in pending:
+        if not isinstance(item, dict):
+            continue
+        for key in ("workspace_id", "project_id", "entry_id"):
+            if key in item:
+                item.pop(key, None)
+                pending_changes += 1
+    if pending_changes:
+        _save_pending(pending)
+    return pending_changes
+
+
 # ── Offline queue ──────────────────────────────────────────────────────────
 
 pending_lock = threading.Lock()
@@ -433,6 +512,11 @@ def _save_pending(queue):
         _atomic_write_text(PENDING_FILE, "[]", backup=False)
         _backup_path(PENDING_FILE).unlink(missing_ok=True)
         PENDING_FILE.unlink(missing_ok=True)
+
+
+def _clear_pending_files():
+    PENDING_FILE.unlink(missing_ok=True)
+    _backup_path(PENDING_FILE).unlink(missing_ok=True)
 
 
 def queue_action(action, **kwargs):
@@ -462,6 +546,8 @@ def _duration_seconds(start_time, stop_time):
     stop = _parse_iso(stop_time)
     if not start or not stop:
         return None
+    start = start.replace(microsecond=0)
+    stop = stop.replace(microsecond=0)
     return max(int((stop - start).total_seconds()), 0)
 
 
@@ -772,7 +858,7 @@ def _run_sync_cycle(now=None):
         else:
             sync_pending()
     elif api_token and now - _last_cloud_poll_at >= CLOUD_POLL_INTERVAL_SECONDS:
-        if _request_budget_remaining() > REQUEST_BUDGET_BACKGROUND_RESERVE:
+        if not _request_budget_applies() or _request_budget_remaining() > REQUEST_BUDGET_BACKGROUND_RESERVE:
             _sync_cloud_state()
             _last_cloud_poll_at = now
 
@@ -799,7 +885,7 @@ def _health_check():
     """Detect and recover from tracking-without-cloud-backing."""
     if not api_token:
         return
-    if _request_budget_remaining() <= REQUEST_BUDGET_BACKGROUND_RESERVE:
+    if _request_budget_applies() and _request_budget_remaining() <= REQUEST_BUDGET_BACKGROUND_RESERVE:
         return
     with state_lock:
         tracking = state["tracking"]
@@ -1079,6 +1165,59 @@ def get_tooltip():
     return "Toggl: Stopped"
 
 
+def _timer_panel_state():
+    with state_lock:
+        tracking = state.get("tracking", False)
+        start_time = state.get("start_time")
+        description = state.get("description", "")
+
+    elapsed_seconds = 0
+    if tracking and start_time:
+        try:
+            start = datetime.fromisoformat(start_time)
+            elapsed_seconds = int((datetime.now(timezone.utc) - start).total_seconds())
+        except (TypeError, ValueError):
+            elapsed_seconds = 0
+
+    pending_count = len(_load_pending())
+    provider = "Toggl" if _api_token_service() == "toggl" else "OpenTickly"
+    if pending_count:
+        sync_text = f"{pending_count} local change{'s' if pending_count != 1 else ''} waiting to sync"
+    elif api_token:
+        sync_text = f"{provider} sync ready"
+    else:
+        sync_text = "Local mode"
+
+    return {
+        "tracking": tracking,
+        "status": "Tracking" if tracking else "Stopped",
+        "action": "Stop timer" if tracking else "Start timer",
+        "description": description,
+        "display_description": description or "No description",
+        "elapsed": _format_duration(elapsed_seconds),
+        "sync": sync_text,
+    }
+
+
+def _panel_timer_label(panel=None, show_timer=True, show_description=False):
+    """Build the compact text shown by panel implementations that support it."""
+    panel = panel or _panel_timer_snapshot()
+    parts = []
+    if show_timer:
+        parts.append(panel["elapsed"] if panel["tracking"] else "Stopped")
+    if show_description:
+        description = " ".join(str(panel.get("description") or "").split())
+        if description:
+            parts.append(description)
+    return " · ".join(parts)
+
+
+def _timer_window_title(panel=None):
+    """Build a live title so the timer is useful when represented in the taskbar."""
+    panel = panel or _panel_timer_snapshot()
+    return f"{_panel_timer_label(panel)} — Toggl"
+
+
 def _panel_timer_snapshot():
     with state_lock:
         tracking = state.get("tracking", False)
@@ -1099,19 +1238,6 @@ def _panel_timer_snapshot():
     }
 
 
-def _panel_timer_label(panel=None, show_timer=True, show_description=False):
-    """Build the compact text shown by panel implementations that support it."""
-    panel = panel or _panel_timer_snapshot()
-    parts = []
-    if show_timer:
-        parts.append(panel["elapsed"] if panel["tracking"] else "Stopped")
-    if show_description:
-        description = " ".join(str(panel.get("description") or "").split())
-        if description:
-            parts.append(description)
-    return " · ".join(parts)
-
-
 def _update_panel_timer_label():
     """Update the optional native text label when the tray backend supports it."""
     label = _panel_timer_label(
@@ -1127,9 +1253,11 @@ def _update_panel_timer_label():
     set_label = getattr(indicator, "set_label", None)
     if not callable(set_label):
         return False
+
     try:
         set_label(label, PANEL_TIMER_LABEL_GUIDE)
     except TypeError:
+        # XApp.StatusIcon exposes the same feature with a one-argument method.
         set_label(label)
     return True
 
@@ -1361,7 +1489,10 @@ def toggle_tracking(*_args, prompt_for_description=True):
                 )
             _play_sound(SOUND_START)
             if prompt_for_description and not description:
-                _notify("Tracking with no description — right-click to set one")
+                if icon_ref:
+                    _prompt_for_description_async()
+                else:
+                    _notify("Tracking with no description — right-click tray icon to set one")
 
         if icon_ref:
             update_tray_icon()
@@ -1389,6 +1520,11 @@ def _notification_allowed(body, now=None):
     return True
 
 
+def _reap(proc):
+    """Wait on a fire-and-forget child in the background so it doesn't linger as a zombie."""
+    threading.Thread(target=proc.wait, daemon=True).start()
+
+
 def _notify(body):
     # Desktop notifications are off: the user asked for none.
     return
@@ -1396,10 +1532,10 @@ def _notify(body):
 
 def _play_sound(path):
     try:
-        subprocess.Popen(
+        _reap(subprocess.Popen(
             ["paplay", path],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
+        ))
     except FileNotFoundError:
         pass
 
@@ -1413,7 +1549,8 @@ def _gtk_input_dialog(title, label_text, placeholder="", default=""):
     def run():
         dialog = Gtk.Dialog(title=title, modal=True)
         dialog.set_keep_above(True)
-        dialog.set_resizable(False)
+        dialog.set_resizable(True)
+        dialog.set_default_size(420, -1)
         dialog.add_buttons(
             Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
             Gtk.STOCK_OK, Gtk.ResponseType.OK,
@@ -1421,11 +1558,11 @@ def _gtk_input_dialog(title, label_text, placeholder="", default=""):
         dialog.set_default_response(Gtk.ResponseType.OK)
 
         box = dialog.get_content_area()
-        box.set_spacing(8)
-        box.set_margin_start(16)
-        box.set_margin_end(16)
-        box.set_margin_top(12)
-        box.set_margin_bottom(8)
+        box.set_spacing(12)
+        box.set_margin_start(18)
+        box.set_margin_end(18)
+        box.set_margin_top(16)
+        box.set_margin_bottom(12)
 
         label = Gtk.Label(label=label_text)
         label.set_xalign(0)
@@ -1435,9 +1572,11 @@ def _gtk_input_dialog(title, label_text, placeholder="", default=""):
         entry.set_placeholder_text(placeholder)
         entry.set_text(default)
         entry.set_activates_default(True)
+        entry.set_width_chars(36)
         box.add(entry)
 
         dialog.show_all()
+        entry.grab_focus()
         resp = dialog.run()
         if resp == Gtk.ResponseType.OK:
             result["value"] = entry.get_text().strip()
@@ -1498,6 +1637,8 @@ def _gtk_confirm(title, text):
 
 # ── Menu callbacks ──────────────────────────────────────────────────────────
 
+
+
 def on_toggle_panel_timer(icon, item):
     enabled = set_panel_timer_enabled(not get_panel_timer_enabled())
     if not _update_panel_timer_label() and enabled:
@@ -1522,6 +1663,24 @@ def on_toggle(icon, item):
     threading.Thread(target=toggle_tracking, daemon=True).start()
 
 
+def _update_open_pending_description(desc):
+    pending_entries = [
+        entry for entry in _pending_as_entries()
+        if entry.get("_pending_kind") == "open"
+    ]
+    if not pending_entries:
+        return False
+    return _update_pending_entry(pending_entries[-1], {"description": desc})
+
+
+def _refresh_tray_menu():
+    if not icon_ref:
+        return
+    update_tray_icon()
+    icon_ref.title = get_tooltip()
+    _set_tray_menu(build_menu())
+
+
 def _apply_description(desc):
     with state_lock:
         state["description"] = desc
@@ -1533,15 +1692,12 @@ def _apply_description(desc):
     if tracking and entry_id and workspace_id:
         try:
             update_entry(workspace_id, entry_id, {"description": desc})
-        except Exception as error:
-            print(f"Description update failed: {error}", file=sys.stderr)
-            _notify("Description saved locally but the cloud update failed")
-            return False
+        except Exception:
+            pass
+    elif tracking:
+        _update_open_pending_description(desc)
 
-    if icon_ref:
-        icon_ref.title = get_tooltip()
-        _set_tray_menu(build_menu())
-    return True
+    _refresh_tray_menu()
 
 
 def _show_description_dialog():
@@ -1590,12 +1746,162 @@ def _show_description_dialog():
     return False
 
 
-def on_set_description(icon, item):
+def _prompt_for_description_async():
     GLib.idle_add(_show_description_dialog)
+
+
+def on_set_description(icon, item):
+    _prompt_for_description_async()
 
 
 def on_view_today(icon, item):
     GLib.idle_add(_show_entries_window)
+
+
+def _show_timer_window():
+    """Show a compact timer control panel."""
+    global timer_window_ref
+
+    if timer_window_ref:
+        try:
+            timer_window_ref.present()
+            return False
+        except Exception:
+            timer_window_ref = None
+
+    win = Gtk.Window(title="Toggl Timer")
+    timer_window_ref = win
+    win.set_default_size(TIMER_WINDOW_WIDTH, TIMER_WINDOW_HEIGHT)
+    win.set_keep_above(True)
+    try:
+        win.set_position(Gtk.WindowPosition.CENTER)
+    except Exception:
+        pass
+
+    closed = {"value": False}
+    desc_dirty = {"value": False}
+    updating_desc = {"value": False}
+
+    shell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+    shell.set_margin_start(18)
+    shell.set_margin_end(18)
+    shell.set_margin_top(18)
+    shell.set_margin_bottom(18)
+
+    header = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+    status_label = Gtk.Label()
+    status_label.set_xalign(0)
+    timer_label = Gtk.Label()
+    timer_label.set_xalign(0)
+    description_label = Gtk.Label()
+    description_label.set_xalign(0)
+    description_label.set_ellipsize(Pango.EllipsizeMode.END)
+    header.pack_start(status_label, False, False, 0)
+    header.pack_start(timer_label, False, False, 0)
+    header.pack_start(description_label, False, False, 0)
+    shell.pack_start(header, False, False, 0)
+
+    description_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+    description_box.set_margin_top(4)
+    desc_entry = Gtk.Entry()
+    desc_entry.set_placeholder_text("What are you working on?")
+    desc_entry.set_hexpand(True)
+    desc_entry.set_activates_default(True)
+    save_desc_btn = Gtk.Button(label="Save")
+    description_box.pack_start(desc_entry, True, True, 0)
+    description_box.pack_start(save_desc_btn, False, False, 0)
+    shell.pack_start(Gtk.Label(label="Description", xalign=0), False, False, 0)
+    shell.pack_start(description_box, False, False, 0)
+
+    actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+    toggle_btn = Gtk.Button()
+    toggle_btn.get_style_context().add_class("suggested-action")
+    entries_btn = Gtk.Button(label="Today's entries")
+    actions.pack_start(toggle_btn, True, True, 0)
+    actions.pack_start(entries_btn, False, False, 0)
+    shell.pack_start(actions, False, False, 0)
+
+    sync_label = Gtk.Label()
+    sync_label.set_xalign(0)
+    sync_label.set_sensitive(False)
+    shell.pack_start(sync_label, False, False, 0)
+
+    def refresh():
+        if closed["value"]:
+            return False
+        panel = _timer_panel_state()
+        win.set_title(_timer_window_title(panel))
+        status_label.set_markup(f"<b>{GLib.markup_escape_text(panel['status'])}</b>")
+        timer_label.set_markup(
+            f"<span size='32000' weight='bold'>{GLib.markup_escape_text(panel['elapsed'])}</span>"
+        )
+        description_label.set_text(panel["display_description"])
+        sync_label.set_text(panel["sync"])
+        toggle_btn.set_label(panel["action"])
+        save_desc_btn.set_sensitive(desc_dirty["value"])
+        if not desc_dirty["value"]:
+            updating_desc["value"] = True
+            desc_entry.set_text(panel["description"])
+            updating_desc["value"] = False
+        return False
+
+    def mark_dirty(_entry):
+        if not updating_desc["value"]:
+            desc_dirty["value"] = True
+            save_desc_btn.set_sensitive(True)
+
+    def save_description(*_args):
+        _apply_description(desc_entry.get_text().strip())
+        desc_dirty["value"] = False
+        refresh()
+        return False
+
+    def toggle_from_panel(_button):
+        if desc_dirty["value"]:
+            save_description()
+        toggle_btn.set_sensitive(False)
+
+        def _do():
+            toggle_tracking(prompt_for_description=False)
+
+            def _done():
+                toggle_btn.set_sensitive(True)
+                refresh()
+                return False
+
+            GLib.idle_add(_done)
+
+        threading.Thread(target=_do, daemon=True).start()
+
+    def open_entries(_button):
+        _show_entries_window()
+
+    def on_destroy(_window):
+        global timer_window_ref
+        closed["value"] = True
+        timer_window_ref = None
+        return False
+
+    desc_entry.connect("changed", mark_dirty)
+    desc_entry.connect("activate", save_description)
+    save_desc_btn.connect("clicked", save_description)
+    toggle_btn.connect("clicked", toggle_from_panel)
+    entries_btn.connect("clicked", open_entries)
+    win.connect("destroy", on_destroy)
+
+    win.add(shell)
+    win.show_all()
+    refresh()
+    desc_entry.grab_focus()
+
+    def tick():
+        if closed["value"]:
+            return False
+        refresh()
+        return True
+
+    GLib.timeout_add_seconds(1, tick)
+    return False
 
 
 def _capture_cli_output(func, args):
@@ -1642,46 +1948,60 @@ def on_audit_today(icon, item):
 
 def _show_entries_window():
     """Show entries window with day navigation."""
-    win = Gtk.Window(title="Entries")
-    win.set_default_size(420, 420)
+    win = Gtk.Window(title="Toggl Entries")
+    win.set_default_size(ENTRY_WINDOW_WIDTH, ENTRY_WINDOW_HEIGHT)
     win.set_keep_above(True)
 
     ctx = {"date": datetime.now().date(), "entries": []}
 
-    vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-    vbox.set_margin_start(10)
-    vbox.set_margin_end(10)
-    vbox.set_margin_top(10)
-    vbox.set_margin_bottom(10)
+    vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+    vbox.set_margin_start(14)
+    vbox.set_margin_end(14)
+    vbox.set_margin_top(14)
+    vbox.set_margin_bottom(14)
 
-    # Day navigation bar
     nav_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-    prev_btn = Gtk.Button(label="<")
-    next_btn = Gtk.Button(label=">")
+    prev_btn = Gtk.Button(label="←")
+    next_btn = Gtk.Button(label="→")
     today_btn = Gtk.Button(label="Today")
+    prev_btn.set_tooltip_text("Previous day")
+    next_btn.set_tooltip_text("Next day")
+    today_btn.set_tooltip_text("Jump to today")
+
+    title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+    title_box.set_hexpand(True)
     header_label = Gtk.Label()
-    header_label.set_hexpand(True)
+    header_label.set_xalign(0)
+    summary_label = Gtk.Label()
+    summary_label.set_xalign(0)
+    summary_label.set_sensitive(False)
+    title_box.pack_start(header_label, False, False, 0)
+    title_box.pack_start(summary_label, False, False, 0)
 
     nav_box.pack_start(prev_btn, False, False, 0)
-    nav_box.pack_start(header_label, True, True, 0)
+    nav_box.pack_start(title_box, True, True, 4)
     nav_box.pack_start(today_btn, False, False, 0)
     nav_box.pack_start(next_btn, False, False, 0)
-    vbox.pack_start(nav_box, False, False, 4)
+    vbox.pack_start(nav_box, False, False, 0)
 
     scroll = Gtk.ScrolledWindow()
     scroll.set_vexpand(True)
+    scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+    scroll.set_shadow_type(Gtk.ShadowType.IN)
     listbox = Gtk.ListBox()
     listbox.set_selection_mode(Gtk.SelectionMode.NONE)
     scroll.add(listbox)
     vbox.pack_start(scroll, True, True, 0)
 
-    empty_label = Gtk.Label(label="No entries")
+    empty_label = Gtk.Label(label="No entries for this day")
     empty_label.set_sensitive(False)
+    empty_label.set_vexpand(True)
     vbox.pack_start(empty_label, True, True, 0)
 
     def load_date(date_obj):
         ctx["date"] = date_obj
-        header_label.set_markup(f"<b>Loading...</b>")
+        header_label.set_markup("<b>Loading...</b>")
+        summary_label.set_text("")
         for child in listbox.get_children():
             listbox.remove(child)
         empty_label.hide()
@@ -1703,15 +2023,7 @@ def _show_entries_window():
         for child in listbox.get_children():
             listbox.remove(child)
 
-        total_secs = 0
-        for e in entries:
-            dur = e.get("duration", 0)
-            if dur < 0:
-                dur = int(time.time()) + dur
-            total_secs += max(dur, 0)
-
-        th, trem = divmod(total_secs, 3600)
-        tm, _ = divmod(trem, 60)
+        total_secs = sum(_entry_duration_seconds(entry) for entry in entries)
 
         today = datetime.now().date()
         if date_obj == today:
@@ -1721,7 +2033,10 @@ def _show_entries_window():
         else:
             day_str = date_obj.strftime("%a %b %d")
 
-        header_label.set_markup(f"<b>{day_str} — {th}:{tm:02d} total</b>")
+        entry_count = len(entries)
+        count_text = "1 entry" if entry_count == 1 else f"{entry_count} entries"
+        header_label.set_markup(f"<b>{GLib.markup_escape_text(day_str)}</b>")
+        summary_label.set_text(f"{count_text} · {_format_duration(total_secs)} total")
 
         if not entries:
             empty_label.show()
@@ -1745,12 +2060,8 @@ def _show_entries_window():
 def _build_entry_row(entry, win, entries, listbox, ctx):
     """Build a single clickable row for an entry."""
     start_dt = datetime.fromisoformat(entry["start"]).astimezone()
-    dur = entry.get("duration", 0)
-    running = dur < 0
-    if running:
-        dur = int(time.time()) + dur
-    h, rem = divmod(max(dur, 0), 3600)
-    m, s = divmod(rem, 60)
+    running = (entry.get("duration", 0) or 0) < 0
+    dur = _entry_duration_seconds(entry)
     desc = entry.get("description") or "(no description)"
 
     stop_str = "now" if running else ""
@@ -1760,33 +2071,58 @@ def _build_entry_row(entry, win, entries, listbox, ctx):
 
     row = Gtk.ListBoxRow()
     row.set_activatable(True)
-    hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-    hbox.set_margin_start(6)
-    hbox.set_margin_end(6)
-    hbox.set_margin_top(4)
-    hbox.set_margin_bottom(4)
+    outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+    outer.set_margin_start(10)
+    outer.set_margin_end(10)
+    outer.set_margin_top(8)
+    outer.set_margin_bottom(8)
 
-    time_label = Gtk.Label()
-    running_marker = " ⏵" if running else ""
-    time_label.set_markup(
-        f"<tt>{start_dt.strftime('%H:%M')}–{stop_str}</tt>"
-        f"  <small>({h}:{m:02d}:{s:02d}{running_marker})</small>"
-    )
-    time_label.set_xalign(0)
-    hbox.pack_start(time_label, False, False, 0)
+    top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+    desc_label = Gtk.Label()
+    desc_label.set_xalign(0)
+    desc_label.set_hexpand(True)
+    desc_label.set_ellipsize(Pango.EllipsizeMode.END)
+    desc_label.set_max_width_chars(ENTRY_ROW_DESC_CHARS)
+    escaped_desc = GLib.markup_escape_text(desc)
+    if entry.get("description"):
+        desc_label.set_markup(f"<b>{escaped_desc}</b>")
+    else:
+        desc_label.set_markup(f"<span foreground='#6f6f6f'>{escaped_desc}</span>")
+    top.pack_start(desc_label, True, True, 0)
 
     offline = entry.get("_offline", False)
-    label_text = f"{'⏳ ' if offline else ''}{desc}"
-    desc_label = Gtk.Label(label=label_text)
-    desc_label.set_xalign(0)
-    desc_label.set_ellipsize(3)  # Pango.EllipsizeMode.END
-    hbox.pack_start(desc_label, True, True, 0)
+    status_parts = []
+    if running:
+        status_parts.append("Running")
+    if offline:
+        status_parts.append("Local")
+    if status_parts:
+        status_label = Gtk.Label(label=" · ".join(status_parts))
+        status_label.set_sensitive(False)
+        top.pack_start(status_label, False, False, 0)
 
     edit_btn = Gtk.Button(label="Edit")
+    edit_btn.set_tooltip_text("Edit entry")
     edit_btn.connect("clicked", lambda b: _on_edit_entry(entry, win, entries, listbox, ctx))
-    hbox.pack_end(edit_btn, False, False, 0)
+    top.pack_end(edit_btn, False, False, 0)
+    outer.pack_start(top, False, False, 0)
 
-    row.add(hbox)
+    meta = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+    time_label = Gtk.Label()
+    time_label.set_markup(
+        f"<tt>{start_dt.strftime('%H:%M')} - {GLib.markup_escape_text(stop_str)}</tt>"
+    )
+    time_label.set_xalign(0)
+    time_label.set_sensitive(False)
+    meta.pack_start(time_label, True, True, 0)
+
+    duration_label = Gtk.Label(label=_format_duration(dur))
+    duration_label.set_xalign(1)
+    duration_label.set_sensitive(False)
+    meta.pack_end(duration_label, False, False, 0)
+    outer.pack_start(meta, False, False, 0)
+
+    row.add(outer)
     return row
 
 
@@ -1930,7 +2266,8 @@ def _gtk_edit_entry_dialog(entry):
     def run():
         dialog = Gtk.Dialog(title="Edit Entry", modal=True)
         dialog.set_keep_above(True)
-        dialog.set_resizable(False)
+        dialog.set_resizable(True)
+        dialog.set_default_size(460, -1)
         dialog.add_buttons(
             "Delete", Gtk.ResponseType.REJECT,
             Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
@@ -1944,29 +2281,31 @@ def _gtk_edit_entry_dialog(entry):
             style_ctx.add_class("destructive-action")
 
         box = dialog.get_content_area()
-        box.set_spacing(8)
-        box.set_margin_start(16)
-        box.set_margin_end(16)
-        box.set_margin_top(12)
-        box.set_margin_bottom(8)
+        box.set_spacing(12)
+        box.set_margin_start(18)
+        box.set_margin_end(18)
+        box.set_margin_top(16)
+        box.set_margin_bottom(12)
 
-        grid = Gtk.Grid(column_spacing=10, row_spacing=8)
+        grid = Gtk.Grid(column_spacing=12, row_spacing=10)
 
-        grid.attach(Gtk.Label(label="Description:", xalign=0), 0, 0, 1, 1)
+        grid.attach(Gtk.Label(label="Description", xalign=0), 0, 0, 1, 1)
         desc_entry = Gtk.Entry()
         desc_entry.set_text(entry.get("description", ""))
         desc_entry.set_hexpand(True)
         desc_entry.set_activates_default(True)
+        desc_entry.set_width_chars(34)
         grid.attach(desc_entry, 1, 0, 1, 1)
 
-        grid.attach(Gtk.Label(label="Start (HH:MM):", xalign=0), 0, 1, 1, 1)
+        grid.attach(Gtk.Label(label="Start", xalign=0), 0, 1, 1, 1)
         start_entry = Gtk.Entry()
         start_entry.set_text(start_dt.strftime("%H:%M"))
         start_entry.set_max_length(5)
         start_entry.set_width_chars(7)
+        start_entry.set_placeholder_text("HH:MM")
         grid.attach(start_entry, 1, 1, 1, 1)
 
-        grid.attach(Gtk.Label(label="Stop (HH:MM):", xalign=0), 0, 2, 1, 1)
+        grid.attach(Gtk.Label(label="Stop", xalign=0), 0, 2, 1, 1)
         stop_entry = Gtk.Entry()
         if running:
             stop_entry.set_text("running")
@@ -1975,10 +2314,12 @@ def _gtk_edit_entry_dialog(entry):
             stop_entry.set_text(stop_text)
         stop_entry.set_max_length(7)
         stop_entry.set_width_chars(7)
+        stop_entry.set_placeholder_text("HH:MM")
         grid.attach(stop_entry, 1, 2, 1, 1)
 
         box.add(grid)
         dialog.show_all()
+        desc_entry.grab_focus()
         resp = dialog.run()
 
         if resp == Gtk.ResponseType.REJECT:
@@ -2031,7 +2372,7 @@ def _parse_hhmm(text, reference_dt):
 
 def on_set_token(icon, item):
     def _do():
-        token = _gtk_input_dialog("API Token", "Enter Toggl API token:", placeholder="hex token")
+        token = _gtk_input_dialog("API Token", "Enter Toggl/OpenTickly API token:", placeholder="hex token")
         if token:
             global api_token
             with toggle_lock:
@@ -2223,7 +2564,7 @@ def build_menu():
     toggle_label = "Stop tracking" if state["tracking"] else "Start tracking"
     return pystray.Menu(
         *_tray_recent_items(),
-        pystray.MenuItem("Open Timer", on_open_timer, default=True),
+        pystray.MenuItem("Open timer", on_open_timer, default=True),
         pystray.MenuItem("Find Project or Task…", on_find_project_task),
         pystray.MenuItem("Project", pystray.Menu(*_tray_project_items())),
         pystray.MenuItem(
@@ -2409,6 +2750,7 @@ def _cli_status(_args):
     _load_cli_runtime()
     print(f"State file: {STATE_FILE}")
     print(f"Pending file: {PENDING_FILE}")
+    print(f"API base: {get_api_base()}")
     print(f"API token: {'yes' if api_token else 'no'}")
     print(f"Workspace: {state.get('workspace_id') or '(unknown)'}")
     print(f"Tracking: {'yes' if state.get('tracking') else 'no'}")
@@ -2443,6 +2785,8 @@ def _cli_doctor(args):
     print(f"State file: {STATE_FILE} ({_file_json_status(STATE_FILE)})")
     print(f"Pending file: {PENDING_FILE} ({_file_json_status(PENDING_FILE)})")
     print(f"Ledger file: {LEDGER_FILE} ({'ok' if LEDGER_FILE.exists() else 'missing'})")
+    print(f"Config file: {CONFIG_FILE} ({_file_json_status(CONFIG_FILE)})")
+    print(f"API base: {get_api_base()}")
     print(f"API token: {'yes' if api_token else 'no'}")
     print(f"Workspace: {state.get('workspace_id') or '(unknown)'}")
     print(f"Tracking: {'yes' if state.get('tracking') else 'no'}")
@@ -2456,10 +2800,13 @@ def _cli_doctor(args):
     print(f"Pending visible entries: {len(pending_entries)}")
     print(f"Ledger events: {len(ledger_events)}")
     print(f"Rate limit: {'active for ' + str(rate_limit_left) + 's' if rate_limit_left else 'inactive'}")
-    print(
-        f"Request budget: {request_budget['used']}/{request_budget['limit']} used, "
-        f"{request_budget['remaining']} remaining"
-    )
+    if _request_budget_applies():
+        print(
+            f"Request budget: {request_budget['used']}/{request_budget['limit']} used, "
+            f"{request_budget['remaining']} remaining"
+        )
+    else:
+        print("Request budget: not applied for configured API base")
 
     if args.cloud:
         if not api_token:
@@ -2728,6 +3075,18 @@ def _cli_sync(_args):
     return 0
 
 
+def _cli_set_api_base(args):
+    load_state()
+    api_base = set_api_base(args.url)
+    pending_ids = _clear_remote_ids()
+    print(f"API base: {api_base}")
+    print(f"Config file: {CONFIG_FILE}")
+    print("Cleared stored workspace/project/entry ids for the configured API base.")
+    if pending_ids:
+        print(f"Cleared {pending_ids} id field(s) from pending local actions.")
+    return 0
+
+
 def _desktop_quote(value):
     return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
@@ -2858,6 +3217,8 @@ def _build_cli_parser():
     sub.add_parser("stop", help="stop tracking from the terminal")
     set_start = sub.add_parser("set-start", help="set current timer start time, HH:MM local")
     set_start.add_argument("time", help="new local start time, HH:MM")
+    set_api_base = sub.add_parser("set-api-base", help="set the Toggl-compatible API base URL")
+    set_api_base.add_argument("url", help="API base URL, for example https://opentickly.example.com/api/v9")
     sub.add_parser("sync", help="try to sync pending local entries now")
     install_app = sub.add_parser("install-app", help="install desktop app and CLI launchers")
     install_app.add_argument("--autostart", action="store_true", help="also start Toggl Tray on login")
@@ -2899,6 +3260,8 @@ def _run_cli(argv):
         return _cli_stop(args)
     if args.command == "set-start":
         return _cli_set_start(args)
+    if args.command == "set-api-base":
+        return _cli_set_api_base(args)
     if args.command == "sync":
         return _cli_sync(args)
     if args.command == "install-app":
