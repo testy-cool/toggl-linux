@@ -7,6 +7,7 @@ import requests
 
 from test_toggl_tray import reset_state, tmp_state_dir
 import toggl_tray as app
+import toggl_cli
 import toggl_control as control
 
 
@@ -186,7 +187,7 @@ def test_cli_accepts_project_actions_and_forwards_json_payload(project, capsys):
     for action in ("project-create", "project-update"):
         payload = {"context": context(), "project": dict(project), "name": "Changed", "color": "#123456"}
         with patch.object(control, "request", return_value={"saved_project": dict(project)}) as request:
-            assert app._run_cli(["control", action, json.dumps(payload)]) == 0
+            assert toggl_cli._run_cli(["control", action, json.dumps(payload)]) == 0
         request.assert_called_once_with(app.STATE_DIR, action, payload)
         assert json.loads(capsys.readouterr().out)["ok"] is True
 

@@ -7,6 +7,7 @@ import pytest
 
 from test_toggl_tray import reset_state, tmp_state_dir
 import toggl_tray as app
+import toggl_cli
 import toggl_control as control
 
 
@@ -166,7 +167,7 @@ def test_resume_uses_real_cli_and_local_socket_without_cloud_calls(history, caps
         with patch.object(app, "api_get", side_effect=AssertionError("No live API")), \
              patch.object(app, "api_post", side_effect=AssertionError("No live API")):
             payload = {"entry": dict(history), "expected": dict(app.state)}
-            assert app._run_cli(["control", "resume", json.dumps(payload)]) == 0
+            assert toggl_cli._run_cli(["control", "resume", json.dumps(payload)]) == 0
             response = json.loads(capsys.readouterr().out)
             assert response["ok"] is True
             result = response["result"]
@@ -196,6 +197,6 @@ def test_resume_cli_forwards_action_and_json_payload_to_socket_client(history, c
     payload = {"entry": dict(history), "expected": dict(app.state)}
     response = {"state": {"tracking": True, "description": "Previous task"}}
     with patch.object(control, "request", return_value=response) as request:
-        assert app._run_cli(["control", "resume", json.dumps(payload)]) == 0
+        assert toggl_cli._run_cli(["control", "resume", json.dumps(payload)]) == 0
     request.assert_called_once_with(app.STATE_DIR, "resume", payload)
     assert json.loads(capsys.readouterr().out) == {"ok": True, "result": response}

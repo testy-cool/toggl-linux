@@ -6,6 +6,7 @@ import pytest
 
 from test_toggl_tray import reset_state, tmp_state_dir
 import toggl_tray as app
+import toggl_cli
 import toggl_control as control
 
 
@@ -48,8 +49,8 @@ def test_cli_offline_stop_retains_project(tmp_state_dir):
     app.api_token = None
     app.state.update(tracking=True, entry_id=101, project_id=7,
                      description="Work", start_time="2026-10-25T10:00:00+00:00")
-    with patch.object(app, "_load_cli_runtime"):
-        assert app._cli_stop(None) == 0
+    with patch.object(toggl_cli, "_load_cli_runtime"):
+        assert toggl_cli._cli_stop(None) == 0
     assert app._load_pending()[0]["project_id"] == 7
 
 

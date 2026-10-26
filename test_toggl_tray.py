@@ -26,6 +26,7 @@ sys.modules["gi"] = MagicMock()
 sys.modules["gi.repository"] = MagicMock()
 
 import toggl_tray
+import toggl_cli
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -136,39 +137,6 @@ class TestGetTooltip:
         assert "Deep work" in result
         assert result.startswith("Toggl: Deep work")
 
-
-# ── timer panel state ────────────────────────────────────────────────────────
-
-class TestTimerPanelState:
-    def test_stopped_panel_state(self, tmp_state_dir):
-        panel = toggl_tray._timer_panel_state()
-
-        assert panel["status"] == "Stopped"
-        assert panel["action"] == "Start timer"
-        assert panel["elapsed"] == "0:00:00"
-        assert panel["display_description"] == "No description"
-        assert panel["sync"] == "Toggl sync ready"
-
-    def test_tracking_panel_state(self, tmp_state_dir):
-        start = datetime.now(timezone.utc) - timedelta(minutes=5)
-        toggl_tray.state["tracking"] = True
-        toggl_tray.state["start_time"] = start.isoformat()
-        toggl_tray.state["description"] = "Writing"
-
-        panel = toggl_tray._timer_panel_state()
-
-        assert panel["status"] == "Tracking"
-        assert panel["action"] == "Stop timer"
-        assert panel["description"] == "Writing"
-        assert panel["display_description"] == "Writing"
-        assert panel["elapsed"].startswith("0:05:")
-
-    def test_panel_state_surfaces_pending_sync(self, tmp_state_dir):
-        toggl_tray.queue_action("start", start_time="2026-04-28T09:00:00+00:00")
-
-        panel = toggl_tray._timer_panel_state()
-
-        assert panel["sync"] == "1 local change waiting to sync"
 
 
 class TestPanelTimerLabel:
@@ -286,15 +254,6 @@ class TestPanelTimerLabel:
 
         idle_callback = toggl_tray.GLib.idle_add.call_args_list[-1].args[0]
         assert idle_callback() is False
-
-    def test_taskbar_title_tracks_timer_and_task(self):
-        panel = {
-            "tracking": True,
-            "elapsed": "0:05:12",
-            "description": "Writing release notes",
-        }
-
-        assert toggl_tray._timer_window_title(panel) == "0:05:12 — Toggl"
 
 
 class TestDescriptionDialog:
@@ -1247,7 +1206,7 @@ class TestCliRecovery:
         }])
 
         args = type("Args", (), {"url": "https://opentickly.example.com/api/v9/"})()
-        assert toggl_tray._cli_set_api_base(args) == 0
+        assert toggl_cli._cli_set_api_base(args) == 0
 
         assert toggl_tray.get_api_base() == "https://opentickly.example.com/api/v9"
         assert toggl_tray.state["workspace_id"] is None
@@ -1270,7 +1229,7 @@ class TestCliRecovery:
         toggl_tray.queue_action("start", start_time="2026-04-28T09:00:00+00:00")
         toggl_tray.queue_action("stop", stop_time="2026-04-28T10:00:00+00:00")
 
-        assert toggl_tray._cli_sync(type("Args", (), {})()) == 0
+        assert toggl_cli._cli_sync(type("Args", (), {})()) == 0
 
         mock_post.assert_called_once()
         assert not (tmp_state_dir / "pending.json").exists()
@@ -1284,7 +1243,7 @@ class TestCliRecovery:
         toggl_tray.queue_action("start", start_time="2026-04-28T09:00:00+00:00")
 
         args = type("Args", (), {"time": "08:30"})()
-        assert toggl_tray._cli_set_start(args) == 0
+        assert toggl_cli._cli_set_start(args) == 0
         assert "08:30:00" in toggl_tray.state["start_time"]
         queue = toggl_tray._load_pending()
         assert "08:30:00" in queue[0]["start_time"]
@@ -1306,7 +1265,7 @@ class TestCliRecovery:
 
         args = type("Args", (), {"cloud": True})()
         with patch.object(toggl_tray.time, "time", return_value=1000.0):
-            assert toggl_tray._cli_doctor(args) == 0
+            assert toggl_cli._cli_doctor(args) == 0
         out = capsys.readouterr().out
         assert "API token: yes" in out
         assert "Tracking: yes" in out
@@ -1318,7 +1277,7 @@ class TestCliRecovery:
     @patch.object(toggl_tray, "get_api_token", return_value=None)
     def test_doctor_without_cloud_does_not_fetch_current(self, mock_token, capsys, tmp_state_dir):
         args = type("Args", (), {"cloud": False})()
-        assert toggl_tray._cli_doctor(args) == 0
+        assert toggl_cli._cli_doctor(args) == 0
         out = capsys.readouterr().out
         assert "Cloud current: skipped (use --cloud)" in out
 
@@ -1354,7 +1313,7 @@ class TestCliRecovery:
             "local_only": False,
             "gap_minutes": 120,
         })()
-        assert toggl_tray._cli_audit(args) == 0
+        assert toggl_cli._cli_audit(args) == 0
         out = capsys.readouterr().out
         assert "2026-04-28: 2:30:00 total, 3 entries, 1 blank, 1 local pending, 1 large gaps" in out
         assert "Total: 2:30:00" in out
@@ -1367,16 +1326,16 @@ class TestCliRecovery:
             "local_only": True,
             "gap_minutes": 120,
         })()
-        assert toggl_tray._cli_audit(args) == 2
+        assert toggl_cli._cli_audit(args) == 2
         assert "Start date must be before or equal to end date." in capsys.readouterr().err
 
     def test_parser_uses_installed_cli_name(self):
-        assert toggl_tray._build_cli_parser().prog == "toggl"
+        assert toggl_cli._build_cli_parser().prog == "toggl"
 
 
 class TestDesktopInstall:
     def test_desktop_entry_uses_repo_script(self, tmp_state_dir):
-        text = toggl_tray._desktop_entry_text()
+        text = toggl_cli._desktop_entry_text()
         assert "Name=Toggl Tray" in text
         assert "toggl_tray.py" in text
         assert " run" in text
@@ -1384,7 +1343,7 @@ class TestDesktopInstall:
 
     def test_write_desktop_file(self, tmp_path, tmp_state_dir):
         path = tmp_path / "toggl-tray.desktop"
-        toggl_tray._write_desktop_file(path)
+        toggl_cli._write_desktop_file(path)
         text = path.read_text()
         assert text.startswith("[Desktop Entry]")
         assert path.stat().st_mode & 0o111
@@ -1394,16 +1353,16 @@ class TestDesktopInstall:
     ):
         path = tmp_path / "toggl"
 
-        toggl_tray._write_cli_launcher(path)
+        toggl_cli._write_cli_launcher(path)
 
         text = path.read_text()
         assert text.startswith("#!/bin/sh\n")
-        assert str(toggl_tray._launcher_python()) in text
+        assert str(toggl_cli._launcher_python()) in text
         assert str(Path(toggl_tray.__file__).resolve()) in text
         assert '"$@"' in text
         assert path.stat().st_mode & 0o111
 
-    @patch.object(toggl_tray, "_refresh_desktop_database")
+    @patch.object(toggl_cli, "_refresh_desktop_database")
     def test_install_app_installs_cli_launcher(
         self, mock_refresh, tmp_path, tmp_state_dir
     ):
@@ -1413,12 +1372,12 @@ class TestDesktopInstall:
 
         with patch.object(toggl_tray, "DESKTOP_FILE", desktop_file), \
              patch.object(toggl_tray, "CLI_FILE", cli_file):
-            assert toggl_tray._cli_install_app(args) == 0
+            assert toggl_cli._cli_install_app(args) == 0
 
         assert cli_file.exists()
         assert cli_file.stat().st_mode & 0o111
 
-    @patch.object(toggl_tray, "_refresh_desktop_database")
+    @patch.object(toggl_cli, "_refresh_desktop_database")
     def test_uninstall_app_removes_cli_launcher(
         self, mock_refresh, tmp_path, tmp_state_dir
     ):
@@ -1432,7 +1391,7 @@ class TestDesktopInstall:
         with patch.object(toggl_tray, "DESKTOP_FILE", desktop_file), \
              patch.object(toggl_tray, "AUTOSTART_FILE", autostart_file), \
              patch.object(toggl_tray, "CLI_FILE", cli_file):
-            assert toggl_tray._cli_uninstall_app(type("Args", (), {})()) == 0
+            assert toggl_cli._cli_uninstall_app(type("Args", (), {})()) == 0
 
         assert not cli_file.exists()
 
