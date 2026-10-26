@@ -1,5 +1,4 @@
 """Rows of the left-click popup, built without a desktop."""
-from test_toggl_tray import reset_state
 import toggl_tray as app
 import toggl_tray_popup as popup
 

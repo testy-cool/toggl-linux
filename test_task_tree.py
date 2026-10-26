@@ -4,7 +4,6 @@ import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 import pytest
-from test_toggl_tray import reset_state, tmp_state_dir
 import toggl_tray as app
 import toggl_entries_window
 import toggl_projects

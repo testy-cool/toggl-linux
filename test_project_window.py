@@ -2,7 +2,6 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-import test_toggl_tray
 import toggl_tray as app
 import toggl_project_window as projects
 

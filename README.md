@@ -10,14 +10,14 @@ A lightweight system tray app that lets you start and stop [Toggl Track](https:/
 
 ## Why This Exists
 
-Toggl's official desktop app doesn't work on Linux anymore. This replaces it with a single Python file that does the one thing you actually need: **toggle tracking with a hotkey**.
+Toggl's official desktop app doesn't work on Linux anymore. This replaces it with a small Python tray app built around the one thing you actually need: **toggle tracking with a hotkey**.
 
-The tray icon shows the Toggl logo in **pink when tracking** and **grey when stopped**, so you always know at a glance.
+The tray icon shows the Toggl logo in the **running project's colour** while tracking and **grey when stopped**, so you always know at a glance.
 
 ## Features
 
 - **Global hotkey** (`Ctrl+Shift+T`) — works everywhere, overrides all apps (X11 key grab)
-- **Tray icon** — pink = tracking, grey = stopped
+- **Tray icon** — the running project's colour while tracking, grey when stopped
 - **Optional panel text** — independently show or hide elapsed time and the task description on Cinnamon
 - **Tooltip** — hover to see elapsed time and description
 - **Offline mode** — works without internet, syncs to Toggl when back online
@@ -182,7 +182,7 @@ python3 toggl_tray.py install-app --autostart
 
 ## How It Works
 
-- **Small Python core** (`toggl_tray.py`) with focused control and editor modules
+- **Python core** (`toggl_tray.py`) with focused modules for the terminal commands, control socket, project and task history, popup and windows
 - Talks to [Toggl Track API v9](https://engineering.toggl.com/docs/track/) or a compatible OpenTickly instance using basic auth
 - API base defaults to `https://api.track.toggl.com/api/v9`; override it with `python3 toggl_tray.py set-api-base <url>` or temporary `TOGGL_API_BASE`
 - Global hotkey uses X11 `XGrabKey` — the key is grabbed at the X server level, so no other app sees `Ctrl+Shift+T`
@@ -227,10 +227,10 @@ Pending billable entries are not expired or garbage-collected automatically.
 **Ctrl+Shift+T doesn't work**
 - This app only works on X11, not Wayland. Check with `echo $XDG_SESSION_TYPE`.
 - Another app may have already grabbed that key combo.
-- If the tray app cannot grab the hotkey, it shows a desktop notification. You can still use the tray menu or terminal commands.
+- If the tray app cannot grab the hotkey, it prints an error and plays the error sound. You can still use the tray menu or terminal commands.
 
 **"Another instance is already running"**
-- The message includes the PID from the lock file. If that process is gone, remove the lock file: `rm ~/.local/share/toggl-tray/toggl-tray.lock`
+- The message includes the PID of the running copy. The lock is released automatically when that process exits, so quit or stop that process instead of deleting the lock file; deleting it while the app runs allows a second copy to start.
 
 **Tray entries are empty but tracking looks active**
 - Run `python3 toggl_tray.py status`. Local/offline entries are shown from `~/.local/share/toggl-tray/pending.json`.
@@ -240,7 +240,7 @@ Pending billable entries are not expired or garbage-collected automatically.
 - Run `python3 toggl_tray.py status` to check whether a local timer or pending queue exists.
 - Run `python3 toggl_tray.py doctor` for state file, pending file, token, ledger, and rate-limit health.
 - Run `python3 toggl_tray.py entries` to check today's Toggl entries.
-- If both are empty, the hotkey likely did not reach the app. Use the tray menu or `python3 toggl_tray.py start "Task"` until the hotkey notification/conflict is resolved.
+- If both are empty, the hotkey likely did not reach the app. Use the tray menu or `python3 toggl_tray.py start "Task"` until the hotkey conflict is resolved.
 
 **Need to review missing time**
 - Run `python3 toggl_tray.py audit 2026-05-01 2026-05-31`.
@@ -256,7 +256,7 @@ MIT
 
 ### Project colors
 
-Right-click the tray icon and open **Project** to select a saved project or **No project** directly. The current choice is checked. Selection updates the current interval, or the remembered project while stopped, without starting a new interval. **Refresh projects** reloads the choices. Pending offline timers remain editable; cloud edits show a notification if they cannot be saved.
+Right-click the tray icon and open **Project** to select a saved project or **No project** directly. The current choice is checked. Selection updates the current interval, or the remembered project while stopped, without starting a new interval. **Refresh projects** reloads the choices. Pending offline timers remain editable; if a cloud edit cannot be saved, the checked choice stays as it was.
 
 The same submenu includes **New Project…**, **Edit Selected Project…**, and **Manage Projects…**. New/Edit opens a name and color form; Manage opens your account's project page for archives, deletion, and advanced settings. The timer window's **Projects** button and Vicinae's **Projects** section offer the same actions. Creating a project adds it to the choices without assigning it to the timer. Saving a name or color immediately refreshes shared project lists and the selected project's tray color while keeping existing time entries attached. Creation/editing requires a connection; failed or uncertain writes keep the form text and ask you to refresh before retrying.
 

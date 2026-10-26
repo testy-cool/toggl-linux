@@ -5,15 +5,15 @@ System tray Toggl Track timer for Linux Mint (Cinnamon/X11).
 ## Stack
 
 - Python 3.13, pystray (appindicator backend), Pillow, PyGObject (GTK3), python-xlib
-- Single file: `toggl_tray.py` (~800 lines)
-- Tests: `test_toggl_tray.py` (pytest, mocks Xlib/GTK/pystray at import time)
+- Core in `toggl_tray.py`; terminal commands in `toggl_cli.py`, control socket in `toggl_control.py`, projects in `toggl_projects.py`, task history in `toggl_task_tree.py`, left-click popup in `toggl_tray_popup.py`, windows in `toggl_timer_window.py`, `toggl_project_window.py`, `toggl_entries_window.py`. AGENTS.md has the module map.
+- Tests: `test_*.py`; `conftest.py` fakes Xlib/GTK/pystray, gives each test a private state folder and blocks network
 
 ## Running
 
 - Autostart: `~/.config/autostart/toggl-tray.desktop` (if configured)
 - Manual: `source .venv/bin/activate && python toggl_tray.py`
-- Single-instance via `fcntl` file lock at `~/.local/share/toggl-tray/toggl-tray.lock`
-- If process dies, the lock file becomes stale — delete it before relaunching
+- Single-instance via `fcntl` lock at `~/.local/share/toggl-tray/toggl-tray.lock`. The lock releases when the process dies; never delete the file, or a second copy can start next to a running one
+- The process command line varies (`install-app` writes `... toggl_tray.py run`; an older hand-written autostart file omits `run`), so find the PID with `ps -eo pid,cmd | grep "[t]oggl_tray.py"` rather than matching `run`
 
 ## State & Data
 
@@ -25,7 +25,7 @@ System tray Toggl Track timer for Linux Mint (Cinnamon/X11).
 
 ## API Token
 
-- Stored in GNOME keyring via `secret-tool` (attributes: `service=toggl username=api_token application=toggl-tray`)
+- Stored in GNOME keyring via `secret-tool`. Toggl uses `service=toggl username=api_token application=toggl-tray`; any other API base (OpenTickly) uses `service=opentickly`. `set-api-base` / `TOGGL_API_BASE` choose the server
 - Fallback: `TOGGL_API_TOKEN` env var
 - Get token from: https://track.toggl.com/profile (bottom of page)
 - Store manually: `echo -n "TOKEN" | secret-tool store --label="Toggl API Token" service toggl username api_token application toggl-tray`
@@ -33,9 +33,8 @@ System tray Toggl Track timer for Linux Mint (Cinnamon/X11).
 
 ## Known Issues & Gotchas
 
-- **Stale lock file after kill -9.** fcntl locks don't survive process death. Must `rm ~/.local/share/toggl-tray/toggl-tray.lock` before relaunching.
 - **GTK theme warning** (`'border-spacing' is not a valid property name`) is cosmetic, harmless.
-- **X11 BadAccess errors** on startup are from hotkey grab conflicts (another instance or app grabbed Ctrl+Shift+T). The app now notifies the user when the hotkey cannot be grabbed.
+- **X11 BadAccess errors** on startup are from hotkey grab conflicts (another instance or app grabbed Ctrl+Shift+T). The app prints an error and plays the error sound when the hotkey cannot be grabbed.
 
 ## Offline Sync Resilience
 
@@ -48,11 +47,8 @@ System tray Toggl Track timer for Linux Mint (Cinnamon/X11).
 - **Pending sync runs every 5 min.** Background work prioritizes queued local actions.
 - **Idle cloud polling runs hourly.** This preserves Toggl's 30 req/hour free-plan budget for user actions.
 - **Pending deletes don't block cloud sync.** Only pending start/stop operations (which conflict with tracking state) defer cloud sync.
-- **Desktop notifications on offline.** User sees "Offline — start/stop queued locally" when API calls fail.
-- **Desktop notifications on auth/rate-limit.** Missing token, auth failure, and active rate-limit states are visible and keep local data.
-- **No-description nudge.** Starting with empty description shows a notification to set one.
-- **Health check every sync cycle.** If tracking=True but entry_id=None with no pending items, the app tries to recover from cloud. If cloud has nothing running, it stops the local timer and notifies the user.
-- **Sync failure notifications.** After 3 consecutive sync failures, the user gets a notification to check their connection.
+- **Desktop notifications are off.** `_notify()` returns immediately, by the user's request. Failures show through sounds, the tray icon and `doctor`.
+- **Health check every sync cycle.** If tracking=True but entry_id=None with no pending items, the app tries to recover from cloud. If cloud has nothing running, it stops the local timer and plays the error sound.
 - **Thread-safe state.** A `state_lock` protects all state mutations from race conditions between the sync thread and user-triggered toggles.
 - **Atomic local writes.** `state.json` and `pending.json` write via temp-file + rename and fall back to `.bak` on corrupt primary JSON.
 - **Append-only event ledger.** Toggle/CLI start/stop requests and pending queue writes append JSONL records before or alongside cloud writes.
@@ -68,7 +64,7 @@ System tray Toggl Track timer for Linux Mint (Cinnamon/X11).
 
 ```bash
 source .venv/bin/activate
-python -m pytest test_toggl_tray.py -v
+python -m pytest -q
 ```
 
-Tests mock Xlib, GTK, and pystray at import time. Covers: elapsed_str, tooltip, state persistence, atomic JSON backups, event ledger, offline queue, sync_pending (including open-start sync, cloud adoption, 404 handling, 4xx preservation, error isolation, no-expiry behavior), API retry logic, toggle_tracking (online + offline/auth paths), start_entry payload, doctor/audit CLI diagnostics, hotkey failure notification, rate-budgeted sync cycles, health check (recovery, phantom timer detection, skip conditions).
+`conftest.py` mocks Xlib, GTK, and pystray at import time. Covers: elapsed_str, tooltip, state persistence, atomic JSON backups, event ledger, offline queue, sync_pending (including open-start sync, cloud adoption, 404 handling, 4xx preservation, error isolation, no-expiry behavior), API retry logic, toggle_tracking (online + offline/auth paths), start_entry payload, doctor/audit CLI diagnostics, hotkey failure reporting, rate-budgeted sync cycles, health check (recovery, phantom timer detection, skip conditions).

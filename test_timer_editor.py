@@ -1,5 +1,4 @@
 import pytest
-import test_toggl_tray
 import toggl_tray as app
 import toggl_timer_window as editor
 from unittest.mock import MagicMock, patch
