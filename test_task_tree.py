@@ -375,3 +375,47 @@ def test_offline_edit_of_a_synced_interval_updates_its_cached_copy(tmp_state_dir
     app._atomic_write_text(tmp_state_dir/'task-history.json',json.dumps(dict(context=toggl_projects.context(app),fetched_at=0,entries=[synced])))
     m.correct(app,dict(synced,id='pending:0',_remote_entry_id=101),{'description':'Corrected'})
     assert [e['description'] for e in m.cached_entries(app)]==['Corrected']
+
+
+def _edit_from_entries_window(selected, result):
+    """Run the Today's entries window edit handler inline, with the dialog answered."""
+    class Inline:
+        def __init__(self, target, daemon=None): self.target = target
+        def start(self): self.target()
+    with patch.object(app, '_gtk_edit_entry_dialog', return_value=result), \
+         patch.object(app, '_gtk_confirm', return_value=True), patch.object(app, '_refresh_entries'), \
+         patch.object(app, 'update_entry'), patch.object(app, 'delete_entry'), \
+         patch.object(app.threading, 'Thread', Inline):
+        app._on_edit_entry(selected, None, [], None, {'date': NOW.date()})
+
+
+def _cached_tasks(m):
+    with patch.object(app, '_cached_projects', return_value=PROJECTS):
+        return {(p['id'], t['description']) for p in m.tree(app, now=NOW) for t in p['tasks']}
+
+
+def test_rename_in_entries_window_updates_tray_tasks(tmp_state_dir):
+    m = module()
+    old = entry(101, 7, 'Old name')
+    app._atomic_write_text(tmp_state_dir/'task-history.json', json.dumps(dict(context=toggl_projects.context(app), fetched_at=0, entries=[old])))
+    _edit_from_entries_window(dict(old), {'description': 'New name'})
+    assert _cached_tasks(m) == {(7, 'New name')}
+
+
+def test_offline_rename_in_entries_window_stays_after_upload(tmp_state_dir):
+    m = module()
+    start = NOW.isoformat()
+    app.queue_action('start', start_time=start, description='Old', project_id=7, workspace_id='ws_123')
+    app.queue_action('stop', start_time=start, stop_time=(NOW+timedelta(minutes=1)).isoformat(), description='Old', project_id=7, workspace_id='ws_123')
+    m.remember(app, dict(app.state, tracking=True, start_time=start, description='Old', project_id=7))
+    _edit_from_entries_window(app._pending_as_entries()[0], {'description': 'Corrected'})
+    app._save_pending([])  # the corrected interval uploaded and left the queue
+    assert _cached_tasks(m) == {(7, 'Corrected')}
+
+
+def test_delete_in_entries_window_removes_the_task_from_the_tray(tmp_state_dir):
+    m = module()
+    gone, kept = entry(101, 7, 'Deleted task'), entry(102, 7, 'Kept task', days=1)
+    app._atomic_write_text(tmp_state_dir/'task-history.json', json.dumps(dict(context=toggl_projects.context(app), fetched_at=0, entries=[gone, kept])))
+    _edit_from_entries_window(dict(gone), 'delete')
+    assert _cached_tasks(m) == {(7, 'Kept task')}

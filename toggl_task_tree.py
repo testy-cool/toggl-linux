@@ -222,6 +222,23 @@ def correct(app, edited, changes):
         print(f'Project/task history not saved: {error}', file=app.sys.stderr)
 
 
+def forget(app, deleted):
+    """Drop a deleted interval from cached history, so the tree stops offering it."""
+    if _stamp(deleted.get('start')) is None:
+        return
+    try:
+        with _cache_lock:
+            data = _cache(app)
+            if not data:
+                return
+            for key in ('entries', 'local_entries'):
+                data[key] = [e for e in data.get(key, []) if not _same_interval(e, deleted)]
+            data['edited_at'] = time.time()
+            _save(app, data)
+    except OSError as error:
+        print(f'Project/task history not saved: {error}', file=app.sys.stderr)
+
+
 def quick_choices(rows, recent=4, frequent=3):
     """Show recent rows plus frequent alternatives without duplicate choices."""
     used = [r for r in rows if r.get('count')]

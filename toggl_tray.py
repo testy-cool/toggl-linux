@@ -2191,6 +2191,7 @@ def _on_edit_entry(entry, parent_win, entries, listbox, ctx):
                 desc = entry.get("description", "(no description)")
                 if _gtk_confirm("Delete Entry", f"Delete '{desc}'?"):
                     if _delete_pending_entry(entry):
+                        toggl_task_tree.forget(sys.modules[__name__], entry)
                         _play_sound(SOUND_STOP)
                         _refresh_entries(ctx["date"], entries, listbox, parent_win, ctx)
                     else:
@@ -2198,6 +2199,7 @@ def _on_edit_entry(entry, parent_win, entries, listbox, ctx):
                 return
 
             if _update_pending_entry(entry, result):
+                toggl_task_tree.correct(sys.modules[__name__], entry, result)
                 _play_sound(SOUND_STOP)
                 _refresh_entries(ctx["date"], entries, listbox, parent_win, ctx)
             else:
@@ -2210,6 +2212,7 @@ def _on_edit_entry(entry, parent_win, entries, listbox, ctx):
             if _gtk_confirm("Delete Entry", f"Delete '{desc}'?"):
                 try:
                     delete_entry(wid, entry["id"])
+                    toggl_task_tree.forget(sys.modules[__name__], entry)
                     _play_sound(SOUND_STOP)
                     _refresh_entries(ctx["date"], entries, listbox, parent_win, ctx)
                 except Exception:
@@ -2219,6 +2222,7 @@ def _on_edit_entry(entry, parent_win, entries, listbox, ctx):
         wid = entry.get("workspace_id", state["workspace_id"])
         try:
             update_entry(wid, entry["id"], result)
+            toggl_task_tree.correct(sys.modules[__name__], entry, result)
             _play_sound(SOUND_STOP)
             _refresh_entries(ctx["date"], entries, listbox, parent_win, ctx)
         except Exception:
