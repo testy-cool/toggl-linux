@@ -15,6 +15,7 @@ import subprocess
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # Run as a script, this module is __main__; the split-out modules import it as toggl_tray.
 if __name__ == "__main__":
@@ -113,19 +114,29 @@ def get_api_token():
     if token:
         return token
     service = _api_token_service()
-    lookups = (
-        ["secret-tool", "lookup", "service", service, "username", "api_token", "application", "toggl-tray"],
-        ["secret-tool", "lookup", "service", service, "username", "api_token"],
-        *(
-            [["secret-tool", "lookup", "application", "toggl-tray"]]
-            if service == "toggl" else []
-        ),
-    )
-    for cmd in lookups:
+    services = [service]
+    config = _load_json_with_backup(CONFIG_FILE, {})
+    origin = _api_origin()
+    legacy_origin = config.get("legacy_opentickly_origin") if isinstance(config, dict) else None
+    if service.startswith("opentickly:") and legacy_origin in (None, origin):
+        services.append("opentickly")  # migrate the former shared custom-server key once
+    lookups = [(candidate, command) for candidate in services for command in (
+        ["secret-tool", "lookup", "service", candidate, "username", "api_token", "application", "toggl-tray"],
+        ["secret-tool", "lookup", "service", candidate, "username", "api_token"],
+    )]
+    if service == "toggl":
+        lookups.append((service, ["secret-tool", "lookup", "application", "toggl-tray"]))
+    for candidate, cmd in lookups:
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
             if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
+                token = result.stdout.strip()
+                if candidate == "opentickly" and service != candidate:
+                    store_api_token(token)
+                    config = config if isinstance(config, dict) else {}
+                    config["legacy_opentickly_origin"] = origin
+                    _atomic_write_text(CONFIG_FILE, json.dumps(config, indent=2))
+                return token
         except (FileNotFoundError, subprocess.TimeoutExpired):
             break
     return None
@@ -134,7 +145,8 @@ def get_api_token():
 def store_api_token(token):
     """Store token in GNOME keyring."""
     service = _api_token_service()
-    label = "Toggl API Token" if service == "toggl" else "OpenTickly API Token"
+    label = ("Toggl API Token" if service == "toggl" else
+             f"OpenTickly API Token ({urlsplit(get_api_base()).hostname})")
     try:
         subprocess.run(
             ["secret-tool", "store", f"--label={label}",
@@ -151,7 +163,18 @@ def store_api_token(token):
 
 def _normalize_api_base(value):
     base = str(value or DEFAULT_API_BASE).strip().rstrip("/")
-    return base or DEFAULT_API_BASE
+    base = base or DEFAULT_API_BASE
+    try:
+        parsed = urlsplit(base)
+        parsed.port  # Validate a malformed port eagerly.
+    except ValueError as error:
+        raise ValueError("API base must be a valid HTTP or HTTPS URL") from error
+    if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+            or parsed.username or parsed.password or parsed.query or parsed.fragment):
+        raise ValueError("API base must be an HTTP or HTTPS URL without credentials, query, or fragment")
+    if parsed.hostname.lower() == "api.track.toggl.com" and parsed.scheme != "https":
+        raise ValueError("The Toggl API base must use HTTPS")
+    return base
 
 
 def get_api_base():
@@ -209,7 +232,24 @@ def set_panel_description_enabled(enabled):
 
 
 def _api_token_service():
-    return "toggl" if "api.track.toggl.com" in get_api_base() else "opentickly"
+    if _is_toggl_api_base():
+        return "toggl"
+    origin = _api_origin()
+    return "opentickly:" + hashlib.sha256(origin.encode()).hexdigest()[:16]
+
+
+def _api_origin(api_base=None):
+    parsed = urlsplit(_normalize_api_base(api_base or get_api_base()))
+    host = parsed.hostname.lower()
+    if ":" in host:
+        host = f"[{host}]"
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    return f"{parsed.scheme.lower()}://{host}{port}"
+
+
+def _is_toggl_api_base(api_base=None):
+    parsed = urlsplit(_normalize_api_base(api_base or get_api_base()))
+    return parsed.hostname.lower() == "api.track.toggl.com"
 
 
 # ── Local Toggl request budget ──────────────────────────────────────────────
@@ -234,7 +274,7 @@ def _load_request_timestamps(now=None):
 
 
 def _request_budget_applies(api_base=None):
-    return "api.track.toggl.com" in (api_base or get_api_base())
+    return _is_toggl_api_base(api_base)
 
 
 def _save_request_timestamps(timestamps):
@@ -482,6 +522,18 @@ def _clear_remote_ids():
     if pending_changes:
         _save_pending(pending)
     return pending_changes
+
+
+def switch_api_base(value):
+    """Change provider without carrying credentials, ids, or project metadata across origins."""
+    global api_token, _project_cache, _last_project_refresh_attempt, _last_tray_icon_path
+    api_base = set_api_base(value)
+    api_token = None
+    pending_ids = _clear_remote_ids()
+    _project_cache = None
+    _last_project_refresh_attempt = None
+    _last_tray_icon_path = None
+    return api_base, pending_ids
 
 
 # ── Offline queue ──────────────────────────────────────────────────────────
@@ -1009,7 +1061,8 @@ _project_cache_lock = threading.Lock()
 def _project_account(token=None):
     # Scope persisted metadata to the credential without storing the credential.
     token = api_token if token is None else token
-    return hashlib.sha256(token.encode()).hexdigest() if token else None
+    identity = json.dumps([get_api_base(), token], separators=(",", ":"))
+    return hashlib.sha256(identity.encode()).hexdigest() if token else None
 
 
 def _cached_projects():

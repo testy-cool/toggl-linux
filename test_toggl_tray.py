@@ -696,6 +696,14 @@ class TestApiWrapper:
         assert result == "https://opentickly.example.com/api/v9"
         assert toggl_tray.get_api_base() == "https://opentickly.example.com/api/v9"
 
+    @pytest.mark.parametrize("value", [
+        "file:///tmp/api", "https://user:secret@example.com/api/v9",
+        "https://example.com/api/v9?token=secret", "http://api.track.toggl.com/api/v9",
+    ])
+    def test_api_base_rejects_unsafe_urls(self, value):
+        with pytest.raises(ValueError):
+            toggl_tray.set_api_base(value)
+
     @patch.dict("toggl_tray.os.environ", {"TOGGL_API_BASE": "https://env.example/api/v9/"}, clear=True)
     def test_get_api_base_prefers_environment_override(self):
         toggl_tray.set_api_base("https://config.example/api/v9")
@@ -723,13 +731,16 @@ class TestApiWrapper:
         mock_run.return_value = MagicMock(returncode=1, stdout="")
 
         assert toggl_tray.get_api_token() is None
+        service = toggl_tray._api_token_service()
+        assert service.startswith("opentickly:")
         assert mock_run.call_args_list[0][0][0] == [
-            "secret-tool", "lookup", "service", "opentickly", "username", "api_token", "application", "toggl-tray",
+            "secret-tool", "lookup", "service", service, "username", "api_token", "application", "toggl-tray",
         ]
-        assert mock_run.call_args_list[1][0][0] == [
+        assert mock_run.call_args_list[2][0][0] == [
             "secret-tool", "lookup", "service", "opentickly", "username", "api_token",
+            "application", "toggl-tray",
         ]
-        assert mock_run.call_count == 2
+        assert mock_run.call_count == 4
 
     @patch.dict("toggl_tray.os.environ", {}, clear=True)
     @patch("toggl_tray.subprocess.run")
@@ -738,10 +749,40 @@ class TestApiWrapper:
 
         assert toggl_tray.store_api_token("tok")
         assert mock_run.call_args[0][0] == [
-            "secret-tool", "store", "--label=OpenTickly API Token",
-            "service", "opentickly", "username", "api_token",
+            "secret-tool", "store", "--label=OpenTickly API Token (opentickly.example.com)",
+            "service", toggl_tray._api_token_service(), "username", "api_token",
             "application", "toggl-tray",
         ]
+
+    @patch.dict("toggl_tray.os.environ", {}, clear=True)
+    @patch("toggl_tray.subprocess.run")
+    def test_legacy_opentickly_token_migrates_to_only_its_current_origin(self, mock_run):
+        toggl_tray.set_api_base("https://first.example/api/v9")
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stdout=""), MagicMock(returncode=1, stdout=""),
+            MagicMock(returncode=0, stdout="legacy-token\n"), MagicMock(returncode=0, stdout=""),
+        ]
+
+        assert toggl_tray.get_api_token() == "legacy-token"
+        assert toggl_tray._load_json_with_backup(toggl_tray.CONFIG_FILE, {})["legacy_opentickly_origin"] == "https://first.example"
+
+        toggl_tray.set_api_base("https://second.example/api/v9")
+        mock_run.reset_mock(side_effect=True)
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        assert toggl_tray.get_api_token() is None
+        assert mock_run.call_count == 2
+
+    def test_toggl_lookalike_host_cannot_use_toggl_credentials_or_budget(self):
+        toggl_tray.set_api_base("https://api.track.toggl.com.attacker.example/api/v9")
+        assert toggl_tray._api_token_service().startswith("opentickly:")
+        assert toggl_tray._request_budget_applies() is False
+
+    def test_project_cache_identity_changes_with_api_server(self):
+        toggl_tray.api_token = "same-token"
+        toggl_tray.set_api_base("https://first.example/api/v9")
+        first = toggl_tray._project_account()
+        toggl_tray.set_api_base("https://second.example/api/v9")
+        assert toggl_tray._project_account() != first
 
     @patch.object(toggl_tray, "api_token", "test_token")
     def test_auth_returns_basic_auth(self):

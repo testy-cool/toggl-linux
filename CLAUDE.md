@@ -25,7 +25,7 @@ System tray Toggl Track timer for Linux Mint (Cinnamon/X11).
 
 ## API Token
 
-- Stored in GNOME keyring via `secret-tool`. Toggl uses `service=toggl username=api_token application=toggl-tray`; any other API base (OpenTickly) uses `service=opentickly`. `set-api-base` / `TOGGL_API_BASE` choose the server
+- Stored in GNOME keyring via `secret-tool`. Toggl uses `service=toggl username=api_token application=toggl-tray`; custom API credentials are scoped to the normalized server origin. The former shared `service=opentickly` key is migrated once to the currently configured origin. `set-api-base` / `TOGGL_API_BASE` choose the server
 - Fallback: `TOGGL_API_TOKEN` env var
 - Get token from: https://track.toggl.com/profile (bottom of page)
 - Store manually: `echo -n "TOKEN" | secret-tool store --label="Toggl API Token" service toggl username api_token application toggl-tray`

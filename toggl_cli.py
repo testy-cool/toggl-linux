@@ -97,6 +97,15 @@ def _run_live_cli(args):
         print(f"Sync complete. Pending actions remaining: {result['pending_count']}")
         return 0
 
+    if args.command == "set-api-base":
+        result = toggl_control.request(app.STATE_DIR, "set-api-base", {"url": args.url})
+        print(f"API base: {result['api_base']}")
+        print(f"Config file: {app.CONFIG_FILE}")
+        print("Cleared stored workspace/project/entry ids for the configured API base.")
+        if result["cleared_ids"]:
+            print(f"Cleared {result['cleared_ids']} id field(s) from pending local actions.")
+        return 0
+
     return None
 
 
@@ -497,8 +506,11 @@ def _cli_sync(_args):
 
 def _cli_set_api_base(args):
     app.load_state()
-    api_base = app.set_api_base(args.url)
-    pending_ids = app._clear_remote_ids()
+    try:
+        api_base, pending_ids = app.switch_api_base(args.url)
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 2
     print(f"API base: {api_base}")
     print(f"Config file: {app.CONFIG_FILE}")
     print("Cleared stored workspace/project/entry ids for the configured API base.")
@@ -611,7 +623,7 @@ def _build_cli_parser():
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("run", help="run the tray app")
     control = sub.add_parser("control", help="control the running tray using its private socket")
-    control.add_argument("action", choices=["snapshot", "refresh", "sync", "start", "switch", "resume", "stop", "edit-current", "edit-entry", "project-create", "project-update"])
+    control.add_argument("action", choices=["snapshot", "refresh", "sync", "start", "switch", "resume", "stop", "edit-current", "edit-entry", "project-create", "project-update", "set-api-base"])
     control.add_argument("payload", nargs="?", default="{}", help="JSON command payload")
     sub.add_parser("status", help="show local state and pending queue")
     doctor = sub.add_parser("doctor", help="diagnose local state, pending queue, token, and optional cloud state")
@@ -662,7 +674,7 @@ def _run_cli(argv):
             return 2
     if args.command == "run":
         return None
-    if args.command in {"start", "stop", "set-start", "sync"}:
+    if args.command in {"start", "stop", "set-start", "sync", "set-api-base"}:
         import toggl_control
         try:
             live_result = _run_live_cli(args)
@@ -679,6 +691,8 @@ def _run_cli(argv):
                 return _cli_stop(args)
             if args.command == "set-start":
                 return _cli_set_start(args)
+            if args.command == "set-api-base":
+                return _cli_set_api_base(args)
             return _cli_sync(args)
         finally:
             lock_fp.close()
@@ -694,8 +708,6 @@ def _run_cli(argv):
         if args.command == "local":
             args.local_only = True
         return _cli_entries(args)
-    if args.command == "set-api-base":
-        return _cli_set_api_base(args)
     if args.command == "install-app":
         return _cli_install_app(args)
     if args.command == "uninstall-app":

@@ -155,6 +155,13 @@ def dispatch(app, action, payload):
         raise ControlError("Command payload must be an object")
     if action == "snapshot":
         return snapshot(app)
+    if action == "set-api-base":
+        with app.toggle_lock:
+            try:
+                api_base, pending_ids = app.switch_api_base(payload.get("url"))
+            except ValueError as error:
+                raise ControlError(str(error)) from error
+        return {"api_base": api_base, "cleared_ids": pending_ids, "snapshot": snapshot(app)}
     if action in {"project-create", "project-update"}:
         with app.toggle_lock:
             try:

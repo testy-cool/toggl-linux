@@ -43,6 +43,11 @@ def test_state_changing_cli_commands_use_the_running_tray(tmp_state_dir, capsys)
             assert toggl_cli._run_cli(["stop"]) == 0
             assert app.state["tracking"] is False
             assert [item["action"] for item in app._load_pending()] == ["start", "stop"]
+
+            app.state.update(workspace_id="old", project_id=7, entry_id=9)
+            assert toggl_cli._run_cli(["set-api-base", "https://time.example/api/v9"]) == 0
+            assert app.get_api_base() == "https://time.example/api/v9"
+            assert app.state["workspace_id"] is None
     finally:
         server.shutdown()
         server.server_close()
