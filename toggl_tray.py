@@ -149,13 +149,13 @@ def store_api_token(token):
     label = ("Toggl API Token" if service == "toggl" else
              f"OpenTickly API Token ({urlsplit(get_api_base()).hostname})")
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["secret-tool", "store", f"--label={label}",
              "service", service, "username", "api_token",
              "application", "toggl-tray"],
             input=token, text=True, timeout=10,
         )
-        return True
+        return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
@@ -173,6 +173,8 @@ def _normalize_api_base(value):
     if (parsed.scheme not in {"http", "https"} or not parsed.hostname
             or parsed.username or parsed.password or parsed.query or parsed.fragment):
         raise ValueError("API base must be an HTTP or HTTPS URL without credentials, query, or fragment")
+    if parsed.scheme == "http" and parsed.hostname.lower() not in {"localhost", "127.0.0.1", "::1"}:
+        raise ValueError("Remote API bases must use HTTPS")
     if parsed.hostname.lower() == "api.track.toggl.com" and parsed.scheme != "https":
         raise ValueError("The Toggl API base must use HTTPS")
     return base
@@ -549,6 +551,8 @@ def _clear_remote_ids():
 def switch_api_base(value):
     """Change provider without carrying credentials, ids, or project metadata across origins."""
     global api_token, _project_cache, _last_project_refresh_attempt, _last_tray_icon_path
+    if os.environ.get(API_BASE_ENV):
+        raise ValueError(f"Unset {API_BASE_ENV} before saving a different API base")
     api_base = set_api_base(value)
     api_token = None
     pending_ids = _clear_remote_ids()

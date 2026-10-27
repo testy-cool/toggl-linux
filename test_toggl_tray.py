@@ -731,6 +731,7 @@ class TestApiWrapper:
     @pytest.mark.parametrize("value", [
         "file:///tmp/api", "https://user:secret@example.com/api/v9",
         "https://example.com/api/v9?token=secret", "http://api.track.toggl.com/api/v9",
+        "http://remote.example/api/v9",
     ])
     def test_api_base_rejects_unsafe_urls(self, value):
         with pytest.raises(ValueError):
@@ -740,6 +741,9 @@ class TestApiWrapper:
     def test_get_api_base_prefers_environment_override(self):
         toggl_tray.set_api_base("https://config.example/api/v9")
         assert toggl_tray.get_api_base() == "https://env.example/api/v9"
+
+    def test_loopback_api_base_may_use_http_for_local_development(self):
+        assert toggl_tray.set_api_base("http://127.0.0.1:8080/api/v9") == "http://127.0.0.1:8080/api/v9"
 
     @patch.dict("toggl_tray.os.environ", {}, clear=True)
     @patch("toggl_tray.subprocess.run")
@@ -778,6 +782,7 @@ class TestApiWrapper:
     @patch("toggl_tray.subprocess.run")
     def test_store_api_token_uses_opentickly_service_when_configured(self, mock_run):
         toggl_tray.set_api_base("https://opentickly.example.com/api/v9")
+        mock_run.return_value = MagicMock(returncode=0)
 
         assert toggl_tray.store_api_token("tok")
         assert mock_run.call_args[0][0] == [
@@ -785,6 +790,11 @@ class TestApiWrapper:
             "service", toggl_tray._api_token_service(), "username", "api_token",
             "application", "toggl-tray",
         ]
+
+    @patch.dict("toggl_tray.os.environ", {"TOGGL_API_BASE": "https://env.example/api/v9"}, clear=True)
+    def test_saved_api_base_change_rejects_an_active_environment_override(self):
+        with pytest.raises(ValueError, match="Unset TOGGL_API_BASE"):
+            toggl_tray.switch_api_base("https://saved.example/api/v9")
 
     @patch.dict("toggl_tray.os.environ", {}, clear=True)
     @patch("toggl_tray.subprocess.run")
