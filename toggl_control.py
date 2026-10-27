@@ -101,9 +101,7 @@ def _edit_entry(app, selected, changes):
     if selected.get("_offline"):
         with app.pending_lock:
             queue = app._load_pending()
-            candidates = app._pending_as_entries()
-            entry = next((e for e in candidates if all(e.get(k) == selected.get(k)
-                         for k in ("id", "start", "stop", "description"))), None)
+            entry = app._pending_entry_candidate(queue, selected)
             if not entry:
                 raise ControlError("Pending entry changed; refresh before editing")
             changes = _changes(app, changes, entry)
@@ -135,7 +133,7 @@ def _edit_entry(app, selected, changes):
 def _resume_entry(app, selected):
     """Resolve a completed selection before changing the running interval."""
     fields = ("id", "start", "stop", "duration", "description", "project_id", "workspace_id",
-              "_offline", "_pending_kind", "_pending_indexes", "_remote_entry_id")
+              "_offline", "_pending_kind", "_pending_ids", "_remote_entry_id")
     if not isinstance(selected, dict):
         raise ControlError("Entry changed; refresh before resuming")
     entry = next((e for e in snapshot(app)["entries"]

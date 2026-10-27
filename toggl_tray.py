@@ -12,6 +12,7 @@ import hashlib
 import re
 import threading
 import subprocess
+import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -485,7 +486,7 @@ def _clear_remote_ids():
 
 # ── Offline queue ──────────────────────────────────────────────────────────
 
-pending_lock = threading.Lock()
+pending_lock = threading.RLock()
 toggle_lock = threading.RLock()
 state_lock = threading.Lock()
 _sync_wakeup = threading.Event()
@@ -515,7 +516,8 @@ def queue_action(action, **kwargs):
     task_context = toggl_projects.context(sys.modules[__name__])
     with pending_lock:
         queue = _load_pending()
-        item = {"action": action, "ts": datetime.now(timezone.utc).isoformat(), **kwargs,
+        item = {"action": action, "ts": datetime.now(timezone.utc).isoformat(),
+                "_queue_id": uuid.uuid4().hex, **kwargs,
                 "_task_context": task_context}
         queue.append(item)
         _append_event("pending_queued", **item)
@@ -904,9 +906,18 @@ def _health_check():
         pass
 
 
-def _pending_as_entries(date_obj=None):
-    """Convert pending offline actions into entry-like dicts for display."""
-    queue = _load_pending()
+def _ensure_pending_ids(queue):
+    """Give legacy queue items stable identities before exposing them for editing."""
+    changed = False
+    for item in queue:
+        if isinstance(item, dict) and not item.get("_queue_id"):
+            item["_queue_id"] = uuid.uuid4().hex
+            changed = True
+    return changed
+
+
+def _pending_entries_from_queue(queue, date_obj=None):
+    """Convert one locked queue snapshot into entry-like dictionaries."""
     if not queue:
         return []
 
@@ -924,7 +935,8 @@ def _pending_as_entries(date_obj=None):
         if stop_time is None:
             duration = -1 * int(_parse_iso(start_time).timestamp())
 
-        entry_id = op.get("entry_id") or f"pending:{'-'.join(str(i) for i in op['indexes'])}"
+        pending_ids = [queue[idx]["_queue_id"] for idx in op["indexes"]]
+        entry_id = op.get("entry_id") or f"pending:{'-'.join(pending_ids)}"
         entries.append({
             "id": entry_id,
             "start": start_time,
@@ -935,6 +947,7 @@ def _pending_as_entries(date_obj=None):
             "project_id": op.get("project_id"),
             "_offline": True,
             "_pending_indexes": op["indexes"],
+            "_pending_ids": pending_ids,
             "_task_context": queue[op["indexes"][0]].get("_task_context"),
             "_pending_kind": op["kind"],
             "_remote_entry_id": op.get("entry_id"),
@@ -943,6 +956,31 @@ def _pending_as_entries(date_obj=None):
     if date_obj is None:
         return entries
     return [e for e in entries if _entry_local_date(e) == date_obj]
+
+
+def _pending_as_entries(date_obj=None):
+    """Convert pending actions into stable entry dictionaries for display and editing."""
+    with pending_lock:
+        queue = _load_pending()
+        if _ensure_pending_ids(queue):
+            _save_pending(queue)
+        return _pending_entries_from_queue(queue, date_obj)
+
+
+def _pending_entry_candidate(queue, selected):
+    """Resolve an entry against the current queue, rejecting stale selections."""
+    if _ensure_pending_ids(queue):
+        _save_pending(queue)
+    selected_ids = selected.get("_pending_ids") if isinstance(selected, dict) else None
+    if (not isinstance(selected_ids, list) or not selected_ids
+            or not all(isinstance(value, str) for value in selected_ids)):
+        return None
+    selected_ids = set(selected_ids)
+    fields = ("start", "stop", "description", "project_id", "workspace_id",
+              "_pending_kind", "_remote_entry_id")
+    return next((entry for entry in _pending_entries_from_queue(queue)
+                 if set(entry.get("_pending_ids", [])) == selected_ids
+                 and all(entry.get(key) == selected.get(key) for key in fields)), None)
 
 
 def _merge_entries_with_pending(entries, pending_entries):
@@ -1740,14 +1778,12 @@ def on_audit_today(icon, item):
 
 
 def _update_pending_entry(entry, update):
-    indexes = set(entry.get("_pending_indexes", []))
-    if not indexes:
-        return False
-
     with pending_lock:
         queue = _load_pending()
-        if any(idx >= len(queue) for idx in indexes):
+        candidate = _pending_entry_candidate(queue, entry)
+        if candidate is None:
             return False
+        indexes = set(candidate["_pending_indexes"])
 
         for idx in indexes:
             item = queue[idx]
@@ -1765,14 +1801,12 @@ def _update_pending_entry(entry, update):
 
 
 def _delete_pending_entry(entry):
-    indexes = set(entry.get("_pending_indexes", []))
-    if not indexes:
-        return False
-
     with pending_lock:
         queue = _load_pending()
-        if any(idx >= len(queue) for idx in indexes):
+        candidate = _pending_entry_candidate(queue, entry)
+        if candidate is None:
             return False
+        indexes = set(candidate["_pending_indexes"])
 
         remaining = [item for idx, item in enumerate(queue) if idx not in indexes]
         remote_id = entry.get("_remote_entry_id")
@@ -1780,6 +1814,7 @@ def _delete_pending_entry(entry):
             remaining.append({
                 "action": "delete",
                 "ts": datetime.now(timezone.utc).isoformat(),
+                "_queue_id": uuid.uuid4().hex,
                 "entry_id": remote_id,
                 "workspace_id": entry.get("workspace_id") or state.get("workspace_id"),
             })

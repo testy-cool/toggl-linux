@@ -645,6 +645,23 @@ class TestPendingEntries:
         assert queue[1]["description"] == "edited"
         assert queue[1]["stop_time"] == "2026-04-28T10:45:00+00:00"
 
+    def test_synced_entry_cannot_edit_the_next_pending_entry_by_stale_index(self, tmp_state_dir):
+        queue = [
+            {"action": "start", "start_time": "2026-04-28T08:00:00+00:00", "description": "A"},
+            {"action": "stop", "stop_time": "2026-04-28T09:00:00+00:00", "description": "A"},
+            {"action": "start", "start_time": "2026-04-28T10:00:00+00:00", "description": "B"},
+            {"action": "stop", "stop_time": "2026-04-28T11:00:00+00:00", "description": "B"},
+        ]
+        toggl_tray._save_pending(queue)
+        selected_a = toggl_tray._pending_as_entries()[0]
+
+        # A syncs while its native edit dialog remains open, shifting B to indexes 0 and 1.
+        migrated = toggl_tray._load_pending()
+        toggl_tray._save_pending(migrated[2:])
+
+        assert toggl_tray._update_pending_entry(selected_a, {"description": "edited A"}) is False
+        assert [item["description"] for item in toggl_tray._load_pending()] == ["B", "B"]
+
     def test_delete_pending_local_entry_removes_queue_items(self, tmp_state_dir):
         toggl_tray.queue_action("start", start_time="2026-04-28T09:00:00+00:00")
         toggl_tray.queue_action("stop", stop_time="2026-04-28T10:00:00+00:00")
@@ -659,12 +676,11 @@ class TestPendingEntries:
         entry = toggl_tray._pending_as_entries(datetime(2026, 4, 28).date())[0]
         assert toggl_tray._delete_pending_entry(entry)
         queue = toggl_tray._load_pending()
-        assert queue == [{
-            "action": "delete",
-            "ts": queue[0]["ts"],
-            "entry_id": "e_100",
-            "workspace_id": "ws_123",
-        }]
+        assert len(queue) == 1
+        assert queue[0]["action"] == "delete"
+        assert queue[0]["entry_id"] == "e_100"
+        assert queue[0]["workspace_id"] == "ws_123"
+        assert queue[0]["_queue_id"]
 
 
 # ── API wrapper ──────────────────────────────────────────────────────────────
