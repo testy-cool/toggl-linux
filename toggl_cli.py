@@ -229,6 +229,7 @@ def _cli_doctor(args):
     print(f"Pending visible entries: {len(pending_entries)}")
     print(f"Ledger events: {len(ledger_events)}")
     print(f"Rate limit: {'active for ' + str(rate_limit_left) + 's' if rate_limit_left else 'inactive'}")
+    print(f"Last status: {app.status_message or 'none'}")
     if app._request_budget_applies():
         print(
             f"Request budget: {request_budget['used']}/{request_budget['limit']} used, "

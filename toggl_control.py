@@ -26,7 +26,9 @@ def snapshot(app):
     stale = [e for e in entries if not e.get("_offline") and e.get("duration", 0) < 0
              and (not current.get("tracking") or e.get("id") != current.get("entry_id"))]
     entries = [e for e in entries if e not in stale]
-    warning = getattr(app, "_control_warning", "") or ("Today's entries changed; refresh to update durations" if stale else "")
+    warnings = [getattr(app, "_control_warning", ""), getattr(app, "status_message", ""),
+                "Today's entries changed; refresh to update durations" if stale else ""]
+    warning = " · ".join(dict.fromkeys(message for message in warnings if message))
     return {"state": current, "projects": app._cached_projects(), "entries": entries,
             "pending_count": len(app._load_pending()), "warning": warning,
             "project_context": toggl_projects.context(app), "projects_url": toggl_projects.projects_url(app)}
@@ -170,6 +172,7 @@ def dispatch(app, action, payload):
                 raise ControlError(str(error)) from error
         if app.icon_ref:
             app.GLib.idle_add(_refresh_ui, app)
+        app._clear_status_message()
         result = snapshot(app)
         result["saved_project"] = saved
         return result

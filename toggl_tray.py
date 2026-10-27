@@ -91,6 +91,7 @@ native_status_icon_ref = None
 native_status_menu_ref = None
 api_token = None
 rate_limited_until = 0.0
+status_message = ""
 _request_budget_lock = threading.Lock()
 
 
@@ -872,6 +873,8 @@ def sync_pending():
 
         remaining = [item for idx, item in enumerate(queue) if idx not in synced_indexes]
         _save_pending(remaining)
+        if not remaining:
+            _clear_status_message()
         return len(remaining)
 
 
@@ -1262,9 +1265,10 @@ def elapsed_str():
 
 
 def get_tooltip():
+    suffix = f" — {status_message}" if status_message else ""
     if state["tracking"]:
-        return f"Toggl: {elapsed_str()}"
-    return "Toggl: Stopped"
+        return f"Toggl: {elapsed_str()}{suffix}"
+    return f"Toggl: Stopped{suffix}"
 
 
 def _panel_timer_label(panel=None, show_timer=True, show_description=False):
@@ -1471,6 +1475,7 @@ def toggle_tracking(*_args, prompt_for_description=True):
             ):
                 try:
                     stop_entry(workspace_id, entry_id)
+                    _clear_status_message()
                 except RateLimitedError:
                     print("Stop rate limited, queuing locally", file=sys.stderr)
                     _notify(_local_save_reason("stop"))
@@ -1526,6 +1531,7 @@ def toggle_tracking(*_args, prompt_for_description=True):
                     state["entry_id"] = entry["id"]
                     state["start_time"] = entry["start"]
                     save_state()
+                _clear_status_message()
                 _append_event(
                     "toggle_started",
                     source="tray",
@@ -1577,8 +1583,22 @@ def _reap(proc):
 
 
 def _notify(body):
-    # Desktop notifications are off: the user asked for none.
-    return
+    """Publish an in-app status without sending a desktop notification."""
+    global status_message
+    status_message = str(body or "").strip()
+    if status_message:
+        print(status_message, file=sys.stderr)
+    if icon_ref:
+        GLib.idle_add(_refresh_tray_menu)
+
+
+def _clear_status_message():
+    global status_message
+    if not status_message:
+        return
+    status_message = ""
+    if icon_ref:
+        GLib.idle_add(_refresh_tray_menu)
 
 
 def _play_sound(path):
@@ -2032,7 +2052,14 @@ def _tray_project_items():
 
 def build_menu():
     toggle_label = "Stop tracking" if state["tracking"] else "Start tracking"
+    status_items = ()
+    if status_message:
+        status_items = (
+            pystray.MenuItem(f"Status: {status_message}", lambda _icon, _item: None, enabled=False),
+            pystray.Menu.SEPARATOR,
+        )
     return pystray.Menu(
+        *status_items,
         pystray.MenuItem("Projects and tasks…", on_open_task_popup),
         pystray.MenuItem("Open timer", on_open_timer, default=True),
         pystray.MenuItem("Project", pystray.Menu(*_tray_project_items())),

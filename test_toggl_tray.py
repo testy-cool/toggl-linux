@@ -1184,6 +1184,15 @@ class TestNotificationThrottling:
         toggl_tray._notify("Tracking with no description — right-click tray icon to set one")
         toggl_tray._notify(toggl_tray.AUTH_FAILED_SYNC_MESSAGE)
         mock_popen.assert_not_called()
+        assert toggl_tray.status_message == toggl_tray.AUTH_FAILED_SYNC_MESSAGE
+        assert toggl_tray.AUTH_FAILED_SYNC_MESSAGE in toggl_tray.get_tooltip()
+
+    def test_in_app_status_reaches_control_clients_and_can_be_cleared(self):
+        import toggl_control
+        toggl_tray._notify("Project list changed")
+        assert toggl_control.snapshot(toggl_tray)["warning"] == "Project list changed"
+        toggl_tray._clear_status_message()
+        assert toggl_control.snapshot(toggl_tray)["warning"] == ""
 
     @patch.object(toggl_tray, "_notify")
     def test_sync_failure_notifies_once_until_success(self, mock_notify):
