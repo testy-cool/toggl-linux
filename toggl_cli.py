@@ -1,5 +1,6 @@
 """Command-line tools: status, doctor, entries, audit, start/stop, sync and launcher install."""
 import argparse
+import fcntl
 import json
 import shlex
 import shutil
@@ -7,6 +8,96 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import toggl_tray as app
+
+
+_NO_LIVE_TRAY = object()
+
+
+def _tray_lock_held():
+    """Return whether another process owns the tray's single-instance lock."""
+    if not app.LOCK_FILE.exists():
+        return False
+    lock_fp = open(app.LOCK_FILE, "a+")
+    try:
+        try:
+            fcntl.flock(lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        fcntl.flock(lock_fp, fcntl.LOCK_UN)
+        return False
+    finally:
+        lock_fp.close()
+
+
+def _live_snapshot():
+    """Reach the authoritative tray process, or prove there is no live instance."""
+    import toggl_control
+    socket_path = app.STATE_DIR / "control.sock"
+    if socket_path.exists():
+        try:
+            return toggl_control.request(app.STATE_DIR, "snapshot", {})
+        except toggl_control.ControlError:
+            if _tray_lock_held():
+                raise
+    if _tray_lock_held():
+        raise toggl_control.ControlError("Toggl Tray is starting or its control socket is unavailable; try again")
+    return _NO_LIVE_TRAY
+
+
+def _run_live_cli(args):
+    """Run state-changing commands in the tray process when it is active."""
+    import toggl_control
+    snapshot = _live_snapshot()
+    if snapshot is _NO_LIVE_TRAY:
+        return None
+    current = snapshot["state"]
+
+    if args.command == "start":
+        if current.get("tracking"):
+            print("Already tracking.")
+            if current.get("start_time"):
+                print(f"Started: {_format_local_dt(current['start_time'])}")
+            return 0
+        description = " ".join(args.description).strip()
+        changes = {"description": description} if args.description else {}
+        result = toggl_control.request(app.STATE_DIR, "start", {"changes": changes, "expected": current})
+        state = result["state"]
+        target = "on Toggl" if state.get("entry_id") else "locally"
+        print(f"Started {target} at {_format_local_dt(state['start_time'])}.")
+        return 0
+
+    if args.command == "stop":
+        if not current.get("tracking"):
+            print("Not tracking.")
+            return 0
+        stopped_on_toggl = bool(current.get("entry_id"))
+        toggl_control.request(app.STATE_DIR, "stop", {"expected": current})
+        target = "on Toggl" if stopped_on_toggl else "locally"
+        print(f"Stopped {target} at {_format_local_dt(datetime.now(timezone.utc))}.")
+        return 0
+
+    if args.command == "set-start":
+        if not current.get("tracking") or not current.get("start_time"):
+            print("No running local timer found.")
+            return 1
+        reference = app._coerce_datetime(current["start_time"]).astimezone()
+        new_start = app._parse_hhmm(args.time, reference)
+        if not new_start:
+            print(f"Invalid time '{args.time}'. Use HH:MM.", file=sys.stderr)
+            return 2
+        result = toggl_control.request(
+            app.STATE_DIR, "edit-current",
+            {"changes": {"start": new_start.isoformat()}, "expected": current},
+        )
+        print(f"Start time set to {_format_local_dt(result['state']['start_time'])}.")
+        return 0
+
+    if args.command == "sync":
+        result = toggl_control.request(app.STATE_DIR, "sync", {})
+        print(f"Sync complete. Pending actions remaining: {result['pending_count']}")
+        return 0
+
+    return None
 
 
 def _format_local_dt(value):
@@ -571,6 +662,26 @@ def _run_cli(argv):
             return 2
     if args.command == "run":
         return None
+    if args.command in {"start", "stop", "set-start", "sync"}:
+        import toggl_control
+        try:
+            live_result = _run_live_cli(args)
+        except toggl_control.ControlError as error:
+            print(str(error), file=sys.stderr)
+            return 2
+        if live_result is not None:
+            return live_result
+        lock_fp = app._acquire_instance_lock()
+        try:
+            if args.command == "start":
+                return _cli_start(args)
+            if args.command == "stop":
+                return _cli_stop(args)
+            if args.command == "set-start":
+                return _cli_set_start(args)
+            return _cli_sync(args)
+        finally:
+            lock_fp.close()
     if args.command == "status":
         return _cli_status(args)
     if args.command == "doctor":
@@ -583,16 +694,8 @@ def _run_cli(argv):
         if args.command == "local":
             args.local_only = True
         return _cli_entries(args)
-    if args.command == "start":
-        return _cli_start(args)
-    if args.command == "stop":
-        return _cli_stop(args)
-    if args.command == "set-start":
-        return _cli_set_start(args)
     if args.command == "set-api-base":
         return _cli_set_api_base(args)
-    if args.command == "sync":
-        return _cli_sync(args)
     if args.command == "install-app":
         return _cli_install_app(args)
     if args.command == "uninstall-app":
