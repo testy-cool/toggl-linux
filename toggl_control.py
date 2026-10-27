@@ -26,7 +26,9 @@ def snapshot(app):
     stale = [e for e in entries if not e.get("_offline") and e.get("duration", 0) < 0
              and (not current.get("tracking") or e.get("id") != current.get("entry_id"))]
     entries = [e for e in entries if e not in stale]
-    warning = getattr(app, "_control_warning", "") or ("Today's entries changed; refresh to update durations" if stale else "")
+    warnings = [getattr(app, "_control_warning", ""), getattr(app, "status_message", ""),
+                "Today's entries changed; refresh to update durations" if stale else ""]
+    warning = " · ".join(dict.fromkeys(message for message in warnings if message))
     return {"state": current, "projects": app._cached_projects(), "entries": entries,
             "pending_count": len(app._load_pending()), "warning": warning,
             "project_context": toggl_projects.context(app), "projects_url": toggl_projects.projects_url(app)}
@@ -101,9 +103,7 @@ def _edit_entry(app, selected, changes):
     if selected.get("_offline"):
         with app.pending_lock:
             queue = app._load_pending()
-            candidates = app._pending_as_entries()
-            entry = next((e for e in candidates if all(e.get(k) == selected.get(k)
-                         for k in ("id", "start", "stop", "description"))), None)
+            entry = app._pending_entry_candidate(queue, selected)
             if not entry:
                 raise ControlError("Pending entry changed; refresh before editing")
             changes = _changes(app, changes, entry)
@@ -135,7 +135,7 @@ def _edit_entry(app, selected, changes):
 def _resume_entry(app, selected):
     """Resolve a completed selection before changing the running interval."""
     fields = ("id", "start", "stop", "duration", "description", "project_id", "workspace_id",
-              "_offline", "_pending_kind", "_pending_indexes", "_remote_entry_id")
+              "_offline", "_pending_kind", "_pending_ids", "_remote_entry_id")
     if not isinstance(selected, dict):
         raise ControlError("Entry changed; refresh before resuming")
     entry = next((e for e in snapshot(app)["entries"]
@@ -157,6 +157,13 @@ def dispatch(app, action, payload):
         raise ControlError("Command payload must be an object")
     if action == "snapshot":
         return snapshot(app)
+    if action == "set-api-base":
+        with app.toggle_lock:
+            try:
+                api_base, pending_ids = app.switch_api_base(payload.get("url"))
+            except ValueError as error:
+                raise ControlError(str(error)) from error
+        return {"api_base": api_base, "cleared_ids": pending_ids, "snapshot": snapshot(app)}
     if action in {"project-create", "project-update"}:
         with app.toggle_lock:
             try:
@@ -165,6 +172,7 @@ def dispatch(app, action, payload):
                 raise ControlError(str(error)) from error
         if app.icon_ref:
             app.GLib.idle_add(_refresh_ui, app)
+        app._clear_status_message()
         result = snapshot(app)
         result["saved_project"] = saved
         return result
@@ -267,6 +275,7 @@ def _refresh_ui(app):
 
 
 def start_server(app):
+    app._ensure_private_state_dir()
     path = app.STATE_DIR / "control.sock"
     path.unlink(missing_ok=True)  # Caller already owns the single-instance lock.
 

@@ -12,8 +12,10 @@ import hashlib
 import re
 import threading
 import subprocess
+import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # Run as a script, this module is __main__; the split-out modules import it as toggl_tray.
 if __name__ == "__main__":
@@ -89,6 +91,7 @@ native_status_icon_ref = None
 native_status_menu_ref = None
 api_token = None
 rate_limited_until = 0.0
+status_message = ""
 _request_budget_lock = threading.Lock()
 
 
@@ -112,19 +115,29 @@ def get_api_token():
     if token:
         return token
     service = _api_token_service()
-    lookups = (
-        ["secret-tool", "lookup", "service", service, "username", "api_token", "application", "toggl-tray"],
-        ["secret-tool", "lookup", "service", service, "username", "api_token"],
-        *(
-            [["secret-tool", "lookup", "application", "toggl-tray"]]
-            if service == "toggl" else []
-        ),
-    )
-    for cmd in lookups:
+    services = [service]
+    config = _load_json_with_backup(CONFIG_FILE, {})
+    origin = _api_origin()
+    legacy_origin = config.get("legacy_opentickly_origin") if isinstance(config, dict) else None
+    if service.startswith("opentickly:") and legacy_origin in (None, origin):
+        services.append("opentickly")  # migrate the former shared custom-server key once
+    lookups = [(candidate, command) for candidate in services for command in (
+        ["secret-tool", "lookup", "service", candidate, "username", "api_token", "application", "toggl-tray"],
+        ["secret-tool", "lookup", "service", candidate, "username", "api_token"],
+    )]
+    if service == "toggl":
+        lookups.append((service, ["secret-tool", "lookup", "application", "toggl-tray"]))
+    for candidate, cmd in lookups:
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
             if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
+                token = result.stdout.strip()
+                if candidate == "opentickly" and service != candidate:
+                    store_api_token(token)
+                    config = config if isinstance(config, dict) else {}
+                    config["legacy_opentickly_origin"] = origin
+                    _atomic_write_text(CONFIG_FILE, json.dumps(config, indent=2))
+                return token
         except (FileNotFoundError, subprocess.TimeoutExpired):
             break
     return None
@@ -133,15 +146,16 @@ def get_api_token():
 def store_api_token(token):
     """Store token in GNOME keyring."""
     service = _api_token_service()
-    label = "Toggl API Token" if service == "toggl" else "OpenTickly API Token"
+    label = ("Toggl API Token" if service == "toggl" else
+             f"OpenTickly API Token ({urlsplit(get_api_base()).hostname})")
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["secret-tool", "store", f"--label={label}",
              "service", service, "username", "api_token",
              "application", "toggl-tray"],
             input=token, text=True, timeout=10,
         )
-        return True
+        return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
@@ -150,7 +164,20 @@ def store_api_token(token):
 
 def _normalize_api_base(value):
     base = str(value or DEFAULT_API_BASE).strip().rstrip("/")
-    return base or DEFAULT_API_BASE
+    base = base or DEFAULT_API_BASE
+    try:
+        parsed = urlsplit(base)
+        parsed.port  # Validate a malformed port eagerly.
+    except ValueError as error:
+        raise ValueError("API base must be a valid HTTP or HTTPS URL") from error
+    if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+            or parsed.username or parsed.password or parsed.query or parsed.fragment):
+        raise ValueError("API base must be an HTTP or HTTPS URL without credentials, query, or fragment")
+    if parsed.scheme == "http" and parsed.hostname.lower() not in {"localhost", "127.0.0.1", "::1"}:
+        raise ValueError("Remote API bases must use HTTPS")
+    if parsed.hostname.lower() == "api.track.toggl.com" and parsed.scheme != "https":
+        raise ValueError("The Toggl API base must use HTTPS")
+    return base
 
 
 def get_api_base():
@@ -208,7 +235,24 @@ def set_panel_description_enabled(enabled):
 
 
 def _api_token_service():
-    return "toggl" if "api.track.toggl.com" in get_api_base() else "opentickly"
+    if _is_toggl_api_base():
+        return "toggl"
+    origin = _api_origin()
+    return "opentickly:" + hashlib.sha256(origin.encode()).hexdigest()[:16]
+
+
+def _api_origin(api_base=None):
+    parsed = urlsplit(_normalize_api_base(api_base or get_api_base()))
+    host = parsed.hostname.lower()
+    if ":" in host:
+        host = f"[{host}]"
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    return f"{parsed.scheme.lower()}://{host}{port}"
+
+
+def _is_toggl_api_base(api_base=None):
+    parsed = urlsplit(_normalize_api_base(api_base or get_api_base()))
+    return parsed.hostname.lower() == "api.track.toggl.com"
 
 
 # ── Local Toggl request budget ──────────────────────────────────────────────
@@ -233,7 +277,7 @@ def _load_request_timestamps(now=None):
 
 
 def _request_budget_applies(api_base=None):
-    return "api.track.toggl.com" in (api_base or get_api_base())
+    return _is_toggl_api_base(api_base)
 
 
 def _save_request_timestamps(timestamps):
@@ -391,18 +435,38 @@ def _backup_path(path):
     return path.with_name(path.name + ".bak")
 
 
+def _ensure_private_state_dir():
+    STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    STATE_DIR.chmod(0o700)
+    private_files = (
+        CONFIG_FILE, STATE_FILE, PENDING_FILE, LEDGER_FILE, REQUEST_BUDGET_FILE, LOCK_FILE,
+        STATE_DIR / "projects.json", STATE_DIR / "task-history.json",
+    )
+    for path in private_files:
+        for candidate in (path, _backup_path(path)):
+            if candidate.exists():
+                candidate.chmod(0o600)
+
+
 def _atomic_write_text(path, text, backup=True):
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.parent == STATE_DIR:
+        _ensure_private_state_dir()
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     if backup and path.exists():
         try:
             existing = path.read_text()
             json.loads(existing)
-            _backup_path(path).write_text(existing)
+            backup_path = _backup_path(path)
+            backup_path.write_text(existing)
+            backup_path.chmod(0o600)
         except (json.JSONDecodeError, OSError):
             pass
     tmp.write_text(text)
+    tmp.chmod(0o600)
     os.replace(tmp, path)
+    path.chmod(0o600)
 
 
 def _load_json_with_backup(path, default):
@@ -421,9 +485,10 @@ def _append_event(event, **data):
         "event": event,
         **data,
     }
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _ensure_private_state_dir()
     with LEDGER_FILE.open("a") as fp:
         fp.write(json.dumps(record, sort_keys=True) + "\n")
+    LEDGER_FILE.chmod(0o600)
 
 
 def _read_ledger_events(limit=None):
@@ -483,9 +548,23 @@ def _clear_remote_ids():
     return pending_changes
 
 
+def switch_api_base(value):
+    """Change provider without carrying credentials, ids, or project metadata across origins."""
+    global api_token, _project_cache, _last_project_refresh_attempt, _last_tray_icon_path
+    if os.environ.get(API_BASE_ENV):
+        raise ValueError(f"Unset {API_BASE_ENV} before saving a different API base")
+    api_base = set_api_base(value)
+    api_token = None
+    pending_ids = _clear_remote_ids()
+    _project_cache = None
+    _last_project_refresh_attempt = None
+    _last_tray_icon_path = None
+    return api_base, pending_ids
+
+
 # ── Offline queue ──────────────────────────────────────────────────────────
 
-pending_lock = threading.Lock()
+pending_lock = threading.RLock()
 toggle_lock = threading.RLock()
 state_lock = threading.Lock()
 _sync_wakeup = threading.Event()
@@ -515,7 +594,8 @@ def queue_action(action, **kwargs):
     task_context = toggl_projects.context(sys.modules[__name__])
     with pending_lock:
         queue = _load_pending()
-        item = {"action": action, "ts": datetime.now(timezone.utc).isoformat(), **kwargs,
+        item = {"action": action, "ts": datetime.now(timezone.utc).isoformat(),
+                "_queue_id": uuid.uuid4().hex, **kwargs,
                 "_task_context": task_context}
         queue.append(item)
         _append_event("pending_queued", **item)
@@ -797,6 +877,8 @@ def sync_pending():
 
         remaining = [item for idx, item in enumerate(queue) if idx not in synced_indexes]
         _save_pending(remaining)
+        if not remaining:
+            _clear_status_message()
         return len(remaining)
 
 
@@ -904,9 +986,18 @@ def _health_check():
         pass
 
 
-def _pending_as_entries(date_obj=None):
-    """Convert pending offline actions into entry-like dicts for display."""
-    queue = _load_pending()
+def _ensure_pending_ids(queue):
+    """Give legacy queue items stable identities before exposing them for editing."""
+    changed = False
+    for item in queue:
+        if isinstance(item, dict) and not item.get("_queue_id"):
+            item["_queue_id"] = uuid.uuid4().hex
+            changed = True
+    return changed
+
+
+def _pending_entries_from_queue(queue, date_obj=None):
+    """Convert one locked queue snapshot into entry-like dictionaries."""
     if not queue:
         return []
 
@@ -924,7 +1015,8 @@ def _pending_as_entries(date_obj=None):
         if stop_time is None:
             duration = -1 * int(_parse_iso(start_time).timestamp())
 
-        entry_id = op.get("entry_id") or f"pending:{'-'.join(str(i) for i in op['indexes'])}"
+        pending_ids = [queue[idx]["_queue_id"] for idx in op["indexes"]]
+        entry_id = op.get("entry_id") or f"pending:{'-'.join(pending_ids)}"
         entries.append({
             "id": entry_id,
             "start": start_time,
@@ -935,6 +1027,7 @@ def _pending_as_entries(date_obj=None):
             "project_id": op.get("project_id"),
             "_offline": True,
             "_pending_indexes": op["indexes"],
+            "_pending_ids": pending_ids,
             "_task_context": queue[op["indexes"][0]].get("_task_context"),
             "_pending_kind": op["kind"],
             "_remote_entry_id": op.get("entry_id"),
@@ -943,6 +1036,31 @@ def _pending_as_entries(date_obj=None):
     if date_obj is None:
         return entries
     return [e for e in entries if _entry_local_date(e) == date_obj]
+
+
+def _pending_as_entries(date_obj=None):
+    """Convert pending actions into stable entry dictionaries for display and editing."""
+    with pending_lock:
+        queue = _load_pending()
+        if _ensure_pending_ids(queue):
+            _save_pending(queue)
+        return _pending_entries_from_queue(queue, date_obj)
+
+
+def _pending_entry_candidate(queue, selected):
+    """Resolve an entry against the current queue, rejecting stale selections."""
+    if _ensure_pending_ids(queue):
+        _save_pending(queue)
+    selected_ids = selected.get("_pending_ids") if isinstance(selected, dict) else None
+    if (not isinstance(selected_ids, list) or not selected_ids
+            or not all(isinstance(value, str) for value in selected_ids)):
+        return None
+    selected_ids = set(selected_ids)
+    fields = ("start", "stop", "description", "project_id", "workspace_id",
+              "_pending_kind", "_remote_entry_id")
+    return next((entry for entry in _pending_entries_from_queue(queue)
+                 if set(entry.get("_pending_ids", [])) == selected_ids
+                 and all(entry.get(key) == selected.get(key) for key in fields)), None)
 
 
 def _merge_entries_with_pending(entries, pending_entries):
@@ -971,7 +1089,8 @@ _project_cache_lock = threading.Lock()
 def _project_account(token=None):
     # Scope persisted metadata to the credential without storing the credential.
     token = api_token if token is None else token
-    return hashlib.sha256(token.encode()).hexdigest() if token else None
+    identity = json.dumps([get_api_base(), token], separators=(",", ":"))
+    return hashlib.sha256(identity.encode()).hexdigest() if token else None
 
 
 def _cached_projects():
@@ -1098,8 +1217,10 @@ def _init_icons():
         padded.paste(shrunk, (ICON_PADDING, ICON_PADDING))
         return padded
 
+    _ensure_private_state_dir()
     icon_dir = STATE_DIR / "icons"
-    icon_dir.mkdir(parents=True, exist_ok=True)
+    icon_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    icon_dir.chmod(0o700)
 
     _icon_path_active = str(icon_dir / "active.png")
     _icon_path_inactive = str(icon_dir / "inactive.png")
@@ -1148,9 +1269,10 @@ def elapsed_str():
 
 
 def get_tooltip():
+    suffix = f" — {status_message}" if status_message else ""
     if state["tracking"]:
-        return f"Toggl: {elapsed_str()}"
-    return "Toggl: Stopped"
+        return f"Toggl: {elapsed_str()}{suffix}"
+    return f"Toggl: Stopped{suffix}"
 
 
 def _panel_timer_label(panel=None, show_timer=True, show_description=False):
@@ -1357,6 +1479,7 @@ def toggle_tracking(*_args, prompt_for_description=True):
             ):
                 try:
                     stop_entry(workspace_id, entry_id)
+                    _clear_status_message()
                 except RateLimitedError:
                     print("Stop rate limited, queuing locally", file=sys.stderr)
                     _notify(_local_save_reason("stop"))
@@ -1412,6 +1535,7 @@ def toggle_tracking(*_args, prompt_for_description=True):
                     state["entry_id"] = entry["id"]
                     state["start_time"] = entry["start"]
                     save_state()
+                _clear_status_message()
                 _append_event(
                     "toggle_started",
                     source="tray",
@@ -1463,8 +1587,22 @@ def _reap(proc):
 
 
 def _notify(body):
-    # Desktop notifications are off: the user asked for none.
-    return
+    """Publish an in-app status without sending a desktop notification."""
+    global status_message
+    status_message = str(body or "").strip()
+    if status_message:
+        print(status_message, file=sys.stderr)
+    if icon_ref:
+        GLib.idle_add(_refresh_tray_menu)
+
+
+def _clear_status_message():
+    global status_message
+    if not status_message:
+        return
+    status_message = ""
+    if icon_ref:
+        GLib.idle_add(_refresh_tray_menu)
 
 
 def _play_sound(path):
@@ -1740,14 +1878,12 @@ def on_audit_today(icon, item):
 
 
 def _update_pending_entry(entry, update):
-    indexes = set(entry.get("_pending_indexes", []))
-    if not indexes:
-        return False
-
     with pending_lock:
         queue = _load_pending()
-        if any(idx >= len(queue) for idx in indexes):
+        candidate = _pending_entry_candidate(queue, entry)
+        if candidate is None:
             return False
+        indexes = set(candidate["_pending_indexes"])
 
         for idx in indexes:
             item = queue[idx]
@@ -1765,14 +1901,12 @@ def _update_pending_entry(entry, update):
 
 
 def _delete_pending_entry(entry):
-    indexes = set(entry.get("_pending_indexes", []))
-    if not indexes:
-        return False
-
     with pending_lock:
         queue = _load_pending()
-        if any(idx >= len(queue) for idx in indexes):
+        candidate = _pending_entry_candidate(queue, entry)
+        if candidate is None:
             return False
+        indexes = set(candidate["_pending_indexes"])
 
         remaining = [item for idx, item in enumerate(queue) if idx not in indexes]
         remote_id = entry.get("_remote_entry_id")
@@ -1780,6 +1914,7 @@ def _delete_pending_entry(entry):
             remaining.append({
                 "action": "delete",
                 "ts": datetime.now(timezone.utc).isoformat(),
+                "_queue_id": uuid.uuid4().hex,
                 "entry_id": remote_id,
                 "workspace_id": entry.get("workspace_id") or state.get("workspace_id"),
             })
@@ -1921,7 +2056,14 @@ def _tray_project_items():
 
 def build_menu():
     toggle_label = "Stop tracking" if state["tracking"] else "Start tracking"
+    status_items = ()
+    if status_message:
+        status_items = (
+            pystray.MenuItem(f"Status: {status_message}", lambda _icon, _item: None, enabled=False),
+            pystray.Menu.SEPARATOR,
+        )
     return pystray.Menu(
+        *status_items,
         pystray.MenuItem("Projects and tasks…", on_open_task_popup),
         pystray.MenuItem("Open timer", on_open_timer, default=True),
         pystray.MenuItem("Project", pystray.Menu(*_tray_project_items())),
@@ -2041,8 +2183,9 @@ def _entry_duration_seconds(entry):
 # ── Init ────────────────────────────────────────────────────────────────────
 
 def _acquire_instance_lock():
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _ensure_private_state_dir()
     lock_fp = open(LOCK_FILE, "a+")
+    LOCK_FILE.chmod(0o600)
     try:
         fcntl.flock(lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -2050,7 +2193,7 @@ def _acquire_instance_lock():
         pid = lock_fp.read().strip()
         detail = f" (PID {pid})" if pid else ""
         print(f"Another instance is already running{detail}.", file=sys.stderr)
-        print(f"If that process is gone, remove {LOCK_FILE} and start again.", file=sys.stderr)
+        print("Stop that process before starting another copy; do not delete the lock file.", file=sys.stderr)
         sys.exit(1)
     lock_fp.seek(0)
     lock_fp.truncate()

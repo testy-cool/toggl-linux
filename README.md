@@ -104,14 +104,10 @@ python3 toggl_tray.py set-api-base https://opentickly.example.com/api/v9
 
 This clears saved provider-specific workspace/project/entry IDs. Local pending time ranges stay in the queue and can sync after the app learns the OpenTickly workspace.
 
-Store the OpenTickly token in GNOME Keyring:
-
-```bash
-secret-tool store --label='OpenTickly API Token' service opentickly username api_token application toggl-tray
-# Paste your OpenTickly token, press Enter, then Ctrl+D
-```
-
-The old Toggl token stays separate and will not be used against OpenTickly.
+Start the tray, choose **Set API token…**, and paste the OpenTickly token. Custom-server
+credentials are stored separately for each server origin. The old Toggl token stays
+separate and will not be used against OpenTickly. Existing installations with the former
+shared `service=opentickly` key migrate it to the currently configured server once.
 
 Check that the app is using OpenTickly:
 

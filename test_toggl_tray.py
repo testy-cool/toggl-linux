@@ -260,6 +260,8 @@ class TestStatePersistence:
              patch.object(toggl_tray, "STATE_FILE", nested / "state.json"):
             toggl_tray.save_state()
             assert (nested / "state.json").exists()
+            assert nested.stat().st_mode & 0o777 == 0o700
+            assert (nested / "state.json").stat().st_mode & 0o777 == 0o600
 
     def test_save_state_writes_backup_and_recovers_from_corrupt_primary(self, tmp_state_dir):
         toggl_tray.state["description"] = "first"
@@ -287,6 +289,36 @@ class TestStatePersistence:
 
         assert json.loads((tmp_state_dir / "state.json.bak").read_text())["description"] == "good backup"
         assert json.loads((tmp_state_dir / "state.json").read_text())["description"] == "new primary"
+
+    def test_state_pending_backups_and_ledger_are_private(self, tmp_state_dir):
+        toggl_tray.save_state()
+        toggl_tray.save_state()
+        toggl_tray.queue_action("start", description="private work")
+
+        for name in ("state.json", "state.json.bak", "pending.json", "events.jsonl"):
+            assert (tmp_state_dir / name).stat().st_mode & 0o777 == 0o600
+
+    def test_startup_hardens_existing_runtime_files(self, tmp_state_dir):
+        paths = [tmp_state_dir / name for name in
+                 ("config.json", "state.json", "pending.json", "events.jsonl",
+                  "request_budget.json", "projects.json", "task-history.json")]
+        for path in paths:
+            path.write_text("{}")
+            path.chmod(0o644)
+        tmp_state_dir.chmod(0o755)
+
+        toggl_tray._ensure_private_state_dir()
+
+        assert tmp_state_dir.stat().st_mode & 0o777 == 0o700
+        assert all(path.stat().st_mode & 0o777 == 0o600 for path in paths)
+
+    def test_instance_lock_never_advises_deleting_a_live_lock(self, tmp_state_dir, capsys):
+        with patch.object(toggl_tray.fcntl, "flock", side_effect=OSError("busy")):
+            with pytest.raises(SystemExit):
+                toggl_tray._acquire_instance_lock()
+        message = capsys.readouterr().err
+        assert "do not delete the lock file" in message
+        assert "remove" not in message
 
 
 # ── Offline queue ────────────────────────────────────────────────────────────
@@ -645,6 +677,23 @@ class TestPendingEntries:
         assert queue[1]["description"] == "edited"
         assert queue[1]["stop_time"] == "2026-04-28T10:45:00+00:00"
 
+    def test_synced_entry_cannot_edit_the_next_pending_entry_by_stale_index(self, tmp_state_dir):
+        queue = [
+            {"action": "start", "start_time": "2026-04-28T08:00:00+00:00", "description": "A"},
+            {"action": "stop", "stop_time": "2026-04-28T09:00:00+00:00", "description": "A"},
+            {"action": "start", "start_time": "2026-04-28T10:00:00+00:00", "description": "B"},
+            {"action": "stop", "stop_time": "2026-04-28T11:00:00+00:00", "description": "B"},
+        ]
+        toggl_tray._save_pending(queue)
+        selected_a = toggl_tray._pending_as_entries()[0]
+
+        # A syncs while its native edit dialog remains open, shifting B to indexes 0 and 1.
+        migrated = toggl_tray._load_pending()
+        toggl_tray._save_pending(migrated[2:])
+
+        assert toggl_tray._update_pending_entry(selected_a, {"description": "edited A"}) is False
+        assert [item["description"] for item in toggl_tray._load_pending()] == ["B", "B"]
+
     def test_delete_pending_local_entry_removes_queue_items(self, tmp_state_dir):
         toggl_tray.queue_action("start", start_time="2026-04-28T09:00:00+00:00")
         toggl_tray.queue_action("stop", stop_time="2026-04-28T10:00:00+00:00")
@@ -659,12 +708,11 @@ class TestPendingEntries:
         entry = toggl_tray._pending_as_entries(datetime(2026, 4, 28).date())[0]
         assert toggl_tray._delete_pending_entry(entry)
         queue = toggl_tray._load_pending()
-        assert queue == [{
-            "action": "delete",
-            "ts": queue[0]["ts"],
-            "entry_id": "e_100",
-            "workspace_id": "ws_123",
-        }]
+        assert len(queue) == 1
+        assert queue[0]["action"] == "delete"
+        assert queue[0]["entry_id"] == "e_100"
+        assert queue[0]["workspace_id"] == "ws_123"
+        assert queue[0]["_queue_id"]
 
 
 # ── API wrapper ──────────────────────────────────────────────────────────────
@@ -680,10 +728,22 @@ class TestApiWrapper:
         assert result == "https://opentickly.example.com/api/v9"
         assert toggl_tray.get_api_base() == "https://opentickly.example.com/api/v9"
 
+    @pytest.mark.parametrize("value", [
+        "file:///tmp/api", "https://user:secret@example.com/api/v9",
+        "https://example.com/api/v9?token=secret", "http://api.track.toggl.com/api/v9",
+        "http://remote.example/api/v9",
+    ])
+    def test_api_base_rejects_unsafe_urls(self, value):
+        with pytest.raises(ValueError):
+            toggl_tray.set_api_base(value)
+
     @patch.dict("toggl_tray.os.environ", {"TOGGL_API_BASE": "https://env.example/api/v9/"}, clear=True)
     def test_get_api_base_prefers_environment_override(self):
         toggl_tray.set_api_base("https://config.example/api/v9")
         assert toggl_tray.get_api_base() == "https://env.example/api/v9"
+
+    def test_loopback_api_base_may_use_http_for_local_development(self):
+        assert toggl_tray.set_api_base("http://127.0.0.1:8080/api/v9") == "http://127.0.0.1:8080/api/v9"
 
     @patch.dict("toggl_tray.os.environ", {}, clear=True)
     @patch("toggl_tray.subprocess.run")
@@ -707,25 +767,64 @@ class TestApiWrapper:
         mock_run.return_value = MagicMock(returncode=1, stdout="")
 
         assert toggl_tray.get_api_token() is None
+        service = toggl_tray._api_token_service()
+        assert service.startswith("opentickly:")
         assert mock_run.call_args_list[0][0][0] == [
-            "secret-tool", "lookup", "service", "opentickly", "username", "api_token", "application", "toggl-tray",
+            "secret-tool", "lookup", "service", service, "username", "api_token", "application", "toggl-tray",
         ]
-        assert mock_run.call_args_list[1][0][0] == [
+        assert mock_run.call_args_list[2][0][0] == [
             "secret-tool", "lookup", "service", "opentickly", "username", "api_token",
+            "application", "toggl-tray",
         ]
-        assert mock_run.call_count == 2
+        assert mock_run.call_count == 4
 
     @patch.dict("toggl_tray.os.environ", {}, clear=True)
     @patch("toggl_tray.subprocess.run")
     def test_store_api_token_uses_opentickly_service_when_configured(self, mock_run):
         toggl_tray.set_api_base("https://opentickly.example.com/api/v9")
+        mock_run.return_value = MagicMock(returncode=0)
 
         assert toggl_tray.store_api_token("tok")
         assert mock_run.call_args[0][0] == [
-            "secret-tool", "store", "--label=OpenTickly API Token",
-            "service", "opentickly", "username", "api_token",
+            "secret-tool", "store", "--label=OpenTickly API Token (opentickly.example.com)",
+            "service", toggl_tray._api_token_service(), "username", "api_token",
             "application", "toggl-tray",
         ]
+
+    @patch.dict("toggl_tray.os.environ", {"TOGGL_API_BASE": "https://env.example/api/v9"}, clear=True)
+    def test_saved_api_base_change_rejects_an_active_environment_override(self):
+        with pytest.raises(ValueError, match="Unset TOGGL_API_BASE"):
+            toggl_tray.switch_api_base("https://saved.example/api/v9")
+
+    @patch.dict("toggl_tray.os.environ", {}, clear=True)
+    @patch("toggl_tray.subprocess.run")
+    def test_legacy_opentickly_token_migrates_to_only_its_current_origin(self, mock_run):
+        toggl_tray.set_api_base("https://first.example/api/v9")
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stdout=""), MagicMock(returncode=1, stdout=""),
+            MagicMock(returncode=0, stdout="legacy-token\n"), MagicMock(returncode=0, stdout=""),
+        ]
+
+        assert toggl_tray.get_api_token() == "legacy-token"
+        assert toggl_tray._load_json_with_backup(toggl_tray.CONFIG_FILE, {})["legacy_opentickly_origin"] == "https://first.example"
+
+        toggl_tray.set_api_base("https://second.example/api/v9")
+        mock_run.reset_mock(side_effect=True)
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        assert toggl_tray.get_api_token() is None
+        assert mock_run.call_count == 2
+
+    def test_toggl_lookalike_host_cannot_use_toggl_credentials_or_budget(self):
+        toggl_tray.set_api_base("https://api.track.toggl.com.attacker.example/api/v9")
+        assert toggl_tray._api_token_service().startswith("opentickly:")
+        assert toggl_tray._request_budget_applies() is False
+
+    def test_project_cache_identity_changes_with_api_server(self):
+        toggl_tray.api_token = "same-token"
+        toggl_tray.set_api_base("https://first.example/api/v9")
+        first = toggl_tray._project_account()
+        toggl_tray.set_api_base("https://second.example/api/v9")
+        assert toggl_tray._project_account() != first
 
     @patch.object(toggl_tray, "api_token", "test_token")
     def test_auth_returns_basic_auth(self):
@@ -1103,6 +1202,15 @@ class TestNotificationThrottling:
         toggl_tray._notify("Tracking with no description — right-click tray icon to set one")
         toggl_tray._notify(toggl_tray.AUTH_FAILED_SYNC_MESSAGE)
         mock_popen.assert_not_called()
+        assert toggl_tray.status_message == toggl_tray.AUTH_FAILED_SYNC_MESSAGE
+        assert toggl_tray.AUTH_FAILED_SYNC_MESSAGE in toggl_tray.get_tooltip()
+
+    def test_in_app_status_reaches_control_clients_and_can_be_cleared(self):
+        import toggl_control
+        toggl_tray._notify("Project list changed")
+        assert toggl_control.snapshot(toggl_tray)["warning"] == "Project list changed"
+        toggl_tray._clear_status_message()
+        assert toggl_control.snapshot(toggl_tray)["warning"] == ""
 
     @patch.object(toggl_tray, "_notify")
     def test_sync_failure_notifies_once_until_success(self, mock_notify):
