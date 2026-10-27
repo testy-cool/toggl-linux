@@ -2189,7 +2189,7 @@ def _acquire_instance_lock():
         pid = lock_fp.read().strip()
         detail = f" (PID {pid})" if pid else ""
         print(f"Another instance is already running{detail}.", file=sys.stderr)
-        print(f"If that process is gone, remove {LOCK_FILE} and start again.", file=sys.stderr)
+        print("Stop that process before starting another copy; do not delete the lock file.", file=sys.stderr)
         sys.exit(1)
     lock_fp.seek(0)
     lock_fp.truncate()

@@ -312,6 +312,14 @@ class TestStatePersistence:
         assert tmp_state_dir.stat().st_mode & 0o777 == 0o700
         assert all(path.stat().st_mode & 0o777 == 0o600 for path in paths)
 
+    def test_instance_lock_never_advises_deleting_a_live_lock(self, tmp_state_dir, capsys):
+        with patch.object(toggl_tray.fcntl, "flock", side_effect=OSError("busy")):
+            with pytest.raises(SystemExit):
+                toggl_tray._acquire_instance_lock()
+        message = capsys.readouterr().err
+        assert "do not delete the lock file" in message
+        assert "remove" not in message
+
 
 # ── Offline queue ────────────────────────────────────────────────────────────
 
