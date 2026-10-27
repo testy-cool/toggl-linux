@@ -37,8 +37,8 @@ def test_state_changing_cli_commands_use_the_running_tray(tmp_state_dir, capsys)
             assert started["tracking"] is True
             assert started["description"] == "Socket task"
 
-            assert toggl_cli._run_cli(["set-start", "09:15"]) == 0
-            assert app._coerce_datetime(app.state["start_time"]).astimezone().strftime("%H:%M") == "09:15"
+            assert toggl_cli._run_cli(["set-start", "00:00"]) == 0
+            assert app._coerce_datetime(app.state["start_time"]).astimezone().strftime("%H:%M") == "00:00"
 
             assert toggl_cli._run_cli(["stop"]) == 0
             assert app.state["tracking"] is False
