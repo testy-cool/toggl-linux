@@ -272,6 +272,7 @@ def _refresh_ui(app):
 
 
 def start_server(app):
+    app._ensure_private_state_dir()
     path = app.STATE_DIR / "control.sock"
     path.unlink(missing_ok=True)  # Caller already owns the single-instance lock.
 

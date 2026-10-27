@@ -432,18 +432,38 @@ def _backup_path(path):
     return path.with_name(path.name + ".bak")
 
 
+def _ensure_private_state_dir():
+    STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    STATE_DIR.chmod(0o700)
+    private_files = (
+        CONFIG_FILE, STATE_FILE, PENDING_FILE, LEDGER_FILE, REQUEST_BUDGET_FILE, LOCK_FILE,
+        STATE_DIR / "projects.json", STATE_DIR / "task-history.json",
+    )
+    for path in private_files:
+        for candidate in (path, _backup_path(path)):
+            if candidate.exists():
+                candidate.chmod(0o600)
+
+
 def _atomic_write_text(path, text, backup=True):
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.parent == STATE_DIR:
+        _ensure_private_state_dir()
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     if backup and path.exists():
         try:
             existing = path.read_text()
             json.loads(existing)
-            _backup_path(path).write_text(existing)
+            backup_path = _backup_path(path)
+            backup_path.write_text(existing)
+            backup_path.chmod(0o600)
         except (json.JSONDecodeError, OSError):
             pass
     tmp.write_text(text)
+    tmp.chmod(0o600)
     os.replace(tmp, path)
+    path.chmod(0o600)
 
 
 def _load_json_with_backup(path, default):
@@ -462,9 +482,10 @@ def _append_event(event, **data):
         "event": event,
         **data,
     }
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _ensure_private_state_dir()
     with LEDGER_FILE.open("a") as fp:
         fp.write(json.dumps(record, sort_keys=True) + "\n")
+    LEDGER_FILE.chmod(0o600)
 
 
 def _read_ledger_events(limit=None):
@@ -1189,8 +1210,10 @@ def _init_icons():
         padded.paste(shrunk, (ICON_PADDING, ICON_PADDING))
         return padded
 
+    _ensure_private_state_dir()
     icon_dir = STATE_DIR / "icons"
-    icon_dir.mkdir(parents=True, exist_ok=True)
+    icon_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    icon_dir.chmod(0o700)
 
     _icon_path_active = str(icon_dir / "active.png")
     _icon_path_inactive = str(icon_dir / "inactive.png")
@@ -2129,8 +2152,9 @@ def _entry_duration_seconds(entry):
 # ── Init ────────────────────────────────────────────────────────────────────
 
 def _acquire_instance_lock():
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _ensure_private_state_dir()
     lock_fp = open(LOCK_FILE, "a+")
+    LOCK_FILE.chmod(0o600)
     try:
         fcntl.flock(lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:

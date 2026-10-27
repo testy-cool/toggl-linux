@@ -260,6 +260,8 @@ class TestStatePersistence:
              patch.object(toggl_tray, "STATE_FILE", nested / "state.json"):
             toggl_tray.save_state()
             assert (nested / "state.json").exists()
+            assert nested.stat().st_mode & 0o777 == 0o700
+            assert (nested / "state.json").stat().st_mode & 0o777 == 0o600
 
     def test_save_state_writes_backup_and_recovers_from_corrupt_primary(self, tmp_state_dir):
         toggl_tray.state["description"] = "first"
@@ -287,6 +289,28 @@ class TestStatePersistence:
 
         assert json.loads((tmp_state_dir / "state.json.bak").read_text())["description"] == "good backup"
         assert json.loads((tmp_state_dir / "state.json").read_text())["description"] == "new primary"
+
+    def test_state_pending_backups_and_ledger_are_private(self, tmp_state_dir):
+        toggl_tray.save_state()
+        toggl_tray.save_state()
+        toggl_tray.queue_action("start", description="private work")
+
+        for name in ("state.json", "state.json.bak", "pending.json", "events.jsonl"):
+            assert (tmp_state_dir / name).stat().st_mode & 0o777 == 0o600
+
+    def test_startup_hardens_existing_runtime_files(self, tmp_state_dir):
+        paths = [tmp_state_dir / name for name in
+                 ("config.json", "state.json", "pending.json", "events.jsonl",
+                  "request_budget.json", "projects.json", "task-history.json")]
+        for path in paths:
+            path.write_text("{}")
+            path.chmod(0o644)
+        tmp_state_dir.chmod(0o755)
+
+        toggl_tray._ensure_private_state_dir()
+
+        assert tmp_state_dir.stat().st_mode & 0o777 == 0o700
+        assert all(path.stat().st_mode & 0o777 == 0o600 for path in paths)
 
 
 # ── Offline queue ────────────────────────────────────────────────────────────
