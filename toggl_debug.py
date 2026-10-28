@@ -1,4 +1,5 @@
 """Private rotating diagnostics for the tray process; the event ledger is separate."""
+import ctypes
 import logging
 from logging.handlers import RotatingFileHandler
 import os
@@ -13,6 +14,37 @@ LOGGER.addHandler(logging.NullHandler())
 LOGGER.propagate = False
 MAX_BYTES = 2 * 1024 * 1024
 BACKUP_COUNT = 3
+_glib_target = None
+_glib_writer = None
+
+
+def _capture_structured_glib(glib, recorder):
+    """GTK 3 uses structured messages which bypass GLib's legacy handlers."""
+    global _glib_writer, _glib_target
+    if _glib_writer is None:
+        def writer(level, fields, _count, _data):
+            target = _glib_target
+            if target is None:
+                return glib.log_writer_default(level, fields, None)
+            try:
+                values = {}
+                for field in fields:
+                    # These two GLib fields are documented UTF-8 strings. Other
+                    # fields can contain arbitrary pointers and must not be read.
+                    if field.key in ('MESSAGE', 'GLIB_DOMAIN') and field.value:
+                        raw = (ctypes.string_at(field.value, field.length) if field.length >= 0
+                               else ctypes.string_at(field.value))
+                        values[field.key] = raw.decode('utf-8', errors='replace')
+                target._glib_message(values.get('GLIB_DOMAIN', 'GLib'), level,
+                                     values.get('MESSAGE', ''), None)
+                return glib.LogWriterOutput.HANDLED
+            except Exception:
+                return glib.log_writer_default(level, fields, None)
+        # GLib permits only one writer installation per process. Keep the callback
+        # alive and switch its target, rather than trying to replace it on close.
+        glib.log_set_writer_func(writer, None)
+        _glib_writer = writer
+    _glib_target = recorder
 
 
 class RedactingFormatter(logging.Formatter):
@@ -108,6 +140,7 @@ class DebugLog:
     def capture_glib(self, glib):
         """Route native GTK/GLib warnings into the same persistent log."""
         self.glib = glib
+        _capture_structured_glib(glib, self)
         for domain in ('Gtk', 'Gdk', 'GLib', 'GLib-GObject'):
             handler_id = glib.log_set_handler(domain, glib.LogLevelFlags.LEVEL_MASK
                                               | glib.LogLevelFlags.FLAG_FATAL
@@ -128,6 +161,9 @@ class DebugLog:
         traceback.print_exception(args.exc_type, args.exc_value, args.exc_traceback, file=self.stderr)
 
     def close(self):
+        global _glib_target
+        if _glib_target is self:
+            _glib_target = None
         self.stream.flush()
         if sys.stderr is self.stream:
             sys.stderr = self.stderr

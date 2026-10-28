@@ -1,10 +1,12 @@
 """Debug diagnostics persist without credentials or changes to CLI stdout."""
 import io
+import ctypes
 import json
 import logging
 import sys
 import threading
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
@@ -151,3 +153,31 @@ def test_refuses_debug_log_symlink(tmp_path):
     with pytest.raises(OSError):
         debug.DebugLog(tmp_path, lambda: [])
     assert target.read_text() == 'keep'
+
+
+def test_structured_glib_writer_captures_strings_once_and_falls_back_after_close(tmp_path):
+    glib = MagicMock()
+    message = ctypes.create_string_buffer(b'Native structured diagnostic')
+    domain = ctypes.create_string_buffer(b'Gtk')
+    fields = [SimpleNamespace(key='MESSAGE', value=ctypes.addressof(message), length=-1),
+              SimpleNamespace(key='GLIB_DOMAIN', value=ctypes.addressof(domain), length=3),
+              SimpleNamespace(key='BINARY_OTHER', value=1, length=-1)]
+    with patch.object(debug, '_glib_writer', None), patch.object(debug, '_glib_target', None), \
+         patch.object(sys, 'stderr', io.StringIO()):
+        recorder = debug.DebugLog(tmp_path, lambda: [])
+        try:
+            debug._capture_structured_glib(glib, recorder)
+            callback = glib.log_set_writer_func.call_args.args[0]
+            callback(16, fields, len(fields), None)
+        finally:
+            recorder.close()
+        callback(16, fields, len(fields), None)
+        glib.log_writer_default.assert_called_once_with(16, fields, None)
+        recorder = debug.DebugLog(tmp_path, lambda: [])
+        try:
+            debug._capture_structured_glib(glib, recorder)
+            callback(16, fields, len(fields), None)
+        finally:
+            recorder.close()
+    glib.log_set_writer_func.assert_called_once()
+    assert (tmp_path / 'debug.log').read_text().count('Gtk: Native structured diagnostic') == 2
