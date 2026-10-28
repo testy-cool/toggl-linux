@@ -7,13 +7,17 @@ import toggl_control
 _window = None
 
 
-def editor_changes(app, baseline, description, project, start):
+def editor_changes(app, baseline, description, project, start, task=None):
     changes = {}
     if description != baseline.get("description", ""):
         changes["description"] = description
     project = None if project == "none" else project
     if str(project) != str(baseline.get("project_id")):
         changes["project_id"] = project
+    if task is not None:
+        task = None if task == "none" else task
+        if str(task) != str(baseline.get("task_id")):
+            changes["task_id"] = task
     if baseline.get("tracking"):
         previous = app._coerce_datetime(baseline["start_time"]).astimezone()
         unchanged = start.strip() == previous.strftime("%Y-%m-%d %H:%M") or (
@@ -49,7 +53,8 @@ def previous_tasks(app, snapshot):
         completed.append((stamp, entry))
     result, seen = [], set()
     for _, entry in sorted(completed, key=lambda item: item[0], reverse=True):
-        key = (entry.get("description", ""), str(entry.get("project_id")), str(entry["workspace_id"]))
+        key = (entry.get("description", ""), str(entry.get("project_id")), str(entry.get("task_id")),
+               str(entry["workspace_id"]))
         if key not in seen:
             result.append(deepcopy(entry))
             seen.add(key)
@@ -84,16 +89,19 @@ class TimerEditor:
         grid.set_hexpand(True)
         box.pack_start(grid, False, False, 0)
         self.project = Gtk.ComboBoxText()
+        self.task = Gtk.ComboBoxText()
         self.description = Gtk.Entry()
         self.start = Gtk.Entry()
         self.start.set_placeholder_text("YYYY-MM-DD HH:MM")
         self.start.set_tooltip_text("Enter a date and time, or HH:MM for today")
-        for row, (title, widget) in enumerate((("Project", self.project), ("Description", self.description), ("Start time", self.start))):
+        for row, (title, widget) in enumerate((("Project", self.project), ("Task", self.task),
+                                               ("Description", self.description), ("Start time", self.start))):
             label = Gtk.Label(label=title, xalign=0)
             grid.attach(label, 0, row, 1, 1)
             widget.set_hexpand(True)
-            grid.attach(widget, 1, row, 1 if row == 0 else 2, 1)
+            grid.attach(widget, 1, row, 1 if row in (0, 1) else 2, 1)
             widget.connect("changed", self._changed)
+        self.project.connect("changed", self._project_changed)
         self.project_tools = Gtk.MenuButton(label="Projects")
         project_menu = Gtk.Menu()
         project_menu.get_style_context().add_class("toggl-editor")
@@ -109,12 +117,27 @@ class TimerEditor:
         project_menu.show_all()
         self.project_tools.set_popup(project_menu)
         grid.attach(self.project_tools, 2, 0, 1, 1)
+        self.task_tools = Gtk.MenuButton(label="Tasks")
+        task_menu = Gtk.Menu()
+        task_menu.get_style_context().add_class("toggl-editor")
+        for title, callback in (("New Task…", self._new_saved_task),
+                                ("Edit Selected Task…", self._edit_saved_task),
+                                ("Manage Tasks…", self._manage_tasks)):
+            item = Gtk.MenuItem(label=title)
+            item.connect("activate", callback)
+            task_menu.append(item)
+            if title.startswith("Edit"):
+                self.edit_task_item = item
+        task_menu.connect("show", self._task_menu_opened)
+        task_menu.show_all()
+        self.task_tools.set_popup(task_menu)
+        grid.attach(self.task_tools, 2, 1, 1, 1)
         self.description.connect("activate", lambda *_: self._save())
         self.start.connect("activate", lambda *_: self._save())
         actions = Gtk.Box(spacing=10)
         box.pack_start(actions, False, False, 0)
         self.toggle = Gtk.Button(label="Start Timer")
-        self.new_task = Gtk.Button(label="Start New Task")
+        self.new_task = Gtk.Button(label="Start New Entry")
         self.save = Gtk.Button(label="Save Changes")
         self.save.set_tooltip_text("Correct this interval · Ctrl+Enter")
         self.new_task.set_tooltip_text("End this interval and start another · Ctrl+Shift+Enter")
@@ -134,7 +157,7 @@ class TimerEditor:
         today = Gtk.Button(label="Today's Entries")
         today.connect("clicked", lambda *_: app.on_view_today(None, None))
         secondary.pack_start(today, True, True, 0)
-        self.resume = Gtk.Button(label="Resume Previous Task")
+        self.resume = Gtk.Button(label="Resume Recent Activity")
         self.resume.connect("clicked", lambda *_: self._resume_previous())
         secondary.pack_start(self.resume, True, True, 0)
         self.more = Gtk.MenuButton(label="More")
@@ -172,8 +195,10 @@ class TimerEditor:
         self.updating = True
         self.baseline = dict(snapshot["state"])
         self.projects_snapshot = list(snapshot["projects"])
+        self.tasks_snapshot = list(snapshot.get("tasks", []))
         self.description.set_text(self.baseline.get("description", ""))
         self._load_project_choices(snapshot, self.baseline.get("project_id"))
+        self._load_task_choices(snapshot, self.baseline.get("task_id"))
         self.start.set_text(self.app._coerce_datetime(self.baseline["start_time"]).astimezone().strftime("%Y-%m-%d %H:%M") if self.baseline.get("tracking") else "")
         self.start.set_sensitive(bool(self.baseline.get("tracking")))
         self.updating = False
@@ -192,6 +217,27 @@ class TimerEditor:
         if selected is not None and not any(str(p["id"]) == str(selected) for p in projects):
             self.project.append(str(selected), "Current project (not cached)")
         self.project.set_active_id("none" if selected is None else str(selected))
+
+    def _load_task_choices(self, snapshot, selected):
+        self.task.remove_all()
+        self.task.append("none", "No task")
+        project_id = self.project.get_active_id()
+        tasks = [item for item in snapshot.get("tasks", [])
+                 if str(item.get("project_id")) == str(project_id)
+                 and str(item.get("workspace_id")) == str(self.baseline.get("workspace_id"))
+                 and (item.get("active") is not False or str(item.get("id")) == str(selected))]
+        for item in tasks:
+            self.task.append(str(item["id"]), item.get("name") or str(item["id"]))
+        if selected is not None and not any(str(item["id"]) == str(selected) for item in tasks):
+            self.task.append(str(selected), "Current task (not cached)")
+        self.task.set_active_id("none" if selected is None else str(selected))
+        self.task.set_sensitive(project_id not in (None, "none"))
+
+    def _project_changed(self, *_):
+        if self.updating:
+            return
+        self._load_task_choices({"tasks": self.tasks_snapshot}, None)
+        self.dirty = True
 
     def _project_menu_opened(self, *_):
         selected = self.project.get_active_id()
@@ -229,31 +275,86 @@ class TimerEditor:
         self._headers(snapshot)
         self.message.set_text("Project saved. Choose it from Project when you want to use it.")
 
+    def _task_menu_opened(self, *_):
+        selected = self.task.get_active_id()
+        self.edit_task_item.set_sensitive(selected not in (None, "none") and any(
+            str(item.get("id")) == str(selected) for item in self.tasks_snapshot))
+
+    def _new_saved_task(self, *_):
+        import toggl_task_window
+        project_id = self.project.get_active_id()
+        if project_id in (None, "none"):
+            self.message.set_text("Choose a project before creating a task.")
+            return
+        toggl_task_window.show(self.app, project_id, parent=self.window, on_saved=self._task_saved)
+
+    def _edit_saved_task(self, *_):
+        import toggl_task_window
+        selected = self.task.get_active_id()
+        task = next((item for item in self.tasks_snapshot if str(item.get("id")) == str(selected)), None)
+        if not task:
+            self.message.set_text("Select a saved task before editing it.")
+            return
+        toggl_task_window.show(self.app, task["project_id"], task=task, parent=self.window,
+                               on_saved=self._task_saved)
+
+    def _manage_tasks(self, *_):
+        import toggl_task_window
+        toggl_task_window.manage(self.app, self.window)
+
+    def _task_saved(self, snapshot):
+        if self.window is None:
+            return
+        selected = self.task.get_active_id()
+        self.tasks_snapshot = list(snapshot.get("tasks", []))
+        self.updating = True
+        try:
+            self._load_task_choices(snapshot, selected)
+        finally:
+            self.updating = False
+        self.message.set_text("Task saved.")
+
     def _headers(self, snapshot):
         current = snapshot["state"]
         self.rendered_state = dict(current)
         name = next((p.get("name") for p in snapshot["projects"] if str(p.get("id")) == str(current.get("project_id"))
                      and str(p.get("workspace_id")) == str(current.get("workspace_id"))), "No project")
-        self.status.set_text(("Tracking · " if current.get("tracking") else "Stopped · ") + str(name) + (f" · {snapshot['pending_count']} pending" if snapshot["pending_count"] else ""))
+        task_name = next((item.get("name") for item in snapshot.get("tasks", [])
+                          if str(item.get("id")) == str(current.get("task_id"))), None)
+        detail = current.get("description") or task_name
+        self.status.set_text(("Tracking · " if current.get("tracking") else "Stopped · ") + str(name)
+                             + (f" · {detail}" if detail else "")
+                             + (f" · {snapshot['pending_count']} pending" if snapshot["pending_count"] else ""))
         self.elapsed.set_text(elapsed_text(self.app, current))
         self.toggle.set_label("Stop Timer" if current.get("tracking") else "Start Timer")
         self.new_task.set_sensitive(bool(current.get("tracking")) and not self.busy)
+        self.task_tools.set_sensitive(snapshot.get("task_capability") != "unavailable")
 
     def _tick(self):
         snapshot = toggl_control.snapshot(self.app)
         self._headers(snapshot)
         if not self.busy:
-            if not self.dirty and (snapshot["state"] != self.baseline or snapshot["projects"] != self.projects_snapshot):
+            if not self.dirty and (snapshot["state"] != self.baseline or snapshot["projects"] != self.projects_snapshot
+                                   or snapshot.get("tasks", []) != self.tasks_snapshot):
                 self._load(snapshot)
             elif snapshot["projects"] != self.projects_snapshot:
                 self._project_saved(snapshot)
+            elif snapshot.get("tasks", []) != self.tasks_snapshot:
+                selected = self.task.get_active_id()
+                self.tasks_snapshot = list(snapshot.get("tasks", []))
+                self.updating = True
+                try:
+                    self._load_task_choices(snapshot, None if selected == "none" else selected)
+                finally:
+                    self.updating = False
             if self.dirty and snapshot["state"] != self.baseline:
                 self.message.set_text("Timer changed. Reload the current timer before saving.")
                 self.reload.show()
         return True
 
     def _changes(self):
-        return editor_changes(self.app, self.baseline, self.description.get_text(), self.project.get_active_id(), self.start.get_text())
+        return editor_changes(self.app, self.baseline, self.description.get_text(), self.project.get_active_id(),
+                              self.start.get_text(), self.task.get_active_id())
 
     def _save(self):
         try:
@@ -267,10 +368,14 @@ class TimerEditor:
         if self.rendered_state.get("tracking"):
             self._act("stop", {"expected": self.rendered_state})
         else:
-            self._act("start", {"expected": self.baseline, "changes": {"description": self.description.get_text(), "project_id": None if self.project.get_active_id() == "none" else self.project.get_active_id()}})
+            self._act("start", {"expected": self.baseline, "changes": {"description": self.description.get_text(),
+                      "project_id": None if self.project.get_active_id() == "none" else self.project.get_active_id(),
+                      "task_id": None if self.task.get_active_id() == "none" else self.task.get_active_id()}})
 
     def _new_task(self):
-        self._act("switch", {"expected": self.baseline, "changes": {"description": self.description.get_text(), "project_id": None if self.project.get_active_id() == "none" else self.project.get_active_id()}})
+        self._act("switch", {"expected": self.baseline, "changes": {"description": self.description.get_text(),
+                  "project_id": None if self.project.get_active_id() == "none" else self.project.get_active_id(),
+                  "task_id": None if self.task.get_active_id() == "none" else self.task.get_active_id()}})
 
     def _resume_previous(self):
         if self.busy:
@@ -285,16 +390,16 @@ class TimerEditor:
     def _show_resume_picker(self, snapshot):
         entries = previous_tasks(self.app, snapshot)
         if not entries:
-            self.message.set_text(snapshot.get("warning") or "No completed tasks from today to resume yet.")
+            self.message.set_text(snapshot.get("warning") or "No completed activities from today to resume yet.")
             return
-        dialog = Gtk.Dialog(title="Resume Previous Task", transient_for=self.window, modal=True)
+        dialog = Gtk.Dialog(title="Resume Recent Activity", transient_for=self.window, modal=True)
         dialog.get_style_context().add_class("toggl-editor")
         dialog.set_default_size(560, -1)
         dialog.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Start Again", Gtk.ResponseType.OK)
         content = dialog.get_content_area()
         content.set_border_width(16)
         content.set_spacing(12)
-        label = Gtk.Label(label="Choose a task from today. Starting again creates a new interval.", xalign=0)
+        label = Gtk.Label(label="Choose a recent activity. Starting again creates a new time entry.", xalign=0)
         label.set_line_wrap(True)
         content.pack_start(label, False, False, 0)
         picker = Gtk.ComboBoxText()
@@ -341,7 +446,8 @@ class TimerEditor:
             return
         self.busy = True
         self.pending_action = action
-        for button in (self.toggle, self.new_task, self.save, self.resume, self.description, self.project, self.start):
+        for button in (self.toggle, self.new_task, self.save, self.resume, self.description, self.project,
+                       self.task, self.start):
             button.set_sensitive(False)
         self.message.set_text("Saving…" if action != "refresh" else "Refreshing…")
         def worker():
@@ -361,6 +467,7 @@ class TimerEditor:
         self.resume.set_sensitive(True)
         self.description.set_sensitive(True)
         self.project.set_sensitive(True)
+        self.task.set_sensitive(self.project.get_active_id() not in (None, "none"))
         self.start.set_sensitive(bool(self.baseline.get("tracking")))
         if error:
             self.message.set_text(error)
@@ -370,7 +477,7 @@ class TimerEditor:
                 self.baseline = dict(result["state"])
             self._headers(result)
             self.start.set_sensitive(bool(result["state"].get("tracking")))
-            self.message.set_text("Draft kept. Use Save Changes or Start New Task when ready." if result["state"].get("tracking")
+            self.message.set_text("Draft kept. Use Save Changes or Start New Entry when ready." if result["state"].get("tracking")
                                   else "Draft kept. Use Start Timer when ready.")
             if result["state"] != self.baseline:
                 self.message.set_text("Draft kept. Timer changed; reload before saving.")

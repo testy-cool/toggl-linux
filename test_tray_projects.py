@@ -41,7 +41,7 @@ def test_tray_project_choice_updates_existing_cloud_interval(tmp_state_dir):
     before = dict(app.state)
     with patch.object(app, '_cached_projects', return_value=PROJECTS), patch.object(app, 'update_entry') as update:
         assert app._apply_tray_project(7, before) is True
-    update.assert_called_once_with('ws_123', 101, {'project_id': 7})
+    update.assert_called_once_with('ws_123', 101, {'project_id': 7, 'task_id': None})
     assert app.state['entry_id'] == 101
     assert app.state['start_time'] == before['start_time']
 
@@ -90,7 +90,7 @@ def test_project_menu_uses_the_timer_current_at_click_time(tmp_state_dir):
          patch.object(app, '_cached_projects', return_value=PROJECTS), \
          patch.object(app, 'update_entry') as update, patch.object(app, '_notify') as notify:
         callback(None, None)
-    update.assert_called_once_with('ws_123', 202, {'project_id': 7})
+    update.assert_called_once_with('ws_123', 202, {'project_id': 7, 'task_id': None})
     notify.assert_not_called()
 
 

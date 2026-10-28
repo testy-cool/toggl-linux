@@ -70,6 +70,7 @@ def refresh(app, force=False):
         return False
     try:
         scope = context(app)
+        token, base = app.api_token, toggl_projects._api_base(app)
         cached(app)
         now = time.time()
         previous = app._task_cache if isinstance(app._task_cache, dict) else {}
@@ -77,20 +78,34 @@ def refresh(app, force=False):
                 and 0 <= now - previous.get("fetched_at", 0) < app.CLOUD_POLL_INTERVAL_SECONDS):
             return False
         tasks = []
+        seen = set()
         workspace = quote(str(scope["workspace_id"]), safe="")
-        for page in range(1, 6):
-            response = app._api("GET", f"/workspaces/{workspace}/tasks/basic", params={
-                "active": "both", "page": page, "per_page": 200,
-            })
-            data = response.get("data", []) if isinstance(response, dict) else response
-            if not isinstance(data, list):
-                raise TaskError("Task list response was invalid")
-            tasks.extend(_task_fields(item, scope) for item in data if isinstance(item, dict))
-            total = response.get("total_count") if isinstance(response, dict) else None
-            if len(data) < 200 or (isinstance(total, int) and len(tasks) >= total):
+        # OpenTickly's current source accepts active=both, but older deployed releases
+        # generated a strict boolean parser. Two boolean requests work on both versions.
+        for active in ("true", "false"):
+            fetched_for_filter = 0
+            for page in range(1, 6):
+                response = app._api("GET", f"/workspaces/{workspace}/tasks/basic", token=token,
+                                    base_url=base, params={"active": active, "page": page, "per_page": 200})
+                data = response.get("data", []) if isinstance(response, dict) else response
+                if not isinstance(data, list):
+                    raise TaskError("Task list response was invalid")
+                fetched_for_filter += len(data)
+                for item in data:
+                    saved = _task_fields(item, scope) if isinstance(item, dict) else None
+                    identity = str(saved.get("id")) if saved else None
+                    if saved and identity not in seen:
+                        tasks.append(saved)
+                        seen.add(identity)
+                total = response.get("total_count") if isinstance(response, dict) else None
+                if (len(tasks) >= 1000 or len(data) < 200
+                        or (isinstance(total, int) and fetched_for_filter >= total)
+                        or app._request_budget_remaining() <= app.REQUEST_BUDGET_BACKGROUND_RESERVE):
+                    break
+            if len(tasks) >= 1000 or app._request_budget_remaining() <= app.REQUEST_BUDGET_BACKGROUND_RESERVE:
                 break
-            if app._request_budget_remaining() <= app.REQUEST_BUDGET_BACKGROUND_RESERVE:
-                break
+        if context(app) != scope:
+            return False
         _save_cache(app, tasks[:1000], scope, now)
         app._task_capability = "supported"
         return True
@@ -127,6 +142,8 @@ def _target(app, selected, scope):
 
 
 def write(app, action, payload):
+    if capability(app) == "unavailable":
+        raise TaskError("Tasks are not supported by this server; use recent activities instead")
     scope = _check_context(app, payload.get("context"))
     original = _target(app, payload.get("task"), scope) if action == "task-update" else None
     name = _name(payload.get("name", original and original.get("name")))

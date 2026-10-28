@@ -41,10 +41,14 @@ def test_snapshot_exposes_server_tasks_and_capability(task_account):
 def test_refresh_reads_envelope_and_persists_account_scoped_cache(task_account):
     saved = {"id": 32, "workspace_id": 123, "project_id": 7, "name": "Fetched", "active": True}
     app._task_cache = None
-    with patch.object(app, "_api", return_value={"data": [saved], "total_count": 1}) as request:
+    def response(_method, _path, **kwargs):
+        return {"data": [saved], "total_count": 1} if kwargs["params"]["active"] == "true" else {"data": [], "total_count": 0}
+    with patch.object(app, "_api", side_effect=response) as request:
         assert toggl_tasks.refresh(app, force=True) is True
-    request.assert_called_once_with("GET", "/workspaces/123/tasks/basic",
-                                    params={"active": "both", "page": 1, "per_page": 200})
+    assert request.call_count == 2
+    assert [call.kwargs["params"]["active"] for call in request.call_args_list] == ["true", "false"]
+    assert all(call.kwargs["token"] == app.api_token and call.kwargs["base_url"] == app.API_BASE
+               for call in request.call_args_list)
     assert app._cached_tasks() == [saved]
     persisted = json.loads((app.STATE_DIR / "tasks.json").read_text())
     assert persisted["context"] == context()
@@ -59,6 +63,33 @@ def test_refresh_feature_detects_unsupported_endpoint_without_losing_activities(
     with patch.object(app, "_api", side_effect=requests.HTTPError(response=response)):
         assert toggl_tasks.refresh(app, force=True) is False
     assert toggl_tasks.capability(app) == "unavailable"
+
+
+def test_refresh_combines_active_and_archived_from_boolean_filters(task_account):
+    active = {"id": 32, "workspace_id": 123, "project_id": 7, "name": "Active", "active": True}
+    archived = {"id": 33, "workspace_id": 123, "project_id": 7, "name": "Archived", "active": False}
+    app._task_cache = None
+    def response(_method, _path, **kwargs):
+        item = active if kwargs["params"]["active"] == "true" else archived
+        return {"data": [item], "total_count": 1}
+    with patch.object(app, "_api", side_effect=response):
+        assert toggl_tasks.refresh(app, force=True) is True
+    assert app._cached_tasks() == [active, archived]
+
+
+def test_refresh_discards_response_after_account_switch(task_account):
+    app._task_cache = None
+    original = context()
+    def switch_account(*_args, **_kwargs):
+        app.api_token = "replacement-token"
+        return {"data": [{"id": 32, "workspace_id": 123, "project_id": 7,
+                           "name": "Private old account task", "active": True}]}
+    with patch.object(app, "_api", side_effect=switch_account) as request:
+        assert toggl_tasks.refresh(app, force=True) is False
+    assert request.call_args.kwargs["token"] == "tok"
+    assert app._cached_tasks() == []
+    assert not (app.STATE_DIR / "tasks.json").exists()
+    assert context() != original
 
 
 def test_create_and_update_archive_restore_use_task_routes(task_account):

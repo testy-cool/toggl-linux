@@ -1211,7 +1211,7 @@ def _current_icon_path():
 def _update_tray_icon_once():
     global _last_tray_icon_path, _last_menu_key
     # Rebuild the menu when the running task changes, so its active dot follows the timer.
-    key = (state.get("tracking"), state.get("project_id"), state.get("description"))
+    key = (state.get("tracking"), state.get("project_id"), state.get("task_id"), state.get("description"))
     if key != _last_menu_key:
         if _last_menu_key is not None:
             _set_tray_menu(build_menu())
@@ -1292,7 +1292,8 @@ def elapsed_str():
     total_secs = int(elapsed.total_seconds())
     h, remainder = divmod(total_secs, 3600)
     m, s = divmod(remainder, 60)
-    desc = state.get("description", "")
+    desc = state.get("description", "") or next((item.get("name") for item in _cached_tasks()
+                                                  if str(item.get("id")) == str(state.get("task_id"))), "")
     time_str = f"{h}:{m:02d}:{s:02d}"
     if desc:
         return f"{desc} — {time_str}"
@@ -1323,7 +1324,8 @@ def _panel_timer_snapshot():
     with state_lock:
         tracking = state.get("tracking", False)
         start_time = state.get("start_time")
-        description = state.get("description", "")
+        description = state.get("description", "") or next((item.get("name") for item in _cached_tasks()
+                                                              if str(item.get("id")) == str(state.get("task_id"))), "")
 
     elapsed_seconds = 0
     if tracking and start_time:
@@ -1597,7 +1599,7 @@ def toggle_tracking(*_args, prompt_for_description=True):
                     mode="local",
                 )
             _play_sound(SOUND_START)
-            if prompt_for_description and not description:
+            if prompt_for_description and not description and task_id is None:
                 if icon_ref:
                     _prompt_for_description_async()
                 else:
@@ -2011,10 +2013,11 @@ def on_quit(icon, item):
 def _apply_tray_project(project_id, expected, context=None):
     import toggl_control
     with state_lock:
-        if state == expected and str(state.get("project_id")) == str(project_id):
+        if (state == expected and str(state.get("project_id")) == str(project_id)
+                and state.get("task_id") is None):
             return True
     try:
-        payload = {"changes": {"project_id": project_id}, "expected": expected}
+        payload = {"changes": {"project_id": project_id, "task_id": None}, "expected": expected}
         if context is not None:
             payload["context"] = context
         toggl_control.dispatch(sys.modules[__name__], "edit-current", payload)
@@ -2111,7 +2114,7 @@ def build_menu():
         )
     return pystray.Menu(
         *status_items,
-        pystray.MenuItem("Projects and tasks…", on_open_task_popup),
+        pystray.MenuItem("Projects, tasks, and activities…", on_open_task_popup),
         pystray.MenuItem("Open timer", on_open_timer, default=True),
         pystray.MenuItem("Project", pystray.Menu(*_tray_project_items())),
         pystray.MenuItem(
@@ -2276,6 +2279,7 @@ def _init_workspace():
             state["start_time"] = current["start"]
             state["description"] = current.get("description", "")
             state["project_id"] = current.get("project_id")
+            state["task_id"] = current.get("task_id")
             state["workspace_id"] = current.get("workspace_id") or state.get("workspace_id")
         else:
             state["tracking"] = False
