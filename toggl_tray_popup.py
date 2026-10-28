@@ -1,6 +1,7 @@
 """Left-click popup: projects, real tasks, and explicitly separate recent activities."""
 import threading
 import time
+from datetime import datetime, timezone
 from html import escape
 from gi.repository import Gtk, GLib, Gdk, Pango
 import toggl_projects
@@ -15,6 +16,33 @@ MAX_HEIGHT = 560
 
 _popup = None
 _closed_at = 0.0
+
+
+def running_timer(current, projects, tasks, now=None):
+    """Describe the current interval independently of filtered or hidden history."""
+    if not current.get('tracking'):
+        return None
+    workspace = str(current.get('workspace_id'))
+    project = next((item for item in projects
+                    if str(item.get('workspace_id')) == workspace
+                    and str(item.get('id')) == str(current.get('project_id'))), {})
+    task = next((item for item in tasks
+                 if str(item.get('workspace_id')) == workspace
+                 and str(item.get('project_id')) == str(current.get('project_id'))
+                 and str(item.get('id')) == str(current.get('task_id'))), {})
+    task_name = task.get('name') or ('Current task' if current.get('task_id') is not None else '')
+    description = ' '.join((current.get('description') or '').split())
+    project_name = project.get('name') or ('No project' if current.get('project_id') is None else 'Current project')
+    seconds = 0
+    try:
+        start = datetime.fromisoformat(current['start_time'].replace('Z', '+00:00'))
+        seconds = max(0, int(((now or datetime.now(timezone.utc)) - start).total_seconds()))
+    except (KeyError, AttributeError, TypeError, ValueError, OverflowError):
+        pass
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return dict(title=description or task_name or 'No description', project=project_name,
+                task=task_name if description else '', elapsed=f'{hours}:{minutes:02d}:{seconds:02d}')
 
 
 def project_action(current, project_id):
@@ -79,6 +107,9 @@ class TrayPopup:
         self.context = toggl_projects.context(app)
         self.expanded = set()
         self.busy = False
+        self.rendered_state = {}
+        self._render_key = None
+        self.tick_source = None
         self.window = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
         self.window.set_decorated(False)
         self.window.set_skip_taskbar_hint(True)
@@ -92,6 +123,11 @@ class TrayPopup:
             .toggl-tray-popup list row { padding: 5px 10px; }
             .toggl-tray-popup .project { font-weight: bold; }
             .toggl-tray-popup .running { font-weight: bold; }
+            .toggl-tray-popup .current-timer {
+                background-color: alpha(@theme_selected_bg_color, 0.13);
+                border-radius: 8px;
+                padding: 10px;
+            }
         ''')
         Gtk.StyleContext.add_provider_for_screen(self.window.get_screen(), self.css,
                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
@@ -103,6 +139,27 @@ class TrayPopup:
         self.search.connect('search-changed', lambda *_: self._fill())
         self.search.connect('activate', lambda *_: self._activate_first())
         box.pack_start(self.search, False, False, 0)
+        self.current = Gtk.Box(spacing=10)
+        self.current.get_style_context().add_class('current-timer')
+        details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.current_status = Gtk.Label(xalign=0)
+        self.current_title = Gtk.Label(xalign=0)
+        self.current_title.get_style_context().add_class('running')
+        self.current_project = Gtk.Label(xalign=0)
+        for label in (self.current_status, self.current_title, self.current_project):
+            label.set_ellipsize(Pango.EllipsizeMode.END)
+            details.pack_start(label, False, False, 0)
+        self.current.pack_start(details, True, True, 0)
+        actions = Gtk.Box(spacing=8)
+        actions.set_valign(Gtk.Align.CENTER)
+        self.stop = Gtk.Button(label='Stop')
+        self.stop.connect('clicked', self._stop_current)
+        self.edit = Gtk.Button(label='Edit')
+        self.edit.connect('clicked', self._edit_current)
+        actions.pack_start(self.stop, False, False, 0)
+        actions.pack_start(self.edit, False, False, 0)
+        self.current.pack_end(actions, False, False, 0)
+        box.pack_start(self.current, False, False, 0)
         self.list = Gtk.ListBox()
         self.list.set_selection_mode(Gtk.SelectionMode.NONE)
         self.list.set_activate_on_single_click(True)
@@ -126,10 +183,12 @@ class TrayPopup:
         self.window.connect('destroy', self._destroy)
         self._fill()
         self.window.show_all()
+        self.current.set_visible(bool(self.rendered_state.get('tracking')))
         self.message.set_visible(False)
         self._place(x, y)
         self.window.present()
         self.search.grab_focus()
+        self.tick_source = GLib.timeout_add_seconds(1, self._tick)
 
     def _place(self, x, y):
         display = Gdk.Display.get_default()
@@ -144,18 +203,67 @@ class TrayPopup:
         self.window.move(left, max(area.y, min(top, area.y+area.height-height)))
 
     def _fill(self):
+        if self.window is None:
+            return
+        adjustment = self.scroll.get_vadjustment()
+        position = adjustment.get_value()
         for child in self.list.get_children():
             self.list.remove(child)
         query = self.search.get_text()
         with self.app.state_lock:
             current = dict(self.app.state)
+        projects, tasks = self.app._cached_projects(), self.app._cached_tasks()
+        self._update_current(current, projects, tasks)
         groups = toggl_task_tree.tree(self.app)
-        for row in rows(groups, self.app._cached_projects(), current, query,
-                        self.app._cached_tasks(), self.expanded):
+        display_rows = rows(groups, projects, current, query, tasks, self.expanded)
+        for row in display_rows:
             self.list.add(self._row(row))
+        self._render_key = (current, projects, tasks, display_rows)
         self.list.show_all()
-        if not self.list.get_children():
+        GLib.idle_add(self._restore_scroll, position)
+        if not display_rows:
             self._say('No matching project, task, or activity.')
+        else:
+            self._say('')
+
+    def _update_current(self, current, projects, tasks):
+        self.rendered_state = dict(current)
+        info = running_timer(current, projects, tasks)
+        self.current.set_visible(info is not None)
+        if info:
+            self.current_status.set_text('Running · ' + info['elapsed'])
+            self.current_title.set_text(info['title'])
+            self.current_title.set_tooltip_text(info['title'])
+            project = 'Project: ' + info['project']
+            if info['task']:
+                project += ' · Task: ' + info['task']
+            self.current_project.set_text(project)
+            self.current_project.set_tooltip_text(project)
+
+    def _tick(self):
+        if self.window is None:
+            return False
+        if toggl_projects.context(self.app) != self.context:
+            self.window.destroy()
+            return False
+        if not self.busy:
+            with self.app.state_lock:
+                current = dict(self.app.state)
+            projects, tasks = self.app._cached_projects(), self.app._cached_tasks()
+            display_rows = rows(toggl_task_tree.tree(self.app), projects, current,
+                                self.search.get_text(), tasks, self.expanded)
+            if self._render_key != (current, projects, tasks, display_rows):
+                self._fill()
+            else:
+                self._update_current(current, projects, tasks)
+        return True
+
+    def _restore_scroll(self, position):
+        if self.window is not None:
+            adjustment = self.scroll.get_vadjustment()
+            adjustment.set_value(min(position, max(adjustment.get_lower(),
+                                                   adjustment.get_upper() - adjustment.get_page_size())))
+        return False
 
     def _row(self, row):
         widget = Gtk.ListBoxRow()
@@ -169,10 +277,6 @@ class TrayPopup:
             indent = Gtk.Label(label='')
             indent.set_margin_start(18)
             line.pack_start(indent, False, False, 0)
-            if row['active']:
-                dot = Gtk.Label()
-                dot.set_markup(f'<span foreground="{row["color"]}">●</span>')
-                line.pack_start(dot, False, False, 0)
         label = Gtk.Label(xalign=0)
         label.set_markup(escape(row['label']))
         label.set_ellipsize(Pango.EllipsizeMode.END)
@@ -180,6 +284,8 @@ class TrayPopup:
         if row['active']:
             label.get_style_context().add_class('running')
         line.pack_start(label, True, True, 0)
+        if row['active'] and row['kind'] in ('task', 'activity'):
+            line.pack_start(Gtk.Label(label='Running'), False, False, 0)
         if (row['kind'] == 'project' and row['project_id'] is not None
                 and toggl_tasks.capability(self.app) != 'unavailable'):
             add = Gtk.Button(label='New Task')
@@ -275,18 +381,47 @@ class TrayPopup:
         import toggl_task_window
         toggl_task_window.manage(self.app, self.window)
 
+    def _stop_current(self, *_):
+        if self.busy or self.window is None:
+            return
+        expected = dict(self.rendered_state)
+        self.busy = True
+        for widget in (self.list, self.stop, self.edit):
+            widget.set_sensitive(False)
+        self._say('Stopping…')
+
+        def worker():
+            error = None
+            try:
+                toggl_control.dispatch(self.app, 'stop', {'expected': expected, 'context': self.context})
+            except Exception as exc:
+                error = str(exc)
+            GLib.idle_add(self._finish, error)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _edit_current(self, *_):
+        if self.busy or self.window is None:
+            return
+        import toggl_timer_window
+        self.window.destroy()
+        toggl_timer_window.show(self.app)
+
     def _finish(self, error):
         if self.window is None:
             return False
         self.busy = False
         if error:
             self.list.set_sensitive(True)
+            self.stop.set_sensitive(True)
+            self.edit.set_sensitive(True)
             self._say(error)
         else:
             self.window.destroy()
         return False
 
     def _say(self, text):
+        if self.window is None:
+            return
         self.message.set_text(text)
         self.message.set_visible(bool(text))
 
@@ -304,6 +439,9 @@ class TrayPopup:
     def _destroy(self, *_):
         global _popup, _closed_at
         _closed_at = time.monotonic()
+        if self.tick_source is not None:
+            GLib.source_remove(self.tick_source)
+            self.tick_source = None
         self.window = None
         if _popup is self:
             _popup = None

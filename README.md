@@ -277,6 +277,11 @@ default. Activities can be started again, saved as real tasks, or hidden. A proj
 row can create a task, and **Manage Tasks** supports rename, archive, and restore.
 Type to search everything; Enter starts the first matching task or activity.
 
+The running timer stays pinned above the list with its description or task name,
+project, elapsed time, and **Stop** and **Edit** controls. Search, collapsed history,
+hidden activities, and archived tasks cannot hide it. It updates every second while
+the popup is open; matching task/activity rows also say **Running**.
+
 Right-click the tray icon for the full menu. **Projects, tasks, and activities…** at the top
 opens the same window (use it on desktops where left click opens the menu).
 **Project** lists the saved projects and **No project**: choosing one changes only
