@@ -216,6 +216,26 @@ Pending billable entries are not expired or garbage-collected automatically.
 
 ## Troubleshooting
 
+The running tray automatically keeps a timestamped debug log at
+`~/.local/share/toggl-tray/debug.log`. It records startup, timer events,
+command outcomes, API method/path/status/timing, stderr diagnostics, GTK warnings,
+and uncaught Python exceptions with tracebacks, including worker threads.
+It survives restarts and rotates at 2 MiB, retaining three older files
+(`debug.log.1` through `debug.log.3`). Files are owner-only (0600) in the private
+state directory. API tokens are redacted; headers, request bodies, and API query
+parameters are excluded from request diagnostics.
+
+To watch diagnostics live:
+
+```bash
+tail -F ~/.local/share/toggl-tray/debug.log
+```
+
+`events.jsonl` remains the separate timer/offline event ledger. `toggl doctor`
+shows both paths. The debug log can contain project/entry IDs and error details;
+review it before sharing. Native fatal signals such as a segmentation fault may
+still require a system crash report.
+
 **No tray icon appears**
 - Make sure your desktop has a system tray / notification area. On GNOME, you may need the [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/).
 - Install the appindicator library: `sudo apt install gir1.2-ayatanaappindicator3-0.1`

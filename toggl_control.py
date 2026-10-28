@@ -8,6 +8,7 @@ import time
 import toggl_projects
 import toggl_task_tree
 import toggl_tasks
+import toggl_debug
 from pathlib import Path
 
 MAX_MESSAGE = 2 * 1024 * 1024
@@ -167,6 +168,23 @@ def _resume_entry(app, selected):
 
 
 def dispatch(app, action, payload):
+    if action == 'snapshot':
+        return _dispatch(app, action, payload)
+    known = {'set-api-base', 'project-create', 'project-update', 'task-create', 'task-update',
+             'sync', 'refresh', 'start', 'switch', 'resume', 'stop', 'edit-current', 'edit-entry'}
+    label = action if isinstance(action, str) and action in known else 'unknown'
+    toggl_debug.LOGGER.debug('Control action=%s requested', label)
+    try:
+        result = _dispatch(app, action, payload)
+    except Exception:
+        toggl_debug.LOGGER.error('Control action=%s failed', label, exc_info=True)
+        raise
+    toggl_debug.LOGGER.info('Control action=%s completed tracking=%s entry_id=%s',
+                             label, app.state.get('tracking'), app.state.get('entry_id'))
+    return result
+
+
+def _dispatch(app, action, payload):
     if not isinstance(payload, dict):
         raise ControlError("Command payload must be an object")
     if action == "snapshot":
