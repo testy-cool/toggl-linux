@@ -4,7 +4,7 @@ import json
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import call, patch, MagicMock
 
 import pytest
 import requests
@@ -190,6 +190,18 @@ class TestPanelTimerLabel:
 
         idle_callback = toggl_tray.GLib.idle_add.call_args_list[-1].args[0]
         assert idle_callback() is False
+
+    def test_update_loop_marshals_tooltip_updates_onto_glib(self):
+        toggl_tray.icon_ref = MagicMock()
+        toggl_tray.native_status_icon_ref = MagicMock()
+        toggl_tray.GLib.idle_add.reset_mock()
+
+        with patch.object(toggl_tray.time, "sleep", side_effect=[None, RuntimeError("stop")]), \
+             patch.object(toggl_tray, "get_tooltip", return_value="Tracking: Safe"):
+            with pytest.raises(RuntimeError, match="stop"):
+                toggl_tray.update_loop()
+
+        assert call(toggl_tray._set_tray_tooltip, "Tracking: Safe") in toggl_tray.GLib.idle_add.call_args_list
 
 
 class TestDescriptionDialog:
@@ -913,6 +925,18 @@ class TestToggleTracking:
         assert toggl_tray.state["tracking"] is True
         assert toggl_tray.state["entry_id"] == "e1"
         mock_sound.assert_called_once_with(toggl_tray.SOUND_START)
+
+    @patch.object(toggl_tray, "start_entry", return_value={"id": "e1", "start": "2026-04-28T10:00:00+00:00"})
+    @patch.object(toggl_tray, "save_state")
+    @patch.object(toggl_tray, "_play_sound")
+    def test_start_marshals_tray_refresh_onto_glib(self, mock_sound, mock_save, mock_start):
+        toggl_tray.icon_ref = MagicMock()
+        toggl_tray.state.update(tracking=False, description="Work", project_id=6)
+        toggl_tray.GLib.idle_add.reset_mock()
+
+        toggl_tray.toggle_tracking(prompt_for_description=False)
+
+        assert call(toggl_tray._refresh_tray_menu) in toggl_tray.GLib.idle_add.call_args_list
 
     @patch.object(toggl_tray, "start_entry", return_value={"id": "e1", "start": "2026-04-28T10:00:00+00:00"})
     @patch.object(toggl_tray, "save_state")
