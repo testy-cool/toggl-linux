@@ -31,6 +31,21 @@ def test_rows_cap_tasks_unless_searching_and_hide_an_empty_no_project_group():
     assert not any(r['active'] for r in popup.rows([many], PROJECTS, stopped))
 
 
+def test_project_row_explains_that_it_starts_when_timer_is_stopped():
+    stopped = popup.rows([group(4, 'Stay Safe')], PROJECTS, dict(tracking=False))[0]
+    running = popup.rows([group(4, 'Stay Safe')], PROJECTS, dict(tracking=True))[0]
+
+    assert stopped['hint'] == 'Start a timer with this project'
+    assert running['hint'] == 'Use this project for the current timer'
+
+
+def test_stopped_project_choice_starts_blank_instead_of_reusing_old_task():
+    stopped = dict(tracking=False, project_id=4, description='Stay Safe')
+
+    assert popup.project_action(stopped, 6) == ('start', {'project_id': 6, 'description': ''})
+    assert popup.project_action(dict(stopped, tracking=True), 6) == ('edit-current', {'project_id': 6})
+
+
 def test_menu_item_opens_the_popup_even_without_a_pointer():
     from unittest.mock import MagicMock, patch
     display = MagicMock()

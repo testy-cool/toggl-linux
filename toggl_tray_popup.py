@@ -16,6 +16,13 @@ _popup = None
 _closed_at = 0.0
 
 
+def project_action(current, project_id):
+    """Choose explicit start semantics when there is no current timer to edit."""
+    if current.get('tracking'):
+        return 'edit-current', {'project_id': project_id}
+    return 'start', {'project_id': project_id, 'description': ''}
+
+
 def rows(groups, projects, current, query=''):
     """Flatten the tree into display rows. Pure, so it can be tested without GTK."""
     colors = {str(p.get('id')): p.get('color') for p in projects if isinstance(p, dict)}
@@ -29,7 +36,9 @@ def rows(groups, projects, current, query=''):
         color = colors.get(str(group['id'])) or NO_PROJECT_COLOR
         on_project = tracking and str(current.get('project_id')) == str(group['id'])
         result.append(dict(kind='project', project_id=group['id'], label=group.get('name') or str(group['id']),
-                           color=color, active=on_project))
+                           color=color, active=on_project,
+                           hint='Use this project for the current timer' if tracking
+                           else 'Start a timer with this project'))
         for index, task in enumerate(tasks):
             description = ' '.join(task['description'].split())
             result.append(dict(kind='task', project_id=group['id'], description=task['description'],
@@ -141,7 +150,7 @@ class TrayPopup:
             label.get_style_context().add_class('running')
         line.pack_start(label, True, True, 0)
         widget.add(line)
-        widget.set_tooltip_text('Start this task' if row['kind'] == 'task' else 'Use this project for the current timer')
+        widget.set_tooltip_text('Start this task' if row['kind'] == 'task' else row['hint'])
         return widget
 
     def _activate_first(self):
@@ -164,8 +173,9 @@ class TrayPopup:
                 if row['kind'] == 'task':
                     toggl_task_tree.select_task(self.app, row['project_id'], row['description'], self.context, expected)
                 else:
-                    toggl_control.dispatch(self.app, 'edit-current', {'changes': {'project_id': row['project_id']},
-                                           'expected': expected, 'context': self.context})
+                    action, changes = project_action(expected, row['project_id'])
+                    toggl_control.dispatch(self.app, action, {'changes': changes, 'expected': expected,
+                                                              'context': self.context})
             except Exception as exc:
                 error = str(exc)
             GLib.idle_add(self._finish, error)
