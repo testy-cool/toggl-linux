@@ -1069,6 +1069,14 @@ class TestStartEntryPayload:
         assert "project_id" not in payload
 
     @patch.object(toggl_tray, "api_post", return_value={"id": "x"})
+    def test_payload_keeps_task_separate_from_description(self, mock_post):
+        toggl_tray.start_entry("ws_1", description="Specific work", project_id="p_1", task_id="t_1")
+        payload = mock_post.call_args[0][1]
+        assert payload["description"] == "Specific work"
+        assert payload["project_id"] == "p_1"
+        assert payload["task_id"] == "t_1"
+
+    @patch.object(toggl_tray, "api_post", return_value={"id": "x"})
     def test_start_iso(self, mock_post):
         toggl_tray.start_entry("ws_1")
         payload = mock_post.call_args[0][1]

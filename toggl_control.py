@@ -7,6 +7,7 @@ import threading
 import time
 import toggl_projects
 import toggl_task_tree
+import toggl_tasks
 from pathlib import Path
 
 MAX_MESSAGE = 2 * 1024 * 1024
@@ -29,15 +30,16 @@ def snapshot(app):
     warnings = [getattr(app, "_control_warning", ""), getattr(app, "status_message", ""),
                 "Today's entries changed; refresh to update durations" if stale else ""]
     warning = " · ".join(dict.fromkeys(message for message in warnings if message))
-    return {"state": current, "projects": app._cached_projects(), "entries": entries,
+    return {"state": current, "projects": app._cached_projects(), "tasks": app._cached_tasks(),
+            "task_capability": toggl_tasks.capability(app), "entries": entries,
             "pending_count": len(app._load_pending()), "warning": warning,
             "project_context": toggl_projects.context(app), "projects_url": toggl_projects.projects_url(app)}
 
 
 def _changes(app, values, context=None):
     context = app.state if context is None else context
-    if not isinstance(values, dict) or set(values) - {"description", "project_id", "start"}:
-        raise ControlError("Only description, project, and current start time may be edited")
+    if not isinstance(values, dict) or set(values) - {"description", "project_id", "task_id", "start"}:
+        raise ControlError("Only description, project, task, and current start time may be edited")
     if "description" in values and (not isinstance(values["description"], str) or len(values["description"]) > 10000):
         raise ControlError("Description must be text of at most 10000 characters")
     result = dict(values)
@@ -51,13 +53,25 @@ def _changes(app, values, context=None):
     if result.get("project_id") is not None:
         if str(result["project_id"]) == str(context.get("project_id")):
             result["project_id"] = context["project_id"]
-            return result
-        project = next((p for p in app._cached_projects() if str(p.get("id")) == str(result["project_id"])
-                        and str(p.get("workspace_id")) == str(context.get("workspace_id"))
-                        ), None)
-        if not project:
-            raise ControlError("Project is unavailable; refresh the project list")
-        result["project_id"] = project["id"]
+        else:
+            project = next((p for p in app._cached_projects() if str(p.get("id")) == str(result["project_id"])
+                            and str(p.get("workspace_id")) == str(context.get("workspace_id"))), None)
+            if not project:
+                raise ControlError("Project is unavailable; refresh the project list")
+            result["project_id"] = project["id"]
+    target_project = result.get("project_id", context.get("project_id"))
+    if result.get("task_id") is not None:
+        task = next((t for t in app._cached_tasks() if str(t.get("id")) == str(result["task_id"])
+                    and str(t.get("workspace_id")) == str(context.get("workspace_id"))
+                    and t.get("active") is not False), None)
+        if not task:
+            raise ControlError("Task is unavailable; refresh the task list")
+        result["task_id"] = task["id"]
+        result["project_id"] = task["project_id"]
+    elif "task_id" in result:
+        result["task_id"] = None
+    elif context.get("task_id") is not None and str(target_project) != str(context.get("project_id")):
+        result["task_id"] = None
     return result
 
 
@@ -65,7 +79,7 @@ def _edit_current(app, changes, expected=None):
     with app.state_lock:
         current = dict(app.state)
         if expected is not None and any(current.get(k) != expected.get(k) for k in
-                                       ("tracking", "entry_id", "start_time", "description", "project_id", "workspace_id")):
+                                       ("tracking", "entry_id", "start_time", "description", "project_id", "task_id", "workspace_id")):
             raise ControlError("Timer changed; refresh before editing")
     if "start" in changes and not current.get("tracking"):
         raise ControlError("Start time can only be changed while tracking")
@@ -134,7 +148,7 @@ def _edit_entry(app, selected, changes):
 
 def _resume_entry(app, selected):
     """Resolve a completed selection before changing the running interval."""
-    fields = ("id", "start", "stop", "duration", "description", "project_id", "workspace_id",
+    fields = ("id", "start", "stop", "duration", "description", "project_id", "task_id", "workspace_id",
               "_offline", "_pending_kind", "_pending_ids", "_remote_entry_id")
     if not isinstance(selected, dict):
         raise ControlError("Entry changed; refresh before resuming")
@@ -176,6 +190,16 @@ def dispatch(app, action, payload):
         result = snapshot(app)
         result["saved_project"] = saved
         return result
+    if action in {"task-create", "task-update"}:
+        with app.toggle_lock:
+            try:
+                saved = toggl_tasks.write(app, action, payload)
+            except toggl_tasks.TaskError as error:
+                raise ControlError(str(error)) from error
+        app._clear_status_message()
+        result = snapshot(app)
+        result["saved_task"] = saved
+        return result
     if action == "sync":
         with app.toggle_lock:
             app._run_sync_cycle()
@@ -185,6 +209,7 @@ def dispatch(app, action, payload):
         if last is None or time.monotonic() - last >= 60:
             app._control_refreshed_at = time.monotonic()
             app._refresh_projects()
+            app._refresh_tasks(force=True)
             try:
                 if not app.api_token or app._rate_limit_active() or app._request_budget_remaining() <= app.REQUEST_BUDGET_BACKGROUND_RESERVE:
                     raise ControlError("Cloud refresh unavailable; showing cached and pending entries")
@@ -205,7 +230,7 @@ def dispatch(app, action, payload):
             raise ControlError("Timer changed; refresh before resuming")
         if action in {"edit-current", "switch", "resume", "start", "stop"} and "expected" in payload:
             expected = payload["expected"]
-            fields = ("tracking", "entry_id", "start_time", "description", "project_id")
+            fields = ("tracking", "entry_id", "start_time", "description", "project_id", "task_id")
             if action == "resume":
                 fields += ("workspace_id",)
             if not isinstance(expected, dict) or any(expected.get(k) != before.get(k) for k in fields):
@@ -213,7 +238,10 @@ def dispatch(app, action, payload):
         if action == "resume":
             entry = _resume_entry(app, payload.get("entry"))
             changes = _changes(app, {"description": entry.get("description", ""),
-                                     "project_id": entry.get("project_id")}, entry)
+                                     "project_id": entry.get("project_id"),
+                                     "task_id": entry.get("task_id") if any(
+                                         str(t.get("id")) == str(entry.get("task_id")) and t.get("active") is not False
+                                         for t in app._cached_tasks()) else None}, entry)
             if app.state.get("tracking"):
                 app.toggle_tracking(prompt_for_description=False)
             _edit_current(app, dict(changes, workspace_id=entry["workspace_id"]))
@@ -243,6 +271,7 @@ def dispatch(app, action, payload):
         current = app.state
         entry = {"id": current["entry_id"], "workspace_id": current["workspace_id"],
                  "description": current.get("description", ""), "project_id": current.get("project_id"),
+                 "task_id": current.get("task_id"),
                  "start": current["start_time"], "stop": None,
                  "duration": -int(app._coerce_datetime(current["start_time"]).timestamp())}
         cache = getattr(app, "_control_entries", [])
@@ -253,14 +282,14 @@ def dispatch(app, action, payload):
     return snapshot(app)
 
 
-def record_stop(app, entry_id, start, description, workspace_id, project_id, stop):
+def record_stop(app, entry_id, start, description, workspace_id, project_id, task_id, stop):
     """Keep cached durations correct when stopping through any tray path."""
     if not entry_id or not start:
         return
     today = app.datetime.now().date().isoformat()
     cache = getattr(app, "_control_entries", []) if getattr(app, "_control_entries_date", "") == today else []
     entry = {"id": entry_id, "workspace_id": workspace_id, "project_id": project_id,
-             "description": description, "start": start, "stop": stop,
+             "task_id": task_id, "description": description, "start": start, "stop": stop,
              "duration": app._duration_seconds(start, stop)}
     app._control_entries = [e for e in cache if e.get("id") != entry_id] + [entry]
     app._control_entries_date = today
