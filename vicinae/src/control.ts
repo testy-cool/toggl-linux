@@ -3,13 +3,15 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 export interface Project { id: number | string; workspace_id: number | string; name: string; color: string | null; active?: boolean }
-export interface Entry { workspace_id?: number | string; id: number | string; description: string; project_id?: number | string | null; start: string; stop?: string | null; duration: number; _offline?: boolean; [key: string]: unknown }
+export interface Task { id: number | string; workspace_id: number | string; project_id: number | string; name: string; active?: boolean }
+export interface Entry { workspace_id?: number | string; id: number | string; description: string; project_id?: number | string | null; task_id?: number | string | null; start: string; stop?: string | null; duration: number; _offline?: boolean; [key: string]: unknown }
 export interface Snapshot {
-  state: { tracking: boolean; description: string; project_id: number | string | null; workspace_id: number | string | null; start_time: string | null; entry_id: number | string | null };
-  projects: Project[]; entries: Entry[]; pending_count: number; warning: string;
+  state: { tracking: boolean; description: string; project_id: number | string | null; task_id: number | string | null; workspace_id: number | string | null; start_time: string | null; entry_id: number | string | null };
+  projects: Project[]; tasks: Task[]; task_capability: "unknown" | "supported" | "unavailable"; entries: Entry[]; pending_count: number; warning: string;
   project_context: { workspace_id: number | string | null; account: string | null };
   projects_url: string | null;
   saved_project?: Project;
+  saved_task?: Task;
 }
 
 export function control(cliPath: string | undefined, action: string, payload: object = {}): Promise<Snapshot> {
@@ -53,14 +55,26 @@ export function projectChoices(snapshot: Snapshot, current: { workspace_id?: num
     && (p.active !== false || String(p.id) === String(current.project_id)));
 }
 
-export function timerChanges(current: Pick<Entry, "description" | "project_id">, values: { description?: unknown; project?: unknown }) {
-  const changes: { description?: string; project_id?: string | null } = {};
+export function taskChoices(snapshot: Snapshot, current: { workspace_id?: number | string | null; project_id?: number | string | null; task_id?: number | string | null }): Task[] {
+  const workspace = current.workspace_id ?? snapshot.state.workspace_id;
+  return snapshot.tasks.filter(task => String(task.workspace_id) === String(workspace)
+    && String(task.project_id) === String(current.project_id)
+    && (task.active !== false || String(task.id) === String(current.task_id)));
+}
+
+export function timerChanges(current: Pick<Entry, "description" | "project_id" | "task_id">, values: { description?: unknown; project?: unknown; task?: unknown }) {
+  const changes: { description?: string; project_id?: string | null; task_id?: string | null } = {};
   const description = String(values.description ?? "");
   if (description !== (current.description || "")) changes.description = description;
   if (values.project !== undefined) {
     const project = values.project === "none" ? null : String(values.project);
     const previous = current.project_id == null ? null : String(current.project_id);
     if (project !== previous) changes.project_id = project;
+  }
+  if (values.task !== undefined) {
+    const task = values.task === "none" ? null : String(values.task);
+    const previous = current.task_id == null ? null : String(current.task_id);
+    if (task !== previous) changes.task_id = task;
   }
   return changes;
 }
@@ -76,6 +90,20 @@ export function projectCommand(context: Snapshot["project_context"], name: strin
       context: { ...context },
       ...(project ? { project: { id: project.id, workspace_id: project.workspace_id, name: project.name, color: project.color } } : {}),
       name, color,
+    },
+  };
+}
+
+export function taskCommand(context: Snapshot["project_context"], name: string, projectId: string, task?: Task, active = true) {
+  name = name.trim();
+  if (!name || name.length > 200) throw new Error("Enter a task name of 1 to 200 characters.");
+  if (!projectId || projectId === "none") throw new Error("Choose a project for this task.");
+  return {
+    action: task ? "task-update" : "task-create",
+    payload: {
+      context: { ...context },
+      ...(task ? { task: { ...task } } : { project_id: projectId }),
+      name, active,
     },
   };
 }

@@ -1,4 +1,4 @@
-"""Bounded, account-scoped project/task history for instant tray choices."""
+"""Bounded, account-scoped recent activities for instant tray choices."""
 import json
 import threading
 import time
@@ -20,6 +20,8 @@ def _cache(app):
         data[key] = [e for e in data.get(key, []) if isinstance(e, dict)] if isinstance(data.get(key), list) else []
     if not isinstance(data.get('fetched_at', 0), (int, float)):
         data['fetched_at'] = 0
+    if not isinstance(data.get('hidden_activities'), list):
+        data['hidden_activities'] = []
     return data
 
 
@@ -76,11 +78,12 @@ def refresh(app, force=False):
             cloud = _bounded(entries)
             cloud_starts = {_stamp(e.get('start')) for e in cloud}
             local = [e for e in cache.get('local_entries', []) if _stamp(e.get('start')) not in cloud_starts]
-            data = dict(context=scope, fetched_at=now, entries=cloud, local_entries=local)
+            data = dict(context=scope, fetched_at=now, entries=cloud, local_entries=local,
+                        hidden_activities=cache.get('hidden_activities', []))
             _save(app, data)
         return True
     except Exception as error:
-        print(f'Project/task history unavailable: {error}', file=app.sys.stderr)
+        print(f'Recent activity history unavailable: {error}', file=app.sys.stderr)
         return False
     finally:
         _refresh_lock.release()
@@ -112,7 +115,8 @@ def remember(app, current):
         return
     entry = dict(id=current.get('entry_id') or 'local:'+current['start_time'],
                  start=current['start_time'], workspace_id=current.get('workspace_id'),
-                 project_id=current.get('project_id'), description=current.get('description', ''))
+                 project_id=current.get('project_id'), task_id=current.get('task_id'),
+                 description=current.get('description', ''))
     try:
         with _cache_lock:
             data = _cache(app)
@@ -120,17 +124,21 @@ def remember(app, current):
             data.update(context=toggl_projects.context(app), local_entries=_bounded([entry]+local))
             _save(app, data)
     except OSError as error:
-        print(f'Project/task history not saved: {error}', file=app.sys.stderr)
+        print(f'Recent activity history not saved: {error}', file=app.sys.stderr)
 
 
-def group_projects(projects, entries, workspace, query='', now=None):
+def _activity_key(project_id, description):
+    return f"{project_id!s}\0{' '.join((description or '').split()).casefold()}"
+
+
+def group_projects(projects, entries, workspace, query='', now=None, hidden=()):
     now = now or datetime.now(timezone.utc)
     cutoff = (now-timedelta(days=HISTORY_DAYS)).timestamp()
-    groups = {str(p['id']): dict(p, tasks=[], count=0, last_used=0) for p in projects
+    groups = {str(p['id']): dict(p, activities=[], count=0, last_used=0) for p in projects
               if isinstance(p, dict) and p.get('id') is not None and p.get('active') is not False
               and str(p.get('workspace_id')) == str(workspace)}
-    groups['None'] = dict(id=None, workspace_id=workspace, name='No project', tasks=[], count=0, last_used=0)
-    tasks, seen = {}, set()
+    groups['None'] = dict(id=None, workspace_id=workspace, name='No project', activities=[], count=0, last_used=0)
+    activities, seen = {}, set()
     remote_ids = {_stamp(e.get('start')): str(e['id']) for e in entries if isinstance(e, dict) and e.get('id') is not None
                   and not e.get('_offline') and not str(e['id']).startswith(('local:', 'pending:'))
                   and str(e.get('workspace_id')) == str(workspace)}
@@ -140,7 +148,9 @@ def group_projects(projects, entries, workspace, query='', now=None):
         stamp = _stamp(entry.get('start'))
         project = groups.get(str(entry.get('project_id')))
         description = entry.get('description') or ''
-        if stamp is None or not cutoff <= stamp <= now.timestamp()+60 or project is None or not isinstance(description, str):
+        if (stamp is None or not cutoff <= stamp <= now.timestamp()+60 or project is None
+                or not isinstance(description, str) or entry.get('task_id') is not None
+                or _activity_key(project['id'], description) in hidden):
             continue
         identity = str(entry.get('_remote_entry_id') or entry.get('id') or 'local:'+entry['start'])
         if identity.startswith(('local:', 'pending:')):
@@ -149,20 +159,22 @@ def group_projects(projects, entries, workspace, query='', now=None):
             continue
         seen.add(identity)
         key = (str(project['id']), description)
-        task = tasks.setdefault(key, dict(project_id=project['id'], description=description, count=0, last_used=0))
-        task['count'] += 1
-        task['last_used'] = max(task['last_used'], stamp)
+        activity = activities.setdefault(key, dict(project_id=project['id'], description=description,
+                                                    count=0, last_used=0))
+        activity['count'] += 1
+        activity['last_used'] = max(activity['last_used'], stamp)
         project['count'] += 1
         project['last_used'] = max(project['last_used'], stamp)
     needle = query.strip().casefold()
     result = []
     for key, project in groups.items():
-        children = [t for (pid, _), t in tasks.items() if pid == key]
+        children = [t for (pid, _), t in activities.items() if pid == key]
         if needle and needle not in (project.get('name') or '').casefold():
             children = [t for t in children if needle in t['description'].casefold()]
             if not children:
                 continue
-        project['tasks'] = sorted(children, key=lambda t: (-t['last_used'], -t['count'], t['description'].casefold()))
+        project['activities'] = sorted(children, key=lambda t: (-t['last_used'], -t['count'], t['description'].casefold()))
+        project['tasks'] = project['activities']  # Compatibility for integrations updated independently.
         result.append(project)
     return sorted(result, key=lambda p: (-p['last_used'], -p['count'], (p.get('name') or '').casefold()))
 
@@ -181,8 +193,10 @@ def tree(app, query='', now=None):
     if current.get('tracking') and current.get('start_time') and not _other_account(app, current, scope):
         entries = [dict(id=current.get('entry_id') or 'local:'+current['start_time'], start=current['start_time'],
                         workspace_id=current.get('workspace_id'), project_id=current.get('project_id'),
+                        task_id=current.get('task_id'),
                         description=current.get('description', ''))]+entries
-    return group_projects(app._cached_projects(), entries, current.get('workspace_id'), query, now)
+    return group_projects(app._cached_projects(), entries, current.get('workspace_id'), query, now,
+                          set(_cache(app).get('hidden_activities', [])))
 
 
 def _remote_id(entry):
@@ -199,6 +213,7 @@ def _same_interval(cached, edited):
     return (_stamp(cached.get('start')) == _stamp(edited.get('start'))
             and str(cached.get('workspace_id')) == str(edited.get('workspace_id'))
             and str(cached.get('project_id')) == str(edited.get('project_id'))
+            and str(cached.get('task_id')) == str(edited.get('task_id'))
             and (cached.get('description') or '') == (edited.get('description') or ''))
 
 
@@ -206,7 +221,7 @@ def correct(app, edited, changes):
     """Apply an interval edit to its cached copy, so the tree never offers the old text.
 
     `edited` is the interval as it was before the edit."""
-    fields = {k: changes[k] for k in ('description', 'project_id', 'start') if k in changes}
+    fields = {k: changes[k] for k in ('description', 'project_id', 'task_id', 'start') if k in changes}
     if not fields or _stamp(edited.get('start')) is None:
         return
     try:
@@ -219,7 +234,7 @@ def correct(app, edited, changes):
             data['edited_at'] = time.time()
             _save(app, data)
     except OSError as error:
-        print(f'Project/task history not saved: {error}', file=app.sys.stderr)
+        print(f'Recent activity history not saved: {error}', file=app.sys.stderr)
 
 
 def forget(app, deleted):
@@ -235,16 +250,32 @@ def forget(app, deleted):
             data['edited_at'] = time.time()
             _save(app, data)
     except OSError as error:
-        print(f'Project/task history not saved: {error}', file=app.sys.stderr)
+        print(f'Recent activity history not saved: {error}', file=app.sys.stderr)
 
 
-def select_task(app, project_id, description, context, expected):
+def hide_activity(app, project_id, description):
+    """Hide one normalized project/description pair from future suggestions."""
+    key = _activity_key(project_id, description)
+    try:
+        with _cache_lock:
+            data = _cache(app) or dict(context=toggl_projects.context(app), fetched_at=0,
+                                       entries=[], local_entries=[])
+            hidden = list(dict.fromkeys(data.get('hidden_activities', []) + [key]))
+            data.update(context=toggl_projects.context(app), hidden_activities=hidden[-500:])
+            _save(app, data)
+    except OSError as error:
+        raise ValueError(f'Recent activity could not be hidden: {error}') from error
+
+
+def select_task(app, project_id, description, context, expected, task_id=None):
     import toggl_control
     if context != toggl_projects.context(app):
         raise ValueError('Account or workspace changed; reopen projects and tasks')
     # Choosing the task that is already running keeps its timer instead of restarting it.
     if (expected.get('tracking') and str(expected.get('project_id')) == str(project_id)
+            and str(expected.get('task_id')) == str(task_id)
             and ' '.join((expected.get('description') or '').split()) == ' '.join(description.split())):
         return None
-    return toggl_control.dispatch(app, 'switch', {'changes': {'project_id': project_id, 'description': description},
+    return toggl_control.dispatch(app, 'switch', {'changes': {'project_id': project_id,
+                                                'task_id': task_id, 'description': description},
                                                 'expected': expected, 'context': context})

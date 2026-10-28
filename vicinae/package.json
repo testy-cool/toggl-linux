@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/vicinaehq/vicinae/refs/heads/main/extra/schemas/extension.json",
   "name": "toggl-tray",
   "title": "Toggl Tray",
-  "description": "Manage your tray timer, projects, and today's entries",
+  "description": "Manage your tray timer, projects, tasks, and today's entries",
   "categories": ["Productivity"],
   "license": "MIT",
   "author": "testycool",

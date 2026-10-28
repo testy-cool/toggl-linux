@@ -47,10 +47,11 @@ def test_non_edit_actions_preserve_a_dirty_description_and_project(action):
     view.window = MagicMock()
     view.baseline = dict(tracking=True, description='Saved', project_id=7,
                          start_time='2026-10-25T10:00:00+00:00')
-    for name in ['toggle', 'new_task', 'save', 'resume', 'description', 'project', 'start', 'message', 'reload']:
+    for name in ['toggle', 'new_task', 'save', 'resume', 'description', 'project', 'task', 'start', 'message', 'reload']:
         setattr(view, name, MagicMock())
     view.description.get_text.return_value = 'Unsaved next task'
     view.project.get_active_id.return_value = '8'
+    view.task.get_active_id.return_value = 'none'
     view._headers = MagicMock()
     view._load = MagicMock()
     state = dict(view.baseline, tracking=action != 'stop')
@@ -160,6 +161,13 @@ def test_description_and_project_can_be_corrected_together():
     assert editor.editor_changes(app,state,"After","none","")=={"description":"After","project_id":None}
 
 
+def test_task_selection_is_an_independent_timer_field():
+    state = dict(description="Details", project_id=7, task_id=31, tracking=False)
+    assert editor.editor_changes(app, state, "Details", "7", "", "31") == {}
+    assert editor.editor_changes(app, state, "Details", "7", "", "none") == {"task_id": None}
+    assert editor.editor_changes(app, state, "", "7", "", "32") == {"description": "", "task_id": "32"}
+
+
 def test_invalid_start_text_is_rejected_before_saving_any_field():
     state=dict(description="Before",project_id=7,tracking=True,start_time="2026-10-25T10:00:00+00:00")
     with pytest.raises(ValueError,match="HH:MM"):
@@ -182,6 +190,7 @@ def test_start_button_uses_the_displayed_state_and_supplies_guard():
     view.baseline=dict(view.rendered_state)
     view.description=MagicMock();view.description.get_text.return_value="New work"
     view.project=MagicMock();view.project.get_active_id.return_value="none"
+    view.task=MagicMock();view.task.get_active_id.return_value="none"
     view._act=MagicMock()
     view._toggle()
     assert view._act.call_args.args[0]=='start'
@@ -192,7 +201,7 @@ def test_editor_fields_are_frozen_while_request_is_pending():
     from unittest.mock import MagicMock,patch
     view=editor.TimerEditor.__new__(editor.TimerEditor)
     view.app=app;view.busy=False
-    for name in ['toggle','new_task','save','resume','description','project','start','message']:
+    for name in ['toggle','new_task','save','resume','description','project','task','start','message']:
         setattr(view,name,MagicMock())
     with patch.object(editor.threading,'Thread'):
         view._act('edit-current',{})
@@ -209,6 +218,7 @@ def test_start_with_dirty_fields_guards_the_state_those_fields_came_from():
     app.state.update(view.rendered_state)
     view.description=MagicMock();view.description.get_text.return_value="Old task edited before replacement"
     view.project=MagicMock();view.project.get_active_id.return_value="none"
+    view.task=MagicMock();view.task.get_active_id.return_value="none"
     view._act=MagicMock()
     view._toggle()
     assert view._act.call_args.args[0]=='start'

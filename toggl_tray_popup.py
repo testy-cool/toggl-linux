@@ -1,14 +1,15 @@
-"""Left-click popup under the tray icon: a coloured project/task tree, one click to start."""
+"""Left-click popup: projects, real tasks, and explicitly separate recent activities."""
 import threading
 import time
 from html import escape
 from gi.repository import Gtk, GLib, Gdk, Pango
 import toggl_projects
 import toggl_task_tree
+import toggl_tasks
 import toggl_control
 
 NO_PROJECT_COLOR = '#8a8a8a'
-TASKS_PER_PROJECT = 5
+ACTIVITIES_PER_PROJECT = 5
 WIDTH = 440
 MAX_HEIGHT = 560
 
@@ -19,19 +20,30 @@ _closed_at = 0.0
 def project_action(current, project_id):
     """Choose explicit start semantics when there is no current timer to edit."""
     if current.get('tracking'):
-        return 'edit-current', {'project_id': project_id}
-    return 'start', {'project_id': project_id, 'description': ''}
+        return 'edit-current', {'project_id': project_id, 'task_id': None}
+    return 'start', {'project_id': project_id, 'task_id': None, 'description': ''}
 
 
-def rows(groups, projects, current, query=''):
+def rows(groups, projects, current, query='', tasks=None, expanded=()):
     """Flatten the tree into display rows. Pure, so it can be tested without GTK."""
     colors = {str(p.get('id')): p.get('color') for p in projects if isinstance(p, dict)}
     tracking = bool(current.get('tracking'))
     running = ' '.join((current.get('description') or '').split())
+    tasks = tasks or []
+    needle = query.strip().casefold()
     result = []
     for group in groups:
-        tasks = group['tasks'] if query.strip() else group['tasks'][:TASKS_PER_PROJECT]
-        if not tasks and group['id'] is None:
+        activities = group.get('activities', group.get('tasks', []))
+        server_tasks = [task for task in tasks if str(task.get('project_id')) == str(group['id'])
+                        and task.get('active') is not False]
+        project_match = needle and needle in (group.get('name') or '').casefold()
+        if needle and not project_match:
+            server_tasks = [task for task in server_tasks if needle in task.get('name', '').casefold()]
+            activities = [activity for activity in activities
+                          if needle in activity.get('description', '').casefold()]
+        if not server_tasks and not activities and group['id'] is None:
+            continue
+        if needle and not project_match and not server_tasks and not activities:
             continue
         color = colors.get(str(group['id'])) or NO_PROJECT_COLOR
         on_project = tracking and str(current.get('project_id')) == str(group['id'])
@@ -39,12 +51,25 @@ def rows(groups, projects, current, query=''):
                            color=color, active=on_project,
                            hint='Use this project for the current timer' if tracking
                            else 'Start a timer with this project'))
-        for index, task in enumerate(tasks):
-            description = ' '.join(task['description'].split())
-            result.append(dict(kind='task', project_id=group['id'], description=task['description'],
-                               label=description or 'No description', color=color,
-                               active=on_project and description == running,
-                               last=index == len(tasks)-1))
+        for task in sorted(server_tasks, key=lambda item: item.get('name', '').casefold()):
+            result.append(dict(kind='task', project_id=group['id'], task_id=task['id'], task=task,
+                               description='', label=task.get('name') or 'Unnamed task', color=color,
+                               active=on_project and str(current.get('task_id')) == str(task['id'])))
+        if activities:
+            if needle or str(group['id']) in {str(item) for item in expanded}:
+                visible = activities if needle else activities[:ACTIVITIES_PER_PROJECT]
+                result.append(dict(kind='activity-heading', project_id=group['id'],
+                                   label='Recent activities', color=color, active=False))
+                for activity in visible:
+                    description = ' '.join(activity['description'].split())
+                    result.append(dict(kind='activity', project_id=group['id'], task_id=None,
+                                       description=activity['description'], label=description or 'No description',
+                                       color=color, active=on_project and current.get('task_id') is None
+                                       and description == running))
+            else:
+                result.append(dict(kind='activity-toggle', project_id=group['id'],
+                                   label=f'Show {len(activities)} recent activit' + ('y' if len(activities) == 1 else 'ies'),
+                                   color=color, active=False))
     return result
 
 
@@ -52,6 +77,7 @@ class TrayPopup:
     def __init__(self, app, x, y):
         self.app = app
         self.context = toggl_projects.context(app)
+        self.expanded = set()
         self.busy = False
         self.window = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
         self.window.set_decorated(False)
@@ -73,7 +99,7 @@ class TrayPopup:
         for side in ('top', 'bottom', 'start', 'end'):
             getattr(box, 'set_margin_'+side)(10)
         self.window.add(box)
-        self.search = Gtk.SearchEntry(placeholder_text='Search projects and tasks…')
+        self.search = Gtk.SearchEntry(placeholder_text='Search projects, tasks, and activities…')
         self.search.connect('search-changed', lambda *_: self._fill())
         self.search.connect('activate', lambda *_: self._activate_first())
         box.pack_start(self.search, False, False, 0)
@@ -90,6 +116,10 @@ class TrayPopup:
         self.message = Gtk.Label(xalign=0)
         self.message.set_line_wrap(True)
         box.pack_start(self.message, False, False, 0)
+        manage = Gtk.Button(label='Manage Tasks')
+        manage.connect('clicked', self._manage_tasks)
+        manage.set_sensitive(toggl_tasks.capability(app) != 'unavailable')
+        box.pack_start(manage, False, False, 0)
         self.window.set_size_request(WIDTH, -1)
         self.window.connect('key-press-event', self._key)
         self.window.connect('focus-out-event', lambda *_: self._close_unless_busy())
@@ -119,12 +149,13 @@ class TrayPopup:
         query = self.search.get_text()
         with self.app.state_lock:
             current = dict(self.app.state)
-        groups = toggl_task_tree.tree(self.app, query=query)
-        for row in rows(groups, self.app._cached_projects(), current, query):
+        groups = toggl_task_tree.tree(self.app)
+        for row in rows(groups, self.app._cached_projects(), current, query,
+                        self.app._cached_tasks(), self.expanded):
             self.list.add(self._row(row))
         self.list.show_all()
         if not self.list.get_children():
-            self._say('No matching project or task.')
+            self._say('No matching project, task, or activity.')
 
     def _row(self, row):
         widget = Gtk.ListBoxRow()
@@ -135,9 +166,9 @@ class TrayPopup:
             dot.set_markup(f'<span foreground="{row["color"]}">●</span>')
             line.pack_start(dot, False, False, 0)
         else:
-            branch = Gtk.Label(label=('└─' if row['last'] else '├─'))
-            branch.set_margin_start(8)
-            line.pack_start(branch, False, False, 0)
+            indent = Gtk.Label(label='')
+            indent.set_margin_start(18)
+            line.pack_start(indent, False, False, 0)
             if row['active']:
                 dot = Gtk.Label()
                 dot.set_markup(f'<span foreground="{row["color"]}">●</span>')
@@ -149,12 +180,38 @@ class TrayPopup:
         if row['active']:
             label.get_style_context().add_class('running')
         line.pack_start(label, True, True, 0)
+        if (row['kind'] == 'project' and row['project_id'] is not None
+                and toggl_tasks.capability(self.app) != 'unavailable'):
+            add = Gtk.Button(label='New Task')
+            add.connect('clicked', lambda *_: self._new_task(row['project_id']))
+            line.pack_end(add, False, False, 0)
+        elif row['kind'] == 'task':
+            edit = Gtk.Button(label='Edit')
+            edit.connect('clicked', lambda *_: self._edit_task(row['task']))
+            line.pack_end(edit, False, False, 0)
+        elif row['kind'] == 'activity':
+            save = Gtk.Button(label='Save as Task')
+            save.connect('clicked', lambda *_: self._save_activity(row))
+            hide = Gtk.Button(label='Hide')
+            hide.connect('clicked', lambda *_: self._hide_activity(row))
+            line.pack_end(hide, False, False, 0)
+            if row['project_id'] is not None:
+                line.pack_end(save, False, False, 0)
         widget.add(line)
-        widget.set_tooltip_text('Start this task' if row['kind'] == 'task' else row['hint'])
+        if row['kind'] == 'task':
+            widget.set_tooltip_text('Start this task with a blank description')
+        elif row['kind'] == 'activity':
+            widget.set_tooltip_text('Start this recent activity again')
+        elif row['kind'] == 'project':
+            widget.set_tooltip_text(row['hint'])
+        elif row['kind'] == 'activity-toggle':
+            widget.set_tooltip_text('Show recent time-entry descriptions')
+        else:
+            widget.set_activatable(False)
         return widget
 
     def _activate_first(self):
-        task = next((r for r in self.list.get_children() if r.data['kind'] == 'task'), None)
+        task = next((r for r in self.list.get_children() if r.data['kind'] in ('task', 'activity')), None)
         if task is not None:
             self._clicked(self.list, task)
 
@@ -162,16 +219,23 @@ class TrayPopup:
         if self.busy:
             return
         row = widget.data
+        if row['kind'] == 'activity-heading':
+            return
+        if row['kind'] == 'activity-toggle':
+            self.expanded.add(row['project_id'])
+            self._fill()
+            return
         with self.app.state_lock:
             expected = dict(self.app.state)
         self.busy = True
         self.list.set_sensitive(False)
-        self._say('Starting task…' if row['kind'] == 'task' else 'Assigning project…')
+        self._say('Starting…' if row['kind'] in ('task', 'activity') else 'Assigning project…')
         def work():
             error = None
             try:
-                if row['kind'] == 'task':
-                    toggl_task_tree.select_task(self.app, row['project_id'], row['description'], self.context, expected)
+                if row['kind'] in ('task', 'activity'):
+                    toggl_task_tree.select_task(self.app, row['project_id'], row['description'], self.context,
+                                                expected, row.get('task_id'))
                 else:
                     action, changes = project_action(expected, row['project_id'])
                     toggl_control.dispatch(self.app, action, {'changes': changes, 'expected': expected,
@@ -180,6 +244,36 @@ class TrayPopup:
                 error = str(exc)
             GLib.idle_add(self._finish, error)
         threading.Thread(target=work, daemon=True).start()
+
+    def _new_task(self, project_id, name='', start=False):
+        import toggl_task_window
+        editor = toggl_task_window.show(self.app, project_id, parent=self.window,
+                                        on_saved=lambda _snapshot: self._fill(), start=start)
+        if name:
+            key = next((key for key, value in toggl_task_window._editors.items()
+                        if value.project_id == project_id and value.original is None), None)
+            if key is not None:
+                toggl_task_window._editors[key].name.set_text(name)
+        return editor
+
+    def _edit_task(self, task):
+        import toggl_task_window
+        toggl_task_window.show(self.app, task['project_id'], task=task, parent=self.window,
+                               on_saved=lambda _snapshot: self._fill())
+
+    def _save_activity(self, row):
+        self._new_task(row['project_id'], ' '.join(row['description'].split()))
+
+    def _hide_activity(self, row):
+        try:
+            toggl_task_tree.hide_activity(self.app, row['project_id'], row['description'])
+            self._fill()
+        except ValueError as error:
+            self._say(str(error))
+
+    def _manage_tasks(self, *_):
+        import toggl_task_window
+        toggl_task_window.manage(self.app, self.window)
 
     def _finish(self, error):
         if self.window is None:

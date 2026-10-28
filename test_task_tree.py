@@ -96,7 +96,29 @@ def test_task_selection_starts_a_new_interval_and_passes_exact_timer_and_context
     context=toggl_projects.context(app)
     with patch('toggl_control.dispatch',return_value={}) as dispatch:
         m.select_task(app,7,'Next',context,before)
-    dispatch.assert_called_once_with(app,'switch',{'changes':{'project_id':7,'description':'Next'},'expected':before,'context':context})
+    dispatch.assert_called_once_with(app,'switch',{'changes':{'project_id':7,'task_id':None,'description':'Next'},'expected':before,'context':context})
+
+
+def test_server_task_entries_do_not_become_recent_activities(tmp_state_dir):
+    m = module()
+    rows = [entry(1, 7, 'Specific details', task_id=31), entry(2, 7, 'Reusable activity')]
+    groups = m.group_projects(PROJECTS, rows, 'ws_123', now=NOW)
+    group = next(item for item in groups if item['id'] == 7)
+    assert [item['description'] for item in group['activities']] == ['Reusable activity']
+
+
+def test_hidden_activity_stays_hidden_after_history_refresh(tmp_state_dir):
+    m = module()
+    scope = toggl_projects.context(app)
+    old = entry(1, 7, 'Hide me')
+    app._atomic_write_text(tmp_state_dir/'task-history.json', json.dumps(
+        dict(context=scope, entries=[old], fetched_at=0)))
+    m.hide_activity(app, 7, '  Hide   me ')
+    with patch.object(app, '_api', return_value=[old]):
+        assert m.refresh(app, force=True)
+    with patch.object(app, '_cached_projects', return_value=PROJECTS):
+        assert all(item['description'] != 'Hide me' for group in m.tree(app, now=NOW)
+                   for item in group['activities'])
 
 def test_stale_task_tree_cannot_switch_a_new_account(tmp_state_dir):
     m=module()

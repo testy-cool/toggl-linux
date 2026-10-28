@@ -48,6 +48,7 @@ def reset_state(tmp_path):
             "start_time": None,
             "workspace_id": "ws_123",
             "project_id": None,
+            "task_id": None,
             "description": "",
         })
         toggl_tray.icon_ref = None
@@ -65,6 +66,8 @@ def reset_state(tmp_path):
         toggl_tray._consecutive_sync_failures = 0
         toggl_tray._sync_failure_notified = False
         toggl_tray._project_cache = None
+        toggl_tray._task_cache = None
+        toggl_tray._task_capability = "unknown"
         toggl_task_tree._attempts.clear()
         if hasattr(toggl_tray, "_request_budget_lock"):
             toggl_tray._request_budget_lock = toggl_tray.threading.Lock()

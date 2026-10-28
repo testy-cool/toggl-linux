@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 if __name__ == "__main__":
     sys.modules.setdefault("toggl_tray", sys.modules[__name__])
 import toggl_task_tree
+import toggl_tasks
 import requests
 from requests.auth import HTTPBasicAuth
 from PIL import Image
@@ -82,6 +83,7 @@ state = {
     "start_time": None,  # ISO string
     "workspace_id": None,
     "project_id": None,
+    "task_id": None,
     "description": "",
 }
 
@@ -384,7 +386,7 @@ def _coerce_datetime(value):
     return dt
 
 
-def start_entry(workspace_id, description="", project_id=None, start_time=None):
+def start_entry(workspace_id, description="", project_id=None, task_id=None, start_time=None):
     start = _coerce_datetime(start_time)
     payload = {
         "created_with": "toggl-tray-linux",
@@ -395,6 +397,8 @@ def start_entry(workspace_id, description="", project_id=None, start_time=None):
     }
     if project_id:
         payload["project_id"] = project_id
+    if task_id is not None:
+        payload["task_id"] = task_id
     return api_post(f"/workspaces/{workspace_id}/time_entries", payload)
 
 
@@ -440,7 +444,7 @@ def _ensure_private_state_dir():
     STATE_DIR.chmod(0o700)
     private_files = (
         CONFIG_FILE, STATE_FILE, PENDING_FILE, LEDGER_FILE, REQUEST_BUDGET_FILE, LOCK_FILE,
-        STATE_DIR / "projects.json", STATE_DIR / "task-history.json",
+        STATE_DIR / "projects.json", STATE_DIR / "tasks.json", STATE_DIR / "task-history.json",
     )
     for path in private_files:
         for candidate in (path, _backup_path(path)):
@@ -527,7 +531,7 @@ def load_state():
 def _clear_remote_ids():
     """Drop provider-specific ids when switching API backends."""
     changed = False
-    for key in ("workspace_id", "project_id", "entry_id"):
+    for key in ("workspace_id", "project_id", "task_id", "entry_id"):
         if state.get(key) is not None:
             state[key] = None
             changed = True
@@ -539,7 +543,7 @@ def _clear_remote_ids():
     for item in pending:
         if not isinstance(item, dict):
             continue
-        for key in ("workspace_id", "project_id", "entry_id"):
+        for key in ("workspace_id", "project_id", "task_id", "entry_id"):
             if key in item:
                 item.pop(key, None)
                 pending_changes += 1
@@ -550,13 +554,15 @@ def _clear_remote_ids():
 
 def switch_api_base(value):
     """Change provider without carrying credentials, ids, or project metadata across origins."""
-    global api_token, _project_cache, _last_project_refresh_attempt, _last_tray_icon_path
+    global api_token, _project_cache, _task_cache, _task_capability, _last_project_refresh_attempt, _last_tray_icon_path
     if os.environ.get(API_BASE_ENV):
         raise ValueError(f"Unset {API_BASE_ENV} before saving a different API base")
     api_base = set_api_base(value)
     api_token = None
     pending_ids = _clear_remote_ids()
     _project_cache = None
+    _task_cache = None
+    _task_capability = "unknown"
     _last_project_refresh_attempt = None
     _last_tray_icon_path = None
     return api_base, pending_ids
@@ -634,6 +640,7 @@ def _create_pending_op(indexes, start_time, stop_time, item, paired_item=None):
         "duration": _duration_seconds(start_time, stop_time),
         "description": other.get("description", item.get("description", "")),
         "project_id": other.get("project_id", item.get("project_id")),
+        "task_id": other.get("task_id", item.get("task_id")),
         "workspace_id": other.get("workspace_id", item.get("workspace_id", state.get("workspace_id"))),
     }
 
@@ -649,6 +656,8 @@ def _completed_entry_payload(op, workspace_id):
     }
     if op.get("project_id"):
         payload["project_id"] = op["project_id"]
+    if op.get("task_id") is not None:
+        payload["task_id"] = op["task_id"]
     return payload
 
 
@@ -669,6 +678,7 @@ def _pending_operations(queue):
                     "start_time": start_time,
                     "description": start_item.get("description", ""),
                     "project_id": start_item.get("project_id"),
+                    "task_id": start_item.get("task_id"),
                     "workspace_id": start_item.get("workspace_id", state.get("workspace_id")),
                 })
 
@@ -691,6 +701,7 @@ def _pending_operations(queue):
                     "duration": _duration_seconds(item.get("start_time"), stop_time),
                     "description": item.get("description"),
                     **({"project_id": item["project_id"]} if "project_id" in item else {}),
+                    **({"task_id": item["task_id"]} if "task_id" in item else {}),
                     "workspace_id": item.get("workspace_id", state.get("workspace_id")),
                 })
             elif open_start:
@@ -720,6 +731,7 @@ def _pending_operations(queue):
             "start_time": start_time,
             "description": start_item.get("description", ""),
             "project_id": start_item.get("project_id"),
+            "task_id": start_item.get("task_id"),
             "workspace_id": start_item.get("workspace_id", state.get("workspace_id")),
         })
 
@@ -733,6 +745,8 @@ def _cloud_entry_matches_pending_open_start(current, op):
     if (current.get("description") or "") != (op.get("description") or ""):
         return False
     if current.get("project_id") != op.get("project_id"):
+        return False
+    if current.get("task_id") != op.get("task_id"):
         return False
 
     cloud_start = _parse_iso(current.get("start"))
@@ -790,24 +804,26 @@ def sync_pending():
                                 state["start_time"] = current["start"]
                                 state["description"] = current.get("description", "")
                                 state["project_id"] = current.get("project_id")
+                                state["task_id"] = current.get("task_id")
                                 state["workspace_id"] = current.get("workspace_id") or state.get("workspace_id")
                                 save_state()
                             synced_indexes.update(op["indexes"])
                         else:
                             _report_open_start_conflict(current, op)
                     else:
-                        entry = start_entry(
-                            workspace_id,
-                            description=op.get("description", ""),
-                            project_id=op.get("project_id"),
-                            start_time=op.get("start_time"),
-                        )
+                        start_values = dict(description=op.get("description", ""),
+                                            project_id=op.get("project_id"),
+                                            start_time=op.get("start_time"))
+                        if op.get("task_id") is not None:
+                            start_values["task_id"] = op["task_id"]
+                        entry = start_entry(workspace_id, **start_values)
                         with state_lock:
                             state["tracking"] = True
                             state["entry_id"] = entry["id"]
                             state["start_time"] = entry.get("start", op.get("start_time"))
                             state["description"] = op.get("description", "")
                             state["project_id"] = op.get("project_id")
+                            state["task_id"] = op.get("task_id")
                             save_state()
                         synced_indexes.update(op["indexes"])
                 except RateLimitedError as e:
@@ -840,6 +856,8 @@ def sync_pending():
                         data["description"] = op["description"]
                     if "project_id" in op:
                         data["project_id"] = op["project_id"]
+                    if "task_id" in op:
+                        data["task_id"] = op["task_id"]
                     try:
                         update_entry(workspace_id, op["entry_id"], data)
                     except requests.exceptions.HTTPError as e:
@@ -935,6 +953,7 @@ def _run_sync_cycle(now=None):
     _health_check()
     if icon_ref:
         _refresh_projects()
+        _refresh_tasks()
         if toggl_task_tree.refresh(sys.modules[__name__]):
             GLib.idle_add(_refresh_project_menu)
     _record_sync_success()
@@ -1025,6 +1044,7 @@ def _pending_entries_from_queue(queue, date_obj=None):
             "description": op.get("description", ""),
             "workspace_id": op.get("workspace_id") or state.get("workspace_id"),
             "project_id": op.get("project_id"),
+            "task_id": op.get("task_id"),
             "_offline": True,
             "_pending_indexes": op["indexes"],
             "_pending_ids": pending_ids,
@@ -1084,6 +1104,9 @@ _last_menu_key = None
 _project_cache = None
 _last_project_refresh_attempt = None
 _project_cache_lock = threading.Lock()
+_task_cache = None
+_task_capability = "unknown"
+_task_cache_lock = threading.Lock()
 
 
 def _project_account(token=None):
@@ -1101,6 +1124,14 @@ def _cached_projects():
         return []
     projects = _project_cache.get("projects", [])
     return projects if isinstance(projects, list) else []
+
+
+def _cached_tasks():
+    return toggl_tasks.cached(sys.modules[__name__])
+
+
+def _refresh_tasks(force=False):
+    return toggl_tasks.refresh(sys.modules[__name__], force=force)
 
 
 def _refresh_projects(force=False):
@@ -1180,7 +1211,7 @@ def _current_icon_path():
 def _update_tray_icon_once():
     global _last_tray_icon_path, _last_menu_key
     # Rebuild the menu when the running task changes, so its active dot follows the timer.
-    key = (state.get("tracking"), state.get("project_id"), state.get("description"))
+    key = (state.get("tracking"), state.get("project_id"), state.get("task_id"), state.get("description"))
     if key != _last_menu_key:
         if _last_menu_key is not None:
             _set_tray_menu(build_menu())
@@ -1261,7 +1292,8 @@ def elapsed_str():
     total_secs = int(elapsed.total_seconds())
     h, remainder = divmod(total_secs, 3600)
     m, s = divmod(remainder, 60)
-    desc = state.get("description", "")
+    desc = state.get("description", "") or next((item.get("name") for item in _cached_tasks()
+                                                  if str(item.get("id")) == str(state.get("task_id"))), "")
     time_str = f"{h}:{m:02d}:{s:02d}"
     if desc:
         return f"{desc} — {time_str}"
@@ -1292,7 +1324,8 @@ def _panel_timer_snapshot():
     with state_lock:
         tracking = state.get("tracking", False)
         start_time = state.get("start_time")
-        description = state.get("description", "")
+        description = state.get("description", "") or next((item.get("name") for item in _cached_tasks()
+                                                              if str(item.get("id")) == str(state.get("task_id"))), "")
 
     elapsed_seconds = 0
     if tracking and start_time:
@@ -1415,6 +1448,7 @@ def _sync_cloud_state():
                 state["start_time"] = current["start"]
                 state["description"] = current.get("description", "")
                 state["project_id"] = current.get("project_id")
+                state["task_id"] = current.get("task_id")
                 state["workspace_id"] = current.get("workspace_id") or state.get("workspace_id")
             else:
                 state["tracking"] = False
@@ -1458,6 +1492,7 @@ def toggle_tracking(*_args, prompt_for_description=True):
             workspace_id = state["workspace_id"]
             description = state.get("description", "")
             project_id = state.get("project_id")
+            task_id = state.get("task_id")
             start_time = state.get("start_time")
         _append_event(
             "toggle_requested",
@@ -1483,30 +1518,34 @@ def toggle_tracking(*_args, prompt_for_description=True):
                 except RateLimitedError:
                     print("Stop rate limited, queuing locally", file=sys.stderr)
                     _notify(_local_save_reason("stop"))
-                    queue_action("stop", entry_id=entry_id,
-                                 start_time=start_time, stop_time=now,
-                                 description=description, project_id=project_id,
-                                 workspace_id=workspace_id)
+                    queued = dict(entry_id=entry_id, start_time=start_time, stop_time=now,
+                                  description=description, project_id=project_id, workspace_id=workspace_id)
+                    if task_id is not None:
+                        queued["task_id"] = task_id
+                    queue_action("stop", **queued)
                 except Exception as e:
                     print(f"Stop failed, queuing offline: {e}", file=sys.stderr)
                     _notify(_local_save_reason("stop"))
-                    queue_action("stop", entry_id=entry_id,
-                                 start_time=start_time, stop_time=now,
-                                 description=description, project_id=project_id,
-                                 workspace_id=workspace_id)
+                    queued = dict(entry_id=entry_id, start_time=start_time, stop_time=now,
+                                  description=description, project_id=project_id, workspace_id=workspace_id)
+                    if task_id is not None:
+                        queued["task_id"] = task_id
+                    queue_action("stop", **queued)
             else:
                 _notify(_local_save_reason("stop"))
-                queue_action("stop", entry_id=entry_id,
-                             start_time=start_time, stop_time=now,
-                             description=description, project_id=project_id,
-                             workspace_id=workspace_id)
+                queued = dict(entry_id=entry_id, start_time=start_time, stop_time=now,
+                              description=description, project_id=project_id, workspace_id=workspace_id)
+                if task_id is not None:
+                    queued["task_id"] = task_id
+                queue_action("stop", **queued)
             with state_lock:
                 state["tracking"] = False
                 state["entry_id"] = None
                 state["start_time"] = None
                 save_state()
             import toggl_control
-            toggl_control.record_stop(sys.modules[__name__], entry_id, start_time, description, workspace_id, project_id, now)
+            toggl_control.record_stop(sys.modules[__name__], entry_id, start_time, description,
+                                      workspace_id, project_id, task_id, now)
             _append_event("toggle_stopped", source="tray", entry_id=entry_id, stop_time=now)
             _play_sound(SOUND_STOP)
         else:
@@ -1515,11 +1554,10 @@ def toggle_tracking(*_args, prompt_for_description=True):
             entry = None
             if api_token and workspace_id and not _rate_limit_active() and not _request_budget_exhausted():
                 try:
-                    entry = start_entry(
-                        workspace_id,
-                        description=description,
-                        project_id=project_id,
-                    )
+                    start_values = dict(description=description, project_id=project_id)
+                    if task_id is not None:
+                        start_values["task_id"] = task_id
+                    entry = start_entry(workspace_id, **start_values)
                 except RateLimitedError:
                     print("Start rate limited, queuing locally", file=sys.stderr)
                     _notify(_local_save_reason("start"))
@@ -1549,9 +1587,10 @@ def toggle_tracking(*_args, prompt_for_description=True):
                     state["entry_id"] = None
                     state["start_time"] = now.isoformat()
                     save_state()
-                queue_action("start", start_time=now.isoformat(),
-                             description=description,
-                             project_id=project_id)
+                queued = dict(start_time=now.isoformat(), description=description, project_id=project_id)
+                if task_id is not None:
+                    queued["task_id"] = task_id
+                queue_action("start", **queued)
                 _append_event(
                     "toggle_started",
                     source="tray",
@@ -1560,7 +1599,7 @@ def toggle_tracking(*_args, prompt_for_description=True):
                     mode="local",
                 )
             _play_sound(SOUND_START)
-            if prompt_for_description and not description:
+            if prompt_for_description and not description and task_id is None:
                 if icon_ref:
                     _prompt_for_description_async()
                 else:
@@ -1974,10 +2013,11 @@ def on_quit(icon, item):
 def _apply_tray_project(project_id, expected, context=None):
     import toggl_control
     with state_lock:
-        if state == expected and str(state.get("project_id")) == str(project_id):
+        if (state == expected and str(state.get("project_id")) == str(project_id)
+                and state.get("task_id") is None):
             return True
     try:
-        payload = {"changes": {"project_id": project_id}, "expected": expected}
+        payload = {"changes": {"project_id": project_id, "task_id": None}, "expected": expected}
         if context is not None:
             payload["context"] = context
         toggl_control.dispatch(sys.modules[__name__], "edit-current", payload)
@@ -2011,6 +2051,7 @@ def _project_choice_action(project_id, context, account_context=None):
 def on_refresh_tray_projects(_icon, _item):
     def refresh():
         _refresh_projects(force=True)
+        _refresh_tasks(force=True)
         toggl_task_tree.refresh(sys.modules[__name__], force=True)
         GLib.idle_add(_refresh_project_menu)
     threading.Thread(target=refresh, daemon=True).start()
@@ -2073,7 +2114,7 @@ def build_menu():
         )
     return pystray.Menu(
         *status_items,
-        pystray.MenuItem("Projects and tasks…", on_open_task_popup),
+        pystray.MenuItem("Projects, tasks, and activities…", on_open_task_popup),
         pystray.MenuItem("Open timer", on_open_timer, default=True),
         pystray.MenuItem("Project", pystray.Menu(*_tray_project_items())),
         pystray.MenuItem(
@@ -2238,6 +2279,7 @@ def _init_workspace():
             state["start_time"] = current["start"]
             state["description"] = current.get("description", "")
             state["project_id"] = current.get("project_id")
+            state["task_id"] = current.get("task_id")
             state["workspace_id"] = current.get("workspace_id") or state.get("workspace_id")
         else:
             state["tracking"] = False
@@ -2293,6 +2335,7 @@ def main():
         _init_workspace()
 
     _refresh_projects()
+    _refresh_tasks()
     toggl_task_tree.refresh(sys.modules[__name__])
 
     import toggl_control

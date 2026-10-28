@@ -121,7 +121,9 @@ def _build_entry_row(entry, win, entries, listbox, ctx):
     start_dt = datetime.fromisoformat(entry["start"]).astimezone()
     running = (entry.get("duration", 0) or 0) < 0
     dur = app._entry_duration_seconds(entry)
-    desc = entry.get("description") or "(no description)"
+    task_name = next((item.get("name") for item in app._cached_tasks()
+                      if str(item.get("id")) == str(entry.get("task_id"))), None)
+    desc = entry.get("description") or task_name or "(no description)"
 
     stop_str = "now" if running else ""
     if not running and entry.get("stop"):
@@ -143,7 +145,7 @@ def _build_entry_row(entry, win, entries, listbox, ctx):
     desc_label.set_ellipsize(Pango.EllipsizeMode.END)
     desc_label.set_max_width_chars(app.ENTRY_ROW_DESC_CHARS)
     escaped_desc = app.GLib.markup_escape_text(desc)
-    if entry.get("description"):
+    if entry.get("description") or task_name:
         desc_label.set_markup(f"<b>{escaped_desc}</b>")
     else:
         desc_label.set_markup(f"<span foreground='#6f6f6f'>{escaped_desc}</span>")
@@ -306,15 +308,44 @@ def _gtk_edit_entry_dialog(entry):
         desc_entry.set_width_chars(34)
         grid.attach(desc_entry, 1, 0, 1, 1)
 
-        grid.attach(Gtk.Label(label="Start", xalign=0), 0, 1, 1, 1)
+        grid.attach(Gtk.Label(label="Project", xalign=0), 0, 1, 1, 1)
+        project_picker = Gtk.ComboBoxText()
+        project_picker.append("none", "No project")
+        projects = [item for item in app._cached_projects()
+                    if str(item.get("workspace_id")) == str(entry.get("workspace_id", app.state.get("workspace_id")))
+                    and (item.get("active") is not False or str(item.get("id")) == str(entry.get("project_id")))]
+        for item in projects:
+            project_picker.append(str(item["id"]), item.get("name") or str(item["id"]))
+        project_picker.set_active_id("none" if entry.get("project_id") is None else str(entry.get("project_id")))
+        grid.attach(project_picker, 1, 1, 1, 1)
+
+        grid.attach(Gtk.Label(label="Task", xalign=0), 0, 2, 1, 1)
+        task_picker = Gtk.ComboBoxText()
+        def load_tasks(selected=None):
+            task_picker.remove_all()
+            task_picker.append("none", "No task")
+            project_id = project_picker.get_active_id()
+            tasks = [item for item in app._cached_tasks()
+                     if str(item.get("workspace_id")) == str(entry.get("workspace_id", app.state.get("workspace_id")))
+                     and str(item.get("project_id")) == str(project_id)
+                     and (item.get("active") is not False or str(item.get("id")) == str(selected))]
+            for item in tasks:
+                task_picker.append(str(item["id"]), item.get("name") or str(item["id"]))
+            task_picker.set_active_id("none" if selected is None else str(selected))
+            task_picker.set_sensitive(project_id not in (None, "none"))
+        load_tasks(entry.get("task_id"))
+        project_picker.connect("changed", lambda *_: load_tasks())
+        grid.attach(task_picker, 1, 2, 1, 1)
+
+        grid.attach(Gtk.Label(label="Start", xalign=0), 0, 3, 1, 1)
         start_entry = Gtk.Entry()
         start_entry.set_text(start_dt.strftime("%H:%M"))
         start_entry.set_max_length(5)
         start_entry.set_width_chars(7)
         start_entry.set_placeholder_text("HH:MM")
-        grid.attach(start_entry, 1, 1, 1, 1)
+        grid.attach(start_entry, 1, 3, 1, 1)
 
-        grid.attach(Gtk.Label(label="Stop", xalign=0), 0, 2, 1, 1)
+        grid.attach(Gtk.Label(label="Stop", xalign=0), 0, 4, 1, 1)
         stop_entry = Gtk.Entry()
         if running:
             stop_entry.set_text("running")
@@ -324,7 +355,7 @@ def _gtk_edit_entry_dialog(entry):
         stop_entry.set_max_length(7)
         stop_entry.set_width_chars(7)
         stop_entry.set_placeholder_text("HH:MM")
-        grid.attach(stop_entry, 1, 2, 1, 1)
+        grid.attach(stop_entry, 1, 4, 1, 1)
 
         box.add(grid)
         dialog.show_all()
@@ -338,6 +369,15 @@ def _gtk_edit_entry_dialog(entry):
             new_desc = desc_entry.get_text().strip()
             if new_desc != entry.get("description", ""):
                 update["description"] = new_desc
+
+            project_id = project_picker.get_active_id()
+            project_id = None if project_id == "none" else project_id
+            task_id = task_picker.get_active_id()
+            task_id = None if task_id == "none" else task_id
+            if str(project_id) != str(entry.get("project_id")):
+                update["project_id"] = project_id
+            if str(task_id) != str(entry.get("task_id")):
+                update["task_id"] = task_id
 
             new_start_str = start_entry.get_text().strip()
             orig_start_str = start_dt.strftime("%H:%M")
