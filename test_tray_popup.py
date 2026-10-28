@@ -1,4 +1,9 @@
 """Rows of the left-click popup, built without a desktop."""
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
+
+import pytest
+
 import toggl_tray as app
 import toggl_tray_popup as popup
 
@@ -69,3 +74,117 @@ def test_menu_item_opens_the_popup_even_without_a_pointer():
          patch.object(popup, 'toggle') as toggle:
         popup.toggle_at_pointer(app)
     toggle.assert_called_once_with(app, 500, 0)
+
+
+NOW = datetime(2026, 10, 28, 15, tzinfo=timezone.utc)
+
+
+def test_pinned_timer_identifies_the_project_when_activity_matches_another_project_name():
+    projects = PROJECTS + [dict(id=6, workspace_id=1, name='Unified Studio')]
+    current = dict(tracking=True, workspace_id=1, project_id=6, task_id=None,
+                   description='Stay Safe', start_time=(NOW - timedelta(seconds=570)).isoformat())
+    assert popup.running_timer(current, projects, [], now=NOW) == dict(
+        title='Stay Safe', project='Unified Studio', task='', elapsed='0:09:30')
+
+
+@pytest.mark.parametrize('kind', ['collapsed', 'hidden', 'capped', 'search'])
+def test_current_activity_remains_available_independently_of_browsable_history(kind):
+    activities = [f'Recent {i}' for i in range(7)] + ['Running activity']
+    groups = [group(4, 'Stay Safe', *([] if kind == 'hidden' else activities))]
+    current = dict(tracking=True, workspace_id=1, project_id=4, task_id=None,
+                   description='Running activity', start_time=NOW.isoformat())
+    display_rows = popup.rows(groups, PROJECTS, current, query='unmatched' if kind == 'search' else '',
+                              expanded={4} if kind == 'capped' else ())
+    assert not any(row['kind'] == 'activity' and row['active'] for row in display_rows)
+    assert popup.running_timer(current, PROJECTS, [], now=NOW)['title'] == 'Running activity'
+
+
+def test_current_archived_task_has_a_name_and_uncached_task_has_a_fallback():
+    current = dict(tracking=True, workspace_id=1, project_id=4, task_id=31,
+                   description='', start_time=NOW.isoformat())
+    task = dict(id=31, workspace_id=1, project_id=4, name='Archived task', active=False)
+    assert popup.running_timer(current, PROJECTS, [task], now=NOW)['title'] == 'Archived task'
+    assert popup.running_timer(current, PROJECTS, [], now=NOW)['title'] == 'Current task'
+    # Equal IDs belonging to another workspace must not supply labels.
+    assert popup.running_timer(current, [], [dict(task, workspace_id=2)], now=NOW)['title'] == 'Current task'
+
+
+def test_current_task_and_entry_description_both_remain_identifiable():
+    current = dict(tracking=True, workspace_id=1, project_id=4, task_id=31,
+                   description='Specific details', start_time=NOW.isoformat())
+    task = dict(id=31, workspace_id=1, project_id=4, name='Reusable task')
+    info = popup.running_timer(current, PROJECTS, [task], now=NOW)
+    assert info['title'] == 'Specific details'
+    assert info['task'] == 'Reusable task'
+    assert popup.running_timer(dict(current, tracking=False), PROJECTS, [task], now=NOW) is None
+
+
+def test_popup_tick_reloads_timer_changes_but_elapsed_ticks_keep_the_list_intact():
+    view = popup.TrayPopup.__new__(popup.TrayPopup)
+    view.app = app
+    view.window = MagicMock()
+    view.busy = False
+    view.expanded = {4}
+    view.search = MagicMock()
+    view.search.get_text.return_value = 'kept search'
+    view.context = popup.toggl_projects.context(app)
+    view._render_key = None
+    view._fill = MagicMock()
+    view._update_current = MagicMock()
+    with patch.object(popup.toggl_task_tree, 'tree', return_value=[]), \
+         patch.object(app, '_cached_projects', return_value=[]), \
+         patch.object(app, '_cached_tasks', return_value=[]):
+        assert view._tick() is True
+        view._fill.assert_called_once_with()
+        view._fill.reset_mock()
+        view._render_key = (dict(app.state), [], [], [])
+        assert view._tick() is True
+        view._fill.assert_not_called()
+        view._update_current.assert_called_once_with(dict(app.state), [], [])
+        app.state.update(tracking=True, entry_id=99)
+        assert view._tick() is True
+        view._fill.assert_called_once_with()
+    assert view.expanded == {4}
+    view.search.set_text.assert_not_called()
+
+
+def test_closed_popup_ignores_saved_task_and_scroll_callbacks():
+    view = popup.TrayPopup.__new__(popup.TrayPopup)
+    view.window = None
+    view.list = MagicMock()
+    view.scroll = MagicMock()
+    view._fill()
+    assert view._restore_scroll(50) is False
+    assert view._tick() is False
+    view.list.get_children.assert_not_called()
+    view.scroll.get_vadjustment.assert_not_called()
+
+
+def test_stop_uses_the_timer_displayed_in_the_pinned_row():
+    view = popup.TrayPopup.__new__(popup.TrayPopup)
+    view.app = app
+    view.window = MagicMock()
+    view.busy = False
+    view.rendered_state = dict(app.state, tracking=True, entry_id=11)
+    view.context = popup.toggl_projects.context(app)
+    view.list = MagicMock()
+    view.stop = MagicMock()
+    view.edit = MagicMock()
+    view._say = MagicMock()
+    app.state.update(tracking=True, entry_id=22)
+    def inline(target, daemon):
+        return MagicMock(start=target)
+    with patch.object(popup.threading, 'Thread', side_effect=inline), \
+         patch.object(popup.toggl_control, 'dispatch') as dispatch:
+        view._stop_current()
+    dispatch.assert_called_once_with(app, 'stop', {'expected': view.rendered_state, 'context': view.context})
+
+
+def test_popup_tick_closes_when_account_changes():
+    view = popup.TrayPopup.__new__(popup.TrayPopup)
+    view.app = app
+    view.window = MagicMock()
+    view.context = popup.toggl_projects.context(app)
+    app.api_token = 'changed-test-token'
+    assert view._tick() is False
+    view.window.destroy.assert_called_once_with()
