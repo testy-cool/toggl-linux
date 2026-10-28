@@ -81,6 +81,25 @@ test('form edits send an explicitly changed project but omit unchanged values', 
   assert.deepEqual(timerChanges(entry, {description:'Renamed'}), {description:'Renamed'});
 });
 
+test('task choices are filtered by workspace and project while retaining the selected archive', () => {
+  const { taskChoices } = compiled.exports;
+  const snapshot = { state: {workspace_id:1, project_id:7, task_id:31}, tasks: [
+    {id:30, workspace_id:1, project_id:7, name:'Active', active:true},
+    {id:31, workspace_id:1, project_id:7, name:'Selected archive', active:false},
+    {id:32, workspace_id:1, project_id:8, name:'Other project', active:true},
+    {id:33, workspace_id:2, project_id:7, name:'Other workspace', active:true},
+  ]};
+  assert.deepEqual(taskChoices(snapshot, snapshot.state).map(task => task.id), [30,31]);
+});
+
+test('timer edits keep task metadata separate from descriptions', () => {
+  const { timerChanges } = compiled.exports;
+  const entry = {description:'Specific details', project_id:7, task_id:31};
+  assert.deepEqual(timerChanges(entry, {description:'Specific details', project:'7', task:'31'}), {});
+  assert.deepEqual(timerChanges(entry, {description:'', project:'7', task:'none'}), {description:'', task_id:null});
+  assert.deepEqual(timerChanges(entry, {description:'Specific details', project:'7', task:'32'}), {task_id:'32'});
+});
+
 test('new projects preserve the displayed account context without changing the timer', () => {
   const { projectCommand } = compiled.exports;
   const context = {workspace_id:12, account:'account-fingerprint'};
@@ -110,4 +129,20 @@ test('invalid project fields are rejected before a mutation command is construct
   for (const color of ['red', '#abc', '#12345g', '123456']) {
     assert.throws(() => projectCommand(context, 'Valid', color), /#RRGGBB/);
   }
+});
+
+test('task commands preserve frozen metadata and support archive and restore', () => {
+  const { taskCommand } = compiled.exports;
+  const context = {workspace_id:12, account:'account-fingerprint'};
+  const created = taskCommand(context, '  Reusable task  ', '7');
+  assert.deepEqual(created, {action:'task-create', payload:{context, project_id:'7', name:'Reusable task', active:true}});
+  const task = {id:31, workspace_id:12, project_id:7, name:'Before', active:true};
+  const archived = taskCommand(context, 'Renamed', '7', task, false);
+  assert.equal(archived.action, 'task-update');
+  assert.deepEqual(archived.payload.task, task);
+  assert.equal(archived.payload.active, false);
+  task.name = 'External edit';
+  assert.equal(archived.payload.task.name, 'Before');
+  assert.throws(() => taskCommand(context, ' ', '7'), /name/i);
+  assert.throws(() => taskCommand(context, 'Valid', 'none'), /project/i);
 });

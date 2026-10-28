@@ -178,7 +178,7 @@ python3 toggl_tray.py install-app --autostart
 
 ## How It Works
 
-- **Python core** (`toggl_tray.py`) with focused modules for the terminal commands, control socket, project and task history, popup and windows
+- **Python core** (`toggl_tray.py`) with focused modules for terminal commands, the control socket, projects, server tasks, recent activity history, the popup, and windows
 - Talks to [Toggl Track API v9](https://engineering.toggl.com/docs/track/) or a compatible OpenTickly instance using basic auth
 - API base defaults to `https://api.track.toggl.com/api/v9`; override it with `python3 toggl_tray.py set-api-base <url>` or temporary `TOGGL_API_BASE`
 - Global hotkey uses X11 `XGrabKey` — the key is grabbed at the X server level, so no other app sees `Ctrl+Shift+T`
@@ -264,29 +264,32 @@ The [`vicinae/`](vicinae/) extension manages the running timer, project selectio
 
 ### Edit the current timer quickly
 
-Choose **Open Timer** in the tray to edit the project, description, and start time together. **Save Changes** (Enter or Ctrl+Enter) keeps the same interval; **Start New Task** (Ctrl+Shift+Enter) closes it and starts another. Start time includes the date; HH:MM means today, while a full date and time can correct an older interval. Stop and sync preserve unsaved drafts. Start/Stop and today's entries stay visible; **More** holds sync, project refresh, account connection, and panel visibility in the same window. Vicinae offers the same Start New Task action. See [`docs/timer-scenarios.md`](docs/timer-scenarios.md) for the scenario tree.
+Choose **Open Timer** in the tray to edit the project, real task, description, and start time together. **Save Changes** (Enter or Ctrl+Enter) keeps the same interval; **Start New Entry** (Ctrl+Shift+Enter) closes it and starts another. A task is reusable OpenTickly metadata, while the description is optional detail for one time entry. Start time includes the date; HH:MM means today, while a full date and time can correct an older interval. Stop and sync preserve unsaved drafts. Start/Stop and today's entries stay visible; **More** holds sync, project refresh, account connection, and panel visibility in the same window. Vicinae offers the same Start New Entry action. See [`docs/timer-scenarios.md`](docs/timer-scenarios.md) for the scenario tree.
 
-Use **Resume Previous Task** in the timer window, or **Start Again** on a completed Today entry in Vicinae, to return to earlier work. The previous description, project and workspace are copied into a new interval; a running timer is stopped first. Today's cached and pending tasks are supported, including offline. Resume never changes the earlier interval.
+Use **Resume Recent Activity** in the timer window, or **Start Again** on a completed Today entry in Vicinae, to return to earlier work. The previous description, project, task, and workspace are copied into a new interval when the saved task is still active; a running timer is stopped first. Today's cached and pending entries are supported, including offline. Resume never changes the earlier interval.
 
 ### Quick project and task selection from the tray
 
-Left-click the tray icon to open a small window under it: every recent project
-with its colour dot and its recent tasks beneath it as a tree. Click a task to
-switch to it, or a project to give the running timer that project. Type to search;
-Enter starts the first matching task, Escape or another click on the icon closes it.
+Left-click the tray icon to open a small window under it. Projects contain real
+OpenTickly tasks; choosing one starts it with a blank description. Historical
+time-entry descriptions appear separately under **Recent activities**, collapsed by
+default. Activities can be started again, saved as real tasks, or hidden. A project
+row can create a task, and **Manage Tasks** supports rename, archive, and restore.
+Type to search everything; Enter starts the first matching task or activity.
 
-Right-click the tray icon for the full menu. **Projects and tasks…** at the top
+Right-click the tray icon for the full menu. **Projects, tasks, and activities…** at the top
 opens the same window (use it on desktops where left click opens the menu).
 **Project** lists the saved projects and **No project**: choosing one changes only
 the current interval's project, without starting a new one. It also holds
 **New Project…**, **Edit Selected Project…**, **Manage Projects…** and
 **Refresh projects and tasks**.
 
-While tracking, the tray icon takes the project's colour; a task with no project
-gets a fixed colour of its own.
+While tracking, the tray icon takes the project's colour. The active marker follows
+the running real task. Projects, tasks, and activities are scoped to the account,
+API server, and workspace so labels cannot leak across account switches.
 
-Suggestions use the last 30 days, limited to 1,000 fetched entries, plus local
-pending intervals. They are cached per account, API server and workspace in
-`~/.local/share/toggl-tray/task-history.json`, work offline, and refresh at most
-once an hour in the background. **Refresh projects and tasks** requests a manual
-refresh. Here, tasks are descriptions you have already tracked under each project.
+Real tasks are cached in `~/.local/share/toggl-tray/tasks.json`. Recent activities
+use the last 30 days, limited to 1,000 fetched entries plus local pending intervals,
+and persist in `task-history.json`. Both work offline and refresh at most hourly.
+Servers without the task endpoint keep the recent-activity fallback available.
+**Refresh projects and tasks** requests a manual refresh.
