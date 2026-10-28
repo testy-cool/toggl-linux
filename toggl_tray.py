@@ -1567,9 +1567,7 @@ def toggle_tracking(*_args, prompt_for_description=True):
                     _notify("Tracking with no description — right-click tray icon to set one")
 
         if icon_ref:
-            update_tray_icon()
-            icon_ref.title = get_tooltip()
-            _set_tray_menu(build_menu())
+            GLib.idle_add(_refresh_tray_menu)
     finally:
         toggle_lock.release()
 
@@ -1749,10 +1747,20 @@ def _update_open_pending_description(desc):
 
 def _refresh_tray_menu():
     if not icon_ref:
-        return
+        return False
     update_tray_icon()
     icon_ref.title = get_tooltip()
     _set_tray_menu(build_menu())
+    return False
+
+
+def _set_tray_tooltip(tooltip):
+    """Apply GTK-backed icon text only from the GLib main loop."""
+    if icon_ref:
+        icon_ref.title = tooltip
+    if native_status_icon_ref:
+        native_status_icon_ref.set_tooltip_text(tooltip)
+    return False
 
 
 def _apply_description(desc):
@@ -1771,7 +1779,8 @@ def _apply_description(desc):
     elif tracking:
         _update_open_pending_description(desc)
 
-    _refresh_tray_menu()
+    if icon_ref:
+        GLib.idle_add(_refresh_tray_menu)
 
 
 def _show_description_dialog():
@@ -2157,9 +2166,7 @@ def update_loop():
         time.sleep(1)
         if icon_ref:
             tooltip = get_tooltip()
-            icon_ref.title = tooltip
-            if native_status_icon_ref:
-                GLib.idle_add(native_status_icon_ref.set_tooltip_text, tooltip)
+            GLib.idle_add(_set_tray_tooltip, tooltip)
             GLib.idle_add(_update_panel_timer_label_once)
             GLib.idle_add(_update_tray_icon_once)
 
