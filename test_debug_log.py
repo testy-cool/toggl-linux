@@ -71,10 +71,13 @@ def test_redaction_covers_rotated_logs_stderr_and_exception_tracebacks(tmp_path)
             except RuntimeError:
                 debug.LOGGER.exception('Request failed')
             debug.LOGGER.warning('url=https://user:pass@example.test/test?access_token=query-secret')
+            debug.LOGGER.warning("headers={'Authorization': 'Basic encoded-secret'}")
+            debug.LOGGER.warning('headers={"Authorization": "Bearer quoted-bearer-secret"}')
         finally:
             recorder.close()
     text = '\n'.join(path.read_text() for path in tmp_path.glob('debug.log*'))
-    for secret in secrets + ['another-secret', 'bearer-secret', 'user:pass', 'query-secret']:
+    for secret in secrets + ['another-secret', 'bearer-secret', 'user:pass', 'query-secret',
+                              'encoded-secret', 'quoted-bearer-secret']:
         assert secret not in text
     assert '[REDACTED]' in text
 

@@ -25,7 +25,7 @@ class RedactingFormatter(logging.Formatter):
         for value in sorted((str(value) for value in self.secrets() if value), key=len, reverse=True):
             text = text.replace(value, '[REDACTED]')
         # Also cover labelled credentials in third-party exception messages.
-        text = re.sub(r'(?i)(authorization\s*[:=]\s*(?:Bearer\s+|Basic\s+)?)[^\s,;]+',
+        text = re.sub(r'(?i)(authorization[\"\']?\s*[:=]\s*[\"\']?(?:Bearer\s+|Basic\s+)?)[^\s,;\"\'}]+',
                       r'\1[REDACTED]', text)
         text = re.sub(r'(?i)((?:api[_-]?token|api[_-]?key|password|access_token)\s*[\"\']?\s*[:=]\s*[\"\']?)[^\s\"\'&,;]+',
                       r'\1[REDACTED]', text)
