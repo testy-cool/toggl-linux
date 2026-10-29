@@ -94,6 +94,7 @@ native_status_icon_ref = None
 native_status_menu_ref = None
 api_token = None
 _restored_remote_id = None
+_startup_scope = None
 rate_limited_until = 0.0
 status_message = ""
 _request_budget_lock = threading.Lock()
@@ -627,6 +628,9 @@ def queue_action(action, **kwargs):
                 "_queue_id": uuid.uuid4().hex, **kwargs,
                 "_task_context": task_context}
         queue.append(item)
+        if (_startup_scope is not None and _startup_scope['base'] == get_api_base()
+                and (not api_token or not state.get('workspace_id'))):
+            _startup_scope['queue_ids'].add(item['_queue_id'])
         _append_event("pending_queued", **item)
         _save_pending(queue)
     _sync_wakeup.set()
@@ -966,15 +970,16 @@ def _run_sync_cycle(now=None):
     if not api_token:
         lookup_base = get_api_base()
         token = get_api_token()
-        with toggle_lock:
-            if token and not api_token and get_api_base() == lookup_base:
-                api_token = token
+        _accept_keyring_token(token, lookup_base)
     if api_token and not state.get("workspace_id"):
         if _request_budget_exhausted():
             _notify(REQUEST_BUDGET_SYNC_MESSAGE)
             return
         if not _init_workspace():
             return
+
+    with toggle_lock:
+        _finish_startup_scope()
 
     pending = _load_pending()
     if pending:
@@ -2347,6 +2352,69 @@ def _init_workspace():
         return False
 
 
+def _begin_startup_scope():
+    global _startup_scope
+    _startup_scope = dict(base=get_api_base(), account=state.get('_account'),
+                          workspace=state.get('workspace_id'), queue_ids=set())
+
+
+def _accept_keyring_token(token, lookup_base):
+    global api_token
+    with toggle_lock:
+        if token and not api_token and get_api_base() == lookup_base:
+            api_token = token
+            if _startup_scope is not None and _startup_scope['base'] == lookup_base:
+                import toggl_projects
+                _startup_scope['resolved_account'] = toggl_projects.account(sys.modules[__name__])
+
+
+def _finish_startup_scope():
+    """Bind only work created in this launch to its unchanged keyring identity.
+
+    Call under toggle_lock after workspace discovery, before replaying the queue.
+    """
+    global _startup_scope
+    if _startup_scope is None or not api_token:
+        return
+    import toggl_projects
+    scope = toggl_projects.context(sys.modules[__name__])
+    startup = _startup_scope
+    if (startup['base'] != get_api_base() or startup.get('resolved_account') != scope['account']
+            or startup['account'] not in (None, scope['account'])
+            or startup['workspace'] not in (None, scope['workspace_id'])):
+        _startup_scope = None
+        return
+    if not scope['workspace_id']:
+        return
+    starts = set()
+    with pending_lock:
+        queue = _load_pending()
+        changed = False
+        for item in queue:
+            context = item.get('_task_context') or {}
+            if (item.get('_queue_id') in startup['queue_ids']
+                    and context.get('account') in (None, scope['account'])
+                    and context.get('workspace_id') in (None, scope['workspace_id'])):
+                item['_task_context'] = scope
+                item['workspace_id'] = scope['workspace_id']
+                changed = True
+                if item.get('action') == 'start':
+                    starts.add(item.get('start_time'))
+        if changed:
+            _save_pending(queue)
+        _startup_scope = None
+    with state_lock:
+        if state.get('tracking') and state.get('start_time') in starts and state.get('_account') is None:
+            state['_account'] = scope['account']
+            save_state()
+    for entry in _pending_as_entries():
+        if entry.get('start') in starts and entry.get('_task_context') == scope:
+            toggl_task_tree.remember(sys.modules[__name__], dict(
+                tracking=True, start_time=entry['start'], description=entry.get('description', ''),
+                workspace_id=entry.get('workspace_id'), project_id=entry.get('project_id'),
+                task_id=entry.get('task_id'), _account=scope['account']))
+
+
 def _bootstrap_and_sync(stop_event):
     """Keyring and cloud setup run after the tray event loop becomes ready."""
     global api_token
@@ -2355,11 +2423,11 @@ def _bootstrap_and_sync(stop_event):
         token = get_api_token()
         if stop_event.is_set():
             return
-        with toggle_lock:
-            if not api_token and get_api_base() == lookup_base:
-                api_token = token
+        _accept_keyring_token(token, lookup_base)
         if api_token:
             _init_workspace()
+            with toggle_lock:
+                _finish_startup_scope()
         else:
             print('No API token found; saved timers remain available offline', file=sys.stderr)
         _refresh_projects()
@@ -2394,6 +2462,7 @@ def main():
     Gtk.init([])
 
     load_state()
+    _begin_startup_scope()
     toggl_debug.LOGGER.info('Tray starting tracking=%s entry_id=%s pending_count=%s',
                             state.get('tracking'), state.get('entry_id'), len(_load_pending()))
 
