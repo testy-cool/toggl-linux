@@ -113,6 +113,21 @@ def test_legacy_keyring_migration_cannot_store_into_a_new_server(monkeypatch):
     store.assert_not_called()
 
 
+def test_legacy_lookup_cannot_overwrite_a_token_saved_while_it_was_running(monkeypatch):
+    monkeypatch.delenv('TOGGL_API_TOKEN', raising=False)
+    app.api_token = None
+    def lookup(command, **_kwargs):
+        if 'opentickly' in command:
+            app.api_token = 'replacement-test-token'
+            return SimpleNamespace(returncode=0, stdout='old-legacy-test-token')
+        return SimpleNamespace(returncode=1, stdout='')
+    with patch.object(app, 'get_api_base', return_value='https://same.example.test/api/v9'), \
+         patch.object(app.subprocess, 'run', side_effect=lookup), patch.object(app, 'store_api_token') as store:
+        assert app.get_api_token() is None
+    assert app.api_token == 'replacement-test-token'
+    store.assert_not_called()
+
+
 def test_watchdog_records_one_stack_dump_per_stall_and_logs_recovery():
     now = [0.0]
     watchdog = toggl_watchdog.UIWatchdog(threshold=30, clock=lambda: now[0])

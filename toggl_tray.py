@@ -117,6 +117,7 @@ def get_api_token():
     token = os.environ.get("TOGGL_API_TOKEN")
     if token:
         return token
+    initial_token = api_token
     service = _api_token_service()
     services = [service]
     config = _load_json_with_backup(CONFIG_FILE, {})
@@ -137,7 +138,7 @@ def get_api_token():
                 token = result.stdout.strip()
                 if candidate == "opentickly" and service != candidate:
                     with toggle_lock:
-                        if _api_origin() != origin:
+                        if _api_origin() != origin or api_token != initial_token:
                             return None
                         store_api_token(token)
                         config = _load_json_with_backup(CONFIG_FILE, {})
