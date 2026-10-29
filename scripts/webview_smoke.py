@@ -64,7 +64,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
 
     def click(label):
         code = f"Array.from(document.querySelectorAll('button')).find(b => (b.getAttribute('aria-label') || b.textContent.trim()) === {json.dumps(label)})"
-        assert js(f'Boolean({code})'), label
+        until(lambda: js(f'Boolean({code}) && !({code}).disabled'))
         js(f"const button={code}; if(button.getAttribute('role')==='tab') button.dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',bubbles:true}})); else button.click()")
 
     def text(value):
@@ -77,7 +77,9 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
         js(f"Array.from(document.querySelectorAll('[role=option]')).find(e=>e.textContent.trim()==={json.dumps(value)}).click()")
 
     def menu(label, option):
-        js(f"Array.from(document.querySelectorAll('button')).find(b=>b.getAttribute('aria-label')==={json.dumps('More actions for '+label)}).dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',bubbles:true}}))")
+        code = f"Array.from(document.querySelectorAll('button')).find(b=>b.getAttribute('aria-label')==={json.dumps('More actions for '+label)})"
+        until(lambda: js(f'Boolean({code}) && !({code}).disabled'))
+        js(f"({code}).dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',bubbles:true}}))")
         until(lambda: js("!!document.querySelector('[role=menuitem]')"))
         js(f"Array.from(document.querySelectorAll('[role=menuitem]')).find(e=>e.textContent.trim()==={json.dumps(option)}).click()")
 
@@ -113,7 +115,8 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
 
     def verify():
         try:
-            assert bridge._ready.wait(15), 'JavaScript bridge never became ready'
+            assert window.events.shown.wait(30), 'Native window never became visible'
+            assert bridge._ready.wait(20), 'JavaScript bridge never became ready'
             until(lambda: window.native.get_mapped())
             until(lambda: js("document.body.textContent.includes('Improve navigation')"))
             click('Start Improve navigation')
@@ -231,7 +234,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             import traceback
             traceback.print_exc()
             try:
-                print('Native readiness:', dict(mapped=window.native.get_mapped(),
+                print('Native readiness:', dict(mapped=window.native.get_mapped() if window.native else False,
                       injected=window.events._pywebviewready.is_set(), loaded=window.events.loaded.is_set()), flush=True)
                 print('UI diagnostics:', js("JSON.stringify({url:location.href,ready:document.readyState,visibility:document.visibilityState,bridge:typeof window.pywebview,api:typeof window.pywebview?.api,methods:Object.keys(window.pywebview?.api??{}),readyMethod:typeof window.pywebview?.api?.ready,body:document.body.innerText,html:document.head.innerHTML})"), flush=True)
             except Exception as diagnostic:

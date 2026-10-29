@@ -127,3 +127,14 @@ test('older pending intervals require explicit full review and show exact second
   assert.equal(commandFor(draft).payload.reviewed_interval,true)
   assert.deepEqual(commandFor(draft).payload.changes,{})
 })
+
+test('editing a running Today row uses the live timer instead of its stale cache', () => {
+  const data=sample()
+  const stale={id:11,workspace_id:1,project_id:6,task_id:31,description:'Old cached text',start:'2026-10-29T11:00:00Z',stop:null,duration:-1}
+  const draft=draftFor(data,'current',undefined,stale)
+  draft.description='Corrected text only'
+  assert.equal(draft.start,localTime(data.state.start_time))
+  assert.equal(draft.entry,undefined)
+  assert.deepEqual(commandFor(draft).payload.changes,{description:'Corrected text only'})
+  assert.equal(draftFor(data,'entry',undefined,stale).start,localTime(stale.start))
+})

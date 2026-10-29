@@ -37,7 +37,8 @@ def _private_paths(tmp_path):
 @pytest.fixture(autouse=True)
 def reset_state(tmp_path):
     """Reset global state before each test, with private files and no network."""
-    patches = _private_paths(tmp_path)+[patch.object(socket.socket, "connect", _local_only_connect)]
+    patches = _private_paths(tmp_path)+[patch.object(socket.socket, "connect", _local_only_connect),
+                                      patch.object(toggl_tray, "_play_sound")]
     for p in patches:
         p.start()
     try:

@@ -206,15 +206,17 @@ export function draftFor(
     mode,
     snapshot: structuredClone(s),
     work,
-    entry,
+    entry: mode === "entry" ? entry : undefined,
     description:
       mode === "task"
         ? work!.task!.name
         : (original?.description ?? work?.description ?? ""),
     project: String(original?.project_id ?? work?.project_id ?? "none"),
     task: String(original?.task_id ?? work?.task_id ?? "none"),
-    start: localTime(entry?.start ?? s.state.start_time),
-    stop: localTime(entry?.stop ?? null),
+    start: localTime(
+      mode === "entry" ? (entry?.start ?? null) : s.state.start_time,
+    ),
+    stop: localTime(mode === "entry" ? (entry?.stop ?? null) : null),
     reviewed: false,
   };
 }
