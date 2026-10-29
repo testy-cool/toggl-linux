@@ -473,7 +473,10 @@ def _cli_set_start(args):
 
     updated = False
     if pending_entries:
-        updated = app._update_pending_entry(pending_entries[-1], {"start": new_start_iso}) or updated
+        if not app._update_pending_entry(pending_entries[-1], {"start": new_start_iso}):
+            print("Could not update pending start time; local timer was left unchanged.", file=sys.stderr)
+            return 2
+        updated = True
 
     if app.state.get("tracking"):
         app.state["start_time"] = new_start_iso

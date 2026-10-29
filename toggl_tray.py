@@ -1089,7 +1089,7 @@ def _pending_entry_candidate(queue, selected):
             or not all(isinstance(value, str) for value in selected_ids)):
         return None
     selected_ids = set(selected_ids)
-    fields = ("start", "stop", "description", "project_id", "workspace_id",
+    fields = ("start", "stop", "description", "project_id", "task_id", "workspace_id",
               "_pending_kind", "_remote_entry_id")
     return next((entry for entry in _pending_entries_from_queue(queue)
                  if set(entry.get("_pending_ids", [])) == selected_ids
@@ -1942,11 +1942,21 @@ def on_audit_today(icon, item):
 
 
 def _update_pending_entry(entry, update):
-    with pending_lock:
+    import toggl_control
+    with toggle_lock, pending_lock:
         queue = _load_pending()
         candidate = _pending_entry_candidate(queue, entry)
         if candidate is None:
             return False
+        assignments = {key: update[key] for key in ('project_id', 'task_id') if key in update}
+        if 'start' in update:
+            assignments['start'] = update['start']
+        try:
+            assignments = toggl_control._changes(sys.modules[__name__], assignments, candidate)
+        except toggl_control.ControlError as error:
+            _notify(str(error))
+            return False
+        assignments.pop('start', None)
         indexes = set(candidate["_pending_indexes"])
 
         for idx in indexes:
@@ -1955,12 +1965,23 @@ def _update_pending_entry(entry, update):
 
             if "description" in update:
                 item["description"] = update["description"]
+            item.update(assignments)
             if "start" in update and (action == "start" or "start_time" in item or len(indexes) == 1):
                 item["start_time"] = update["start"]
             if "stop" in update and (action == "stop" or "stop_time" in item or (len(indexes) == 1 and action == "start")):
                 item["stop_time"] = update["stop"]
 
         _save_pending(queue)
+        if candidate['_pending_kind'] == 'open':
+            with state_lock:
+                if (state.get('tracking') and not state.get('entry_id')
+                        and state.get('start_time') == candidate.get('start')):
+                    changes = dict(assignments)
+                    for key in ('description', 'start'):
+                        if key in update:
+                            changes['start_time' if key == 'start' else key] = update[key]
+                    state.update(changes)
+                    save_state()
         return True
 
 
