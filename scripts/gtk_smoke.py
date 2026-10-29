@@ -240,6 +240,14 @@ with tempfile.TemporaryDirectory(prefix='toggl-native-gtk-') as scratch:
             current._edit_current()
             current._cancel_edit()
             until(lambda: current.scroll.get_vadjustment().get_value() == 140)
+
+            app._project_cache['projects'][0]['name'] = ('A long project name ' * 15)[:200]
+            app._task_cache['tasks'][0]['name'] = ('A long task name ' * 15)[:200]
+            current._edit_current()
+            current.editor.project.set_active_id('6')
+            picture('long-label-editor.png')
+            assert len(set(layout_widths)) == 1, layout_widths
+            current._cancel_edit()
             manager = toggl_task_window.TaskManager(app)
             with patch.object(app, 'fetch_entries_for_date', return_value=[]):
                 toggl_entries_window._show_entries_window()

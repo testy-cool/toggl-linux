@@ -1,7 +1,7 @@
 """Forms embedded in the tray panel, with frozen targets for guarded writes."""
 from copy import deepcopy
 
-from gi.repository import Gtk
+from gi.repository import Gtk, Pango
 
 
 class InlineEditor:
@@ -46,6 +46,11 @@ class InlineEditor:
         self.project.set_sensitive(mode != 'task')
         self.task = Gtk.ComboBoxText()
         self.task.set_hexpand(True)
+        for combo in (self.project, self.task):
+            for cell in combo.get_cells():
+                cell.set_property('ellipsize', Pango.EllipsizeMode.END)
+                cell.set_property('width-chars', 18)
+                cell.set_property('max-width-chars', 24)
         self.selected_task = self.original.get('task_id')
         self.project.connect('changed', self._project_changed)
         self._fill_tasks(self.selected_task)
