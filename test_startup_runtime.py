@@ -1,6 +1,7 @@
 """Cold cloud setup must not block the tray or overwrite concurrent user work."""
 import threading
 from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
 import pytest
 import toggl_control as control
 import toggl_tray as app
@@ -96,6 +97,20 @@ def test_keyring_reply_for_an_old_server_is_discarded(entrypoint):
         else:
             app._run_sync_cycle()
     assert app.api_token is None
+
+
+def test_legacy_keyring_migration_cannot_store_into_a_new_server(monkeypatch):
+    monkeypatch.delenv('TOGGL_API_TOKEN', raising=False)
+    base = ['https://old.example.test/api/v9']
+    def lookup(command, **_kwargs):
+        if 'opentickly' in command:
+            base[0] = 'https://new.example.test/api/v9'
+            return SimpleNamespace(returncode=0, stdout='legacy-server-test-token')
+        return SimpleNamespace(returncode=1, stdout='')
+    with patch.object(app, 'get_api_base', side_effect=lambda: base[0]), \
+         patch.object(app.subprocess, 'run', side_effect=lookup), patch.object(app, 'store_api_token') as store:
+        assert app.get_api_token() is None
+    store.assert_not_called()
 
 
 def test_watchdog_records_one_stack_dump_per_stall_and_logs_recovery():

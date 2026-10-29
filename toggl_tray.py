@@ -136,10 +136,14 @@ def get_api_token():
             if result.returncode == 0 and result.stdout.strip():
                 token = result.stdout.strip()
                 if candidate == "opentickly" and service != candidate:
-                    store_api_token(token)
-                    config = config if isinstance(config, dict) else {}
-                    config["legacy_opentickly_origin"] = origin
-                    _atomic_write_text(CONFIG_FILE, json.dumps(config, indent=2))
+                    with toggle_lock:
+                        if _api_origin() != origin:
+                            return None
+                        store_api_token(token)
+                        config = _load_json_with_backup(CONFIG_FILE, {})
+                        config = config if isinstance(config, dict) else {}
+                        config["legacy_opentickly_origin"] = origin
+                        _atomic_write_text(CONFIG_FILE, json.dumps(config, indent=2))
                 return token
         except (FileNotFoundError, subprocess.TimeoutExpired):
             break
