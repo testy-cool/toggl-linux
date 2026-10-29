@@ -29,6 +29,8 @@ def snapshot(app):
              and (not current.get("tracking") or e.get("id") != current.get("entry_id"))]
     entries = [e for e in entries if e not in stale]
     warnings = [getattr(app, "_control_warning", ""), getattr(app, "status_message", ""),
+                "Pending entry needs review in Today's Entries; edit it or discard local changes" if any(
+                    item.get('_review_error') for item in app._load_pending()) else "",
                 "Today's entries changed; refresh to update durations" if stale else ""]
     warning = " · ".join(dict.fromkeys(message for message in warnings if message))
     return {"state": current, "projects": app._cached_projects(), "tasks": app._cached_tasks(),
@@ -220,7 +222,7 @@ def _dispatch(app, action, payload):
         return result
     if action == "sync":
         with app.toggle_lock:
-            app._run_sync_cycle()
+            app._run_sync_cycle(retry_review=True)
         return snapshot(app)
     if action == "refresh":
         last = getattr(app, "_control_refreshed_at", None)

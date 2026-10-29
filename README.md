@@ -245,7 +245,12 @@ The watchdog does not restart the app or change timers, and stack dumps omit loc
 Stops queued from restored cloud timers are reconciled against that specific entry
 before replay. An earlier cloud stop is preserved, while explicit offline edits
 remain applicable. This uses the [API v9 entry-by-ID endpoint](https://engineering.toggl.com/docs/track/api/time_entries/).
-If a compatible server cannot provide that entry, the item stays pending and editable.
+If a compatible server cannot provide that entry, the item is marked **Needs review**
+in Today's Entries. It stays editable without blocking cloud updates or spending
+requests on every background retry. **Sync Now** retries it; editing also enables
+a retry. **Discard Local Changes** removes only that local correction and keeps
+the cloud entry. Stops from older versions without a verification snapshot require
+an edit or local discard before replay.
 Activity started during this launch's keyring lookup receives the resolved account
 identity once it is known; older unscoped queue items are left untouched.
 

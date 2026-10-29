@@ -157,6 +157,8 @@ def _build_entry_row(entry, win, entries, listbox, ctx):
         status_parts.append("Running")
     if offline:
         status_parts.append("Local")
+    if entry.get('_review_error'):
+        status_parts.append('Needs review')
     if status_parts:
         status_label = Gtk.Label(label=" · ".join(status_parts))
         status_label.set_sensitive(False)
@@ -196,7 +198,10 @@ def _on_edit_entry(entry, parent_win, entries, listbox, ctx):
         if entry.get("_offline"):
             if result == "delete":
                 desc = entry.get("description", "(no description)")
-                if app._gtk_confirm("Delete Entry", f"Delete '{desc}'?"):
+                title = 'Discard Local Changes' if entry.get('_review_error') else 'Delete Entry'
+                question = ("Discard these local changes? The cloud entry will be kept."
+                            if entry.get('_review_error') else f"Delete '{desc}'?")
+                if app._gtk_confirm(title, question):
                     if app._delete_pending_entry(entry):
                         toggl_task_tree.forget(app, entry)
                         app._play_sound(app.SOUND_STOP)
@@ -280,7 +285,7 @@ def _gtk_edit_entry_dialog(entry):
         dialog.set_resizable(True)
         dialog.set_default_size(460, -1)
         dialog.add_buttons(
-            "Delete", Gtk.ResponseType.REJECT,
+            "Discard Local Changes" if entry.get('_review_error') else "Delete", Gtk.ResponseType.REJECT,
             Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
             Gtk.STOCK_OK, Gtk.ResponseType.OK,
         )

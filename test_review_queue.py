@@ -92,7 +92,8 @@ def test_failed_sync_keeps_pending_and_recovery_backup(tmp_state_dir):
 def test_hotkey_during_socket_sync_reports_busy_without_changing_timer(tmp_state_dir):
     started = threading.Event()
     release = threading.Event()
-    def slow_sync():
+    def slow_sync(*, retry_review=False):
+        assert retry_review
         started.set()
         assert release.wait(3)
     with patch.object(app, "_run_sync_cycle", side_effect=slow_sync), patch.object(app, "_notify") as notify:

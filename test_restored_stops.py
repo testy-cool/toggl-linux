@@ -122,7 +122,9 @@ def test_account_change_keeps_a_guarded_stop_pending():
     app.api_token = 'another-account-token'
     with patch.object(app, 'api_get') as get, patch.object(app, 'update_entry') as update:
         assert app.sync_pending() == 1
-    assert app._load_pending() == before
+    after = app._load_pending()
+    assert after[0].pop('_review_error')
+    assert after == before
     get.assert_not_called()
     update.assert_not_called()
 

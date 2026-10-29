@@ -112,6 +112,10 @@ class MissingApiTokenError(Exception):
     """Raised when an API call is attempted without a configured token."""
 
 
+class RestoredStopReviewError(RuntimeError):
+    """A restored stop needs a user's correction or local discard before retry."""
+
+
 # ── API Token ───────────────────────────────────────────────────────────────
 
 def get_api_token():
@@ -603,6 +607,16 @@ def _load_pending():
     return pending if isinstance(pending, list) else []
 
 
+def _active_pending():
+    return [item for item in _load_pending()
+            if not (item.get('_verify_running') and item.get('_review_error'))]
+
+
+def _stop_verification_snapshot(item, account):
+    return dict(base=get_api_base(), account=account, fields={
+        key: item.get(key) for key in ('start_time', 'stop_time', 'description', 'project_id', 'task_id')})
+
+
 def _save_pending(queue):
     if queue:
         _atomic_write_text(PENDING_FILE, json.dumps(queue, indent=2))
@@ -618,8 +632,7 @@ def queue_action(action, **kwargs):
     """Queue an offline action for later sync."""
     if action == 'stop' and kwargs.get('entry_id') is not None and kwargs['entry_id'] == _restored_remote_id:
         kwargs['_verify_running'] = True
-        kwargs['_verify_snapshot'] = dict(base=get_api_base(), account=state.get('_account'), fields={
-            key: kwargs.get(key) for key in ('start_time', 'stop_time', 'description', 'project_id', 'task_id')})
+        kwargs['_verify_snapshot'] = _stop_verification_snapshot(kwargs, state.get('_account'))
     if "workspace_id" not in kwargs and state.get("workspace_id"):
         kwargs["workspace_id"] = state["workspace_id"]
     import toggl_projects
@@ -695,15 +708,22 @@ def _restored_stop_changes(op):
     import toggl_projects
     token, base = api_token, get_api_base()
     snapshot = op.get('verify_snapshot') or {}
+    if not isinstance(snapshot.get('fields'), dict):
+        raise RestoredStopReviewError('Older pending stop needs review; edit it or discard local changes')
     if (snapshot.get('base', base) != base
             or snapshot.get('account') not in (None, toggl_projects.account(sys.modules[__name__]))):
-        raise RuntimeError('Account changed; restored stop kept pending')
+        raise RestoredStopReviewError('Account changed; reconnect the original account or discard local changes')
     auth = dict(token=token, base_url=base)
-    remote = api_get(f"/me/time_entries/{int(op['entry_id'])}", **auth)
+    try:
+        remote = api_get(f"/me/time_entries/{int(op['entry_id'])}", **auth)
+    except requests.exceptions.HTTPError as error:
+        if error.response is not None and error.response.status_code in (404, 405, 410, 501):
+            raise RestoredStopReviewError('Target lookup unavailable; review or discard local changes') from error
+        raise
     if (api_token != token or get_api_base() != base or not isinstance(remote, dict)
             or str(remote.get('id')) != str(op['entry_id'])
             or str(remote.get('workspace_id')) != str(op.get('workspace_id') or state.get('workspace_id'))):
-        raise RuntimeError('Restored entry could not be verified; stop kept pending')
+        raise RestoredStopReviewError('Target or account changed; review the local changes')
     original = snapshot.get('fields') or {}
     data = {key: op[key] for key in ('description', 'project_id', 'task_id')
             if key in op and op[key] != original.get(key, op[key])}
@@ -716,7 +736,7 @@ def _restored_stop_changes(op):
         remote_stop = _parse_iso(remote.get('start')) + timedelta(seconds=remote['duration'])
     stop = desired_stop if edited_stop or remote_stop is None else min(remote_stop, desired_stop)
     if start is None or stop is None or start.tzinfo is None or stop.tzinfo is None or stop < start:
-        raise RuntimeError('Restored interval times need correction; stop kept pending')
+        raise RestoredStopReviewError('Restored interval times need correction')
     if edited_start:
         data['start'] = op['start_time']
     if edited_start or edited_stop or stop != remote_stop:
@@ -761,6 +781,7 @@ def _pending_operations(queue):
                     "entry_id": item["entry_id"],
                     "verify_running": item.get('_verify_running', False),
                     "verify_snapshot": item.get('_verify_snapshot'),
+                    "review_error": item.get('_review_error'),
                     "start_time": item.get("start_time"),
                     "stop_time": stop_time,
                     "duration": _duration_seconds(item.get("start_time"), stop_time),
@@ -839,7 +860,7 @@ def _report_open_start_conflict(current, op):
     )
 
 
-def sync_pending():
+def sync_pending(retry_review=False):
     """Try to sync all pending actions. Returns number of remaining."""
     global rate_limited_until
     with pending_lock:
@@ -852,6 +873,8 @@ def sync_pending():
 
         synced_indexes = set()
         for op in _pending_operations(queue):
+            if op.get('review_error') and not retry_review:
+                continue
             if op["kind"] == "invalid":
                 print(f"Invalid pending item kept for manual recovery: {op.get('indexes')}", file=sys.stderr)
                 continue
@@ -935,6 +958,8 @@ def sync_pending():
                     except requests.exceptions.HTTPError as e:
                         status = e.response.status_code if e.response is not None else 0
                         if op.get('verify_running'):
+                            if status in (404, 405, 410, 501):
+                                raise RestoredStopReviewError('Target update unavailable; review or discard local changes') from e
                             raise  # Missing/unsupported targets remain editable, never recreated.
                         if status in (404, 410) and op.get("start_time") and op.get("stop_time"):
                             payload = _completed_entry_payload(op, workspace_id)
@@ -951,6 +976,11 @@ def sync_pending():
                             raise
 
                 synced_indexes.update(op["indexes"])
+            except RestoredStopReviewError as error:
+                for index in op['indexes']:
+                    queue[index]['_review_error'] = str(error)
+                _append_event('restored_stop_needs_review', entry_id=op.get('entry_id'), reason=str(error))
+                continue
             except RateLimitedError as e:
                 rate_limited_until = time.monotonic() + e.retry_after
                 break
@@ -994,7 +1024,7 @@ def _record_sync_failure(error):
         _sync_failure_notified = True
 
 
-def _run_sync_cycle(now=None):
+def _run_sync_cycle(now=None, retry_review=False):
     """Run one background sync pass while preserving API quota for user actions."""
     global api_token, _last_cloud_poll_at
     now = time.monotonic() if now is None else now
@@ -1016,12 +1046,15 @@ def _run_sync_cycle(now=None):
     with toggle_lock:
         _finish_startup_scope()
 
-    pending = _load_pending()
+    pending = _load_pending() if retry_review else _active_pending()
     if pending:
         if _request_budget_exhausted():
             _notify(REQUEST_BUDGET_SYNC_MESSAGE)
         else:
-            sync_pending()
+            if retry_review:
+                sync_pending(retry_review=True)
+            else:
+                sync_pending()
     elif api_token and now - _last_cloud_poll_at >= CLOUD_POLL_INTERVAL_SECONDS:
         if not _request_budget_applies() or _request_budget_remaining() > REQUEST_BUDGET_BACKGROUND_RESERVE:
             _sync_cloud_state()
@@ -1058,7 +1091,7 @@ def _health_check():
         entry_id = state["entry_id"]
     if not tracking or entry_id is not None:
         return
-    if _load_pending():
+    if _active_pending():
         return
     try:
         with state_lock:
@@ -1128,6 +1161,7 @@ def _pending_entries_from_queue(queue, date_obj=None):
             "_task_context": queue[op["indexes"][0]].get("_task_context"),
             "_pending_kind": op["kind"],
             "_remote_entry_id": op.get("entry_id"),
+            "_review_error": op.get('review_error'),
         })
 
     if date_obj is None:
@@ -1512,7 +1546,7 @@ def _sync_cloud_state():
     global rate_limited_until
     if not api_token:
         return
-    pending = _load_pending()
+    pending = _active_pending()
     if any(item.get("action") in ("start", "stop") for item in pending):
         return
     try:
@@ -2016,6 +2050,10 @@ def _update_pending_entry(entry, update):
         for idx in indexes:
             item = queue[idx]
             action = item.get("action")
+            if item.get('_verify_running') and not item.get('_verify_snapshot'):
+                item['_verify_snapshot'] = _stop_verification_snapshot(
+                    item, (item.get('_task_context') or {}).get('account'))
+            item.pop('_review_error', None)
 
             if "description" in update:
                 item["description"] = update["description"]
@@ -2038,7 +2076,7 @@ def _delete_pending_entry(entry):
 
         remaining = [item for idx, item in enumerate(queue) if idx not in indexes]
         remote_id = entry.get("_remote_entry_id")
-        if remote_id:
+        if remote_id and not candidate.get('_review_error'):
             remaining.append({
                 "action": "delete",
                 "ts": datetime.now(timezone.utc).isoformat(),
@@ -2342,7 +2380,7 @@ def _init_workspace():
     token, base = api_token, get_api_base()
     with state_lock:
         before = dict(state)
-    pending = _load_pending()
+    pending = _active_pending()
     has_conflicting_pending = any(
         item.get("action") in ("start", "stop") for item in pending
     )
