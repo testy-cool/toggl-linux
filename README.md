@@ -236,6 +236,25 @@ shows both paths. The debug log can contain project/entry IDs and error details;
 review it before sharing. Native fatal signals such as a segmentation fault may
 still require a system crash report.
 
+The tray opens from saved local state before keyring and cloud refreshes run on
+a background worker. Startup replies are discarded if the timer or account changes
+while a request is in flight. If GTK stops handling its heartbeat for 30 seconds,
+the debug log records Python thread stacks once per stall and notes recovery.
+The watchdog does not restart the app or change timers, and stack dumps omit local variables.
+
+Stops queued from restored cloud timers are reconciled against that specific entry
+before replay. An earlier cloud stop is preserved, while explicit offline edits
+remain applicable. This uses the [API v9 entry-by-ID endpoint](https://engineering.toggl.com/docs/track/api/time_entries/).
+If a compatible server cannot provide that entry, the item is marked **Needs review**
+in Today's Entries. It stays editable without blocking cloud updates or spending
+requests on every background retry. **Sync Now** retries it; editing also enables
+a retry. **Discard Local Changes** removes only that local correction and keeps
+the cloud entry. Stops from older versions without a verification snapshot require
+full review or local discard before replay. Their editor explains that **Save All Fields**
+applies the displayed interval, including corrections made before upgrading.
+Activity started during this launch's keyring lookup receives the resolved account
+identity once it is known; older unscoped queue items are left untouched.
+
 **No tray icon appears**
 - Make sure your desktop has a system tray / notification area. On GNOME, you may need the [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/).
 - Install the appindicator library: `sudo apt install gir1.2-ayatanaappindicator3-0.1`

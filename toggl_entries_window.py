@@ -157,6 +157,8 @@ def _build_entry_row(entry, win, entries, listbox, ctx):
         status_parts.append("Running")
     if offline:
         status_parts.append("Local")
+    if entry.get('_review_error'):
+        status_parts.append('Needs review')
     if status_parts:
         status_label = Gtk.Label(label=" · ".join(status_parts))
         status_label.set_sensitive(False)
@@ -196,7 +198,10 @@ def _on_edit_entry(entry, parent_win, entries, listbox, ctx):
         if entry.get("_offline"):
             if result == "delete":
                 desc = entry.get("description", "(no description)")
-                if app._gtk_confirm("Delete Entry", f"Delete '{desc}'?"):
+                title = 'Discard Local Changes' if entry.get('_review_error') else 'Delete Entry'
+                question = ("Discard these local changes? The cloud entry will be kept."
+                            if entry.get('_review_error') else f"Delete '{desc}'?")
+                if app._gtk_confirm(title, question):
                     if app._delete_pending_entry(entry):
                         toggl_task_tree.forget(app, entry)
                         app._play_sound(app.SOUND_STOP)
@@ -280,9 +285,9 @@ def _gtk_edit_entry_dialog(entry):
         dialog.set_resizable(True)
         dialog.set_default_size(460, -1)
         dialog.add_buttons(
-            "Delete", Gtk.ResponseType.REJECT,
+            "Discard Local Changes" if entry.get('_review_error') else "Delete", Gtk.ResponseType.REJECT,
             Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
-            Gtk.STOCK_OK, Gtk.ResponseType.OK,
+            "Save All Fields" if entry.get('_needs_full_review') else Gtk.STOCK_OK, Gtk.ResponseType.OK,
         )
         dialog.set_default_response(Gtk.ResponseType.OK)
 
@@ -297,12 +302,17 @@ def _gtk_edit_entry_dialog(entry):
         box.set_margin_end(18)
         box.set_margin_top(16)
         box.set_margin_bottom(12)
+        if entry.get('_needs_full_review'):
+            notice = Gtk.Label(label='This older entry needs full review. Saving applies all displayed times and metadata.')
+            notice.set_line_wrap(True)
+            notice.set_max_width_chars(50)
+            box.add(notice)
 
         grid = Gtk.Grid(column_spacing=12, row_spacing=10)
 
         grid.attach(Gtk.Label(label="Description", xalign=0), 0, 0, 1, 1)
         desc_entry = Gtk.Entry()
-        desc_entry.set_text(entry.get("description", ""))
+        desc_entry.set_text(entry.get("description") or "")
         desc_entry.set_hexpand(True)
         desc_entry.set_activates_default(True)
         desc_entry.set_width_chars(34)
@@ -363,16 +373,33 @@ def _gtk_edit_entry_dialog(entry):
         grid.attach(stop_entry, 1, 4, 1, 1)
 
         box.add(grid)
+        time_error = Gtk.Label(label='Use a valid HH:MM time for Start and Stop.')
+        time_error.set_line_wrap(True)
+        box.add(time_error)
         dialog.show_all()
+        time_error.hide()
         desc_entry.grab_focus()
-        resp = dialog.run()
+        while True:
+            resp = dialog.run()
+            if resp != Gtk.ResponseType.OK:
+                break
+            start_text = start_entry.get_text().strip()
+            changed_start = start_text != start_dt.strftime('%H:%M')
+            stop_value = stop_entry.get_text().strip()
+            changed_stop = not running and stop_value != stop_text
+            stop_base = datetime.fromisoformat(entry['stop']).astimezone() if entry.get('stop') else start_dt
+            if ((changed_start and app._parse_hhmm(start_text, start_dt) is None)
+                    or (changed_stop and app._parse_hhmm(stop_value, stop_base) is None)):
+                time_error.show()
+                continue
+            break
 
         if resp == Gtk.ResponseType.REJECT:
             result["value"] = "delete"
         elif resp == Gtk.ResponseType.OK:
             update = {}
             new_desc = desc_entry.get_text().strip()
-            if new_desc != entry.get("description", ""):
+            if new_desc != (entry.get("description") or "").strip():
                 update["description"] = new_desc
 
             project_id = project_picker.get_active_id()
@@ -399,7 +426,7 @@ def _gtk_edit_entry_dialog(entry):
                     if parsed:
                         update["stop"] = parsed.isoformat()
 
-            if update:
+            if update or entry.get('_needs_full_review'):
                 result["value"] = update
 
         dialog.destroy()

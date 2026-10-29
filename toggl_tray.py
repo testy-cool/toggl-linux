@@ -93,6 +93,8 @@ timer_window_ref = None
 native_status_icon_ref = None
 native_status_menu_ref = None
 api_token = None
+_restored_remote_id = None
+_startup_scope = None
 rate_limited_until = 0.0
 status_message = ""
 _request_budget_lock = threading.Lock()
@@ -110,6 +112,10 @@ class MissingApiTokenError(Exception):
     """Raised when an API call is attempted without a configured token."""
 
 
+class RestoredStopReviewError(RuntimeError):
+    """A restored stop needs a user's correction or local discard before retry."""
+
+
 # ── API Token ───────────────────────────────────────────────────────────────
 
 def get_api_token():
@@ -117,6 +123,7 @@ def get_api_token():
     token = os.environ.get("TOGGL_API_TOKEN")
     if token:
         return token
+    initial_token = api_token
     service = _api_token_service()
     services = [service]
     config = _load_json_with_backup(CONFIG_FILE, {})
@@ -136,10 +143,14 @@ def get_api_token():
             if result.returncode == 0 and result.stdout.strip():
                 token = result.stdout.strip()
                 if candidate == "opentickly" and service != candidate:
-                    store_api_token(token)
-                    config = config if isinstance(config, dict) else {}
-                    config["legacy_opentickly_origin"] = origin
-                    _atomic_write_text(CONFIG_FILE, json.dumps(config, indent=2))
+                    with toggle_lock:
+                        if _api_origin() != origin or api_token != initial_token:
+                            return None
+                        store_api_token(token)
+                        config = _load_json_with_backup(CONFIG_FILE, {})
+                        config = config if isinstance(config, dict) else {}
+                        config["legacy_opentickly_origin"] = origin
+                        _atomic_write_text(CONFIG_FILE, json.dumps(config, indent=2))
                 return token
         except (FileNotFoundError, subprocess.TimeoutExpired):
             break
@@ -372,13 +383,13 @@ def api_delete(path):
     _api("DELETE", path)
 
 
-def fetch_me():
-    return api_get("/me")
+def fetch_me(**kwargs):
+    return api_get("/me", **kwargs)
 
 
-def fetch_current_entry():
+def fetch_current_entry(**kwargs):
     """Get currently running time entry, or None."""
-    data = api_get("/me/time_entries/current")
+    data = api_get("/me/time_entries/current", **kwargs)
     return data if data else None
 
 
@@ -435,8 +446,8 @@ def fetch_today_entries():
     return fetch_entries_for_date(datetime.now().date())
 
 
-def update_entry(workspace_id, entry_id, data):
-    return api_put(f"/workspaces/{workspace_id}/time_entries/{entry_id}", data)
+def update_entry(workspace_id, entry_id, data, **kwargs):
+    return api_put(f"/workspaces/{workspace_id}/time_entries/{entry_id}", data, **kwargs)
 
 
 def delete_entry(workspace_id, entry_id):
@@ -536,9 +547,11 @@ def save_state():
 
 
 def load_state():
+    global _restored_remote_id
     saved = _load_json_with_backup(STATE_FILE, None)
     if isinstance(saved, dict):
         state.update(saved)
+    _restored_remote_id = state.get('entry_id') if state.get('tracking') else None
 
 
 def _clear_remote_ids():
@@ -594,6 +607,25 @@ def _load_pending():
     return pending if isinstance(pending, list) else []
 
 
+def _active_pending():
+    return [item for item in _load_pending()
+            if not (item.get('_verify_running') and item.get('_review_error'))]
+
+
+def _stop_verification_snapshot(item, account):
+    return dict(base=get_api_base(), account=account, fields={
+        key: item.get(key) for key in ('start_time', 'stop_time', 'description', 'project_id', 'task_id')})
+
+
+def _prepare_pending_edit(item):
+    if item.get('_verify_running') and not item.get('_verify_snapshot'):
+        item['_verify_snapshot'] = _stop_verification_snapshot(
+            item, (item.get('_task_context') or {}).get('account'))
+        # Without an original baseline, reviewing an edit confirms the displayed interval.
+        item['_verify_snapshot']['review_all_fields'] = True
+    item.pop('_review_error', None)
+
+
 def _save_pending(queue):
     if queue:
         _atomic_write_text(PENDING_FILE, json.dumps(queue, indent=2))
@@ -607,6 +639,9 @@ def _save_pending(queue):
 
 def queue_action(action, **kwargs):
     """Queue an offline action for later sync."""
+    if action == 'stop' and kwargs.get('entry_id') is not None and kwargs['entry_id'] == _restored_remote_id:
+        kwargs['_verify_running'] = True
+        kwargs['_verify_snapshot'] = _stop_verification_snapshot(kwargs, state.get('_account'))
     if "workspace_id" not in kwargs and state.get("workspace_id"):
         kwargs["workspace_id"] = state["workspace_id"]
     import toggl_projects
@@ -617,6 +652,9 @@ def queue_action(action, **kwargs):
                 "_queue_id": uuid.uuid4().hex, **kwargs,
                 "_task_context": task_context}
         queue.append(item)
+        if (_startup_scope is not None and _startup_scope['base'] == get_api_base()
+                and (not api_token or not state.get('workspace_id'))):
+            _startup_scope['queue_ids'].add(item['_queue_id'])
         _append_event("pending_queued", **item)
         _save_pending(queue)
     _sync_wakeup.set()
@@ -674,6 +712,53 @@ def _completed_entry_payload(op, workspace_id):
     return payload
 
 
+def _restored_stop_changes(op):
+    """Reconcile the target interval, preserving remote data and explicit local edits."""
+    import toggl_projects
+    token, base = api_token, get_api_base()
+    snapshot = op.get('verify_snapshot') or {}
+    if not isinstance(snapshot.get('fields'), dict):
+        raise RestoredStopReviewError('Older pending stop needs review; edit it or discard local changes')
+    if (snapshot.get('base', base) != base
+            or snapshot.get('account') not in (None, toggl_projects.account(sys.modules[__name__]))):
+        raise RestoredStopReviewError('Account changed; reconnect the original account or discard local changes')
+    auth = dict(token=token, base_url=base)
+    try:
+        remote = api_get(f"/me/time_entries/{int(op['entry_id'])}", **auth)
+    except requests.exceptions.HTTPError as error:
+        if error.response is not None and error.response.status_code in (404, 405, 410, 501):
+            raise RestoredStopReviewError('Target lookup unavailable; review or discard local changes') from error
+        raise
+    if (api_token != token or get_api_base() != base or not isinstance(remote, dict)
+            or str(remote.get('id')) != str(op['entry_id'])
+            or str(remote.get('workspace_id')) != str(op.get('workspace_id') or state.get('workspace_id'))):
+        raise RestoredStopReviewError('Target or account changed; review the local changes')
+    original = snapshot.get('fields') or {}
+    review_all = snapshot.get('review_all_fields') is True
+    data = {key: op[key] for key in ('description', 'project_id', 'task_id')
+            if key in op and (review_all or op[key] != original.get(key, op[key]))}
+    if review_all:
+        data.update(project_id=op.get('project_id'), task_id=op.get('task_id'))
+    elif ('project_id' in data and (op.get('task_id') is not None or remote.get('task_id') is None
+                                  or str(remote.get('project_id')) != str(op.get('project_id')))):
+        data['task_id'] = op.get('task_id')
+    edited_start = review_all or op.get('start_time') != original.get('start_time', op.get('start_time'))
+    edited_stop = review_all or op.get('stop_time') != original.get('stop_time', op.get('stop_time'))
+    start = _parse_iso(op.get('start_time') if edited_start else remote.get('start'))
+    desired_stop = _parse_iso(op.get('stop_time'))
+    remote_stop = _parse_iso(remote.get('stop'))
+    if remote_stop is None and isinstance(remote.get('duration'), (int, float)) and remote['duration'] >= 0:
+        remote_stop = _parse_iso(remote.get('start')) + timedelta(seconds=remote['duration'])
+    stop = desired_stop if edited_stop or remote_stop is None else min(remote_stop, desired_stop)
+    if start is None or stop is None or start.tzinfo is None or stop.tzinfo is None or stop < start:
+        raise RestoredStopReviewError('Restored interval times need correction')
+    if edited_start:
+        data['start'] = op['start_time']
+    if edited_start or edited_stop or stop != remote_stop:
+        data.update(stop=stop.isoformat(), duration=int((stop-start).total_seconds()))
+    return data, auth
+
+
 def _pending_operations(queue):
     """Normalize raw pending events into sync/display operations."""
     ops = []
@@ -709,6 +794,9 @@ def _pending_operations(queue):
                     "kind": "update_stop",
                     "indexes": [idx],
                     "entry_id": item["entry_id"],
+                    "verify_running": item.get('_verify_running', False),
+                    "verify_snapshot": item.get('_verify_snapshot'),
+                    "review_error": item.get('_review_error'),
                     "start_time": item.get("start_time"),
                     "stop_time": stop_time,
                     "duration": _duration_seconds(item.get("start_time"), stop_time),
@@ -787,7 +875,7 @@ def _report_open_start_conflict(current, op):
     )
 
 
-def sync_pending():
+def sync_pending(retry_review=False):
     """Try to sync all pending actions. Returns number of remaining."""
     global rate_limited_until
     with pending_lock:
@@ -800,6 +888,8 @@ def sync_pending():
 
         synced_indexes = set()
         for op in _pending_operations(queue):
+            if op.get('review_error') and not retry_review:
+                continue
             if op["kind"] == "invalid":
                 print(f"Invalid pending item kept for manual recovery: {op.get('indexes')}", file=sys.stderr)
                 continue
@@ -871,10 +961,21 @@ def sync_pending():
                         data["project_id"] = op["project_id"]
                     if "task_id" in op:
                         data["task_id"] = op["task_id"]
+                    auth = {}
+                    if op.get('verify_running'):
+                        data, auth = _restored_stop_changes(op)
+                        if not data:
+                            _append_event('restored_stop_already_ended', entry_id=op['entry_id'])
+                            synced_indexes.update(op['indexes'])
+                            continue
                     try:
-                        update_entry(workspace_id, op["entry_id"], data)
+                        update_entry(workspace_id, op["entry_id"], data, **auth)
                     except requests.exceptions.HTTPError as e:
                         status = e.response.status_code if e.response is not None else 0
+                        if op.get('verify_running'):
+                            if status in (404, 405, 410, 501):
+                                raise RestoredStopReviewError('Target update unavailable; review or discard local changes') from e
+                            raise  # Missing/unsupported targets remain editable, never recreated.
                         if status in (404, 410) and op.get("start_time") and op.get("stop_time"):
                             payload = _completed_entry_payload(op, workspace_id)
                             api_post(f"/workspaces/{workspace_id}/time_entries", payload)
@@ -890,6 +991,11 @@ def sync_pending():
                             raise
 
                 synced_indexes.update(op["indexes"])
+            except RestoredStopReviewError as error:
+                for index in op['indexes']:
+                    queue[index]['_review_error'] = str(error)
+                _append_event('restored_stop_needs_review', entry_id=op.get('entry_id'), reason=str(error))
+                continue
             except RateLimitedError as e:
                 rate_limited_until = time.monotonic() + e.retry_after
                 break
@@ -933,7 +1039,7 @@ def _record_sync_failure(error):
         _sync_failure_notified = True
 
 
-def _run_sync_cycle(now=None):
+def _run_sync_cycle(now=None, retry_review=False):
     """Run one background sync pass while preserving API quota for user actions."""
     global api_token, _last_cloud_poll_at
     now = time.monotonic() if now is None else now
@@ -942,9 +1048,9 @@ def _run_sync_cycle(now=None):
 
     # The desktop keyring may not be unlocked when the app autostarts.
     if not api_token:
+        lookup_base = get_api_base()
         token = get_api_token()
-        if token and not api_token:
-            api_token = token
+        _accept_keyring_token(token, lookup_base)
     if api_token and not state.get("workspace_id"):
         if _request_budget_exhausted():
             _notify(REQUEST_BUDGET_SYNC_MESSAGE)
@@ -952,12 +1058,18 @@ def _run_sync_cycle(now=None):
         if not _init_workspace():
             return
 
-    pending = _load_pending()
+    with toggle_lock:
+        _finish_startup_scope()
+
+    pending = _load_pending() if retry_review else _active_pending()
     if pending:
         if _request_budget_exhausted():
             _notify(REQUEST_BUDGET_SYNC_MESSAGE)
         else:
-            sync_pending()
+            if retry_review:
+                sync_pending(retry_review=True)
+            else:
+                sync_pending()
     elif api_token and now - _last_cloud_poll_at >= CLOUD_POLL_INTERVAL_SECONDS:
         if not _request_budget_applies() or _request_budget_remaining() > REQUEST_BUDGET_BACKGROUND_RESERVE:
             _sync_cloud_state()
@@ -972,9 +1084,9 @@ def _run_sync_cycle(now=None):
     _record_sync_success()
 
 
-def sync_loop():
+def sync_loop(stop_event=None):
     """Background thread: retry pending actions and sync cloud state."""
-    while True:
+    while stop_event is None or not stop_event.is_set():
         _sync_wakeup.clear()
         try:
             _run_sync_cycle()
@@ -994,7 +1106,7 @@ def _health_check():
         entry_id = state["entry_id"]
     if not tracking or entry_id is not None:
         return
-    if _load_pending():
+    if _active_pending():
         return
     try:
         with state_lock:
@@ -1064,6 +1176,8 @@ def _pending_entries_from_queue(queue, date_obj=None):
             "_task_context": queue[op["indexes"][0]].get("_task_context"),
             "_pending_kind": op["kind"],
             "_remote_entry_id": op.get("entry_id"),
+            "_review_error": op.get('review_error'),
+            "_needs_full_review": op.get('verify_running') and not op.get('verify_snapshot'),
         })
 
     if date_obj is None:
@@ -1448,7 +1562,7 @@ def _sync_cloud_state():
     global rate_limited_until
     if not api_token:
         return
-    pending = _load_pending()
+    pending = _active_pending()
     if any(item.get("action") in ("start", "stop") for item in pending):
         return
     try:
@@ -1962,6 +2076,7 @@ def _update_pending_entry(entry, update):
         for idx in indexes:
             item = queue[idx]
             action = item.get("action")
+            _prepare_pending_edit(item)
 
             if "description" in update:
                 item["description"] = update["description"]
@@ -1991,11 +2106,13 @@ def _delete_pending_entry(entry):
         candidate = _pending_entry_candidate(queue, entry)
         if candidate is None:
             return False
+        if bool(candidate.get('_review_error')) != bool(entry.get('_review_error')):
+            return False  # The confirmed Delete/Discard intent no longer matches.
         indexes = set(candidate["_pending_indexes"])
 
         remaining = [item for idx, item in enumerate(queue) if idx not in indexes]
         remote_id = entry.get("_remote_entry_id")
-        if remote_id:
+        if remote_id and not candidate.get('_review_error'):
             remaining.append({
                 "action": "delete",
                 "ts": datetime.now(timezone.utc).isoformat(),
@@ -2238,10 +2355,14 @@ def start_hotkey_listener():
 
 # ── Update loop ─────────────────────────────────────────────────────────────
 
-def update_loop():
+def update_loop(stop_event=None):
     """Update icon tooltip and optional panel label with elapsed time."""
     while True:
-        time.sleep(1)
+        if stop_event is not None:
+            if stop_event.wait(1):
+                return
+        else:
+            time.sleep(1)
         if icon_ref:
             tooltip = get_tooltip()
             GLib.idle_add(_set_tray_tooltip, tooltip)
@@ -2289,52 +2410,47 @@ def _acquire_instance_lock():
 
 def _init_workspace():
     """Fetch workspace and project info, sync running entry."""
-    global api_token, rate_limited_until, _last_cloud_poll_at
+    global api_token, rate_limited_until, _last_cloud_poll_at, _restored_remote_id
     if not api_token:
         return False
-    pending = _load_pending()
+    token, base = api_token, get_api_base()
+    with state_lock:
+        before = dict(state)
+    pending = _active_pending()
     has_conflicting_pending = any(
         item.get("action") in ("start", "stop") for item in pending
     )
-    if has_conflicting_pending and state.get("workspace_id"):
+    if has_conflicting_pending and before.get("workspace_id"):
         return True
 
     try:
-        if not state.get("workspace_id"):
-            me = fetch_me()
-            state["workspace_id"] = me["default_workspace_id"]
-
-        if has_conflicting_pending:
+        workspace = before.get('workspace_id')
+        if not workspace:
+            workspace = fetch_me(token=token, base_url=base)['default_workspace_id']
+        current = None if has_conflicting_pending else fetch_current_entry(token=token, base_url=base)
+        recent = []
+        if not has_conflicting_pending and not current and not before.get('description'):
+            try:
+                recent = api_get('/me/time_entries', token=token, base_url=base)
+            except Exception:
+                pass
+        with state_lock:
+            if state != before or api_token != token or get_api_base() != base:
+                return False  # User work or an account change won while the request ran.
+            state['workspace_id'] = workspace
+            if not has_conflicting_pending:
+                if current:
+                    state.update(tracking=True, entry_id=current['id'], start_time=current['start'],
+                                 description=current.get('description', ''), project_id=current.get('project_id'),
+                                 task_id=current.get('task_id'), workspace_id=current.get('workspace_id') or workspace)
+                else:
+                    state.update(tracking=False, entry_id=None, start_time=None)
+                    if isinstance(recent, list) and recent:
+                        state['description'] = recent[0].get('description') or state.get('description', '')
+                        if not state.get('project_id'):
+                            state['project_id'] = recent[0].get('project_id')
             save_state()
-            return True
-
-        # Check for running entry
-        current = fetch_current_entry()
-        if current:
-            state["tracking"] = True
-            state["entry_id"] = current["id"]
-            state["start_time"] = current["start"]
-            state["description"] = current.get("description", "")
-            state["project_id"] = current.get("project_id")
-            state["task_id"] = current.get("task_id")
-            state["workspace_id"] = current.get("workspace_id") or state.get("workspace_id")
-        else:
-            state["tracking"] = False
-            state["entry_id"] = None
-            state["start_time"] = None
-            if not state.get("description"):
-                try:
-                    recent = api_get("/me/time_entries")
-                    if recent and isinstance(recent, list) and len(recent) > 0:
-                        last = recent[0]
-                        if last.get("description"):
-                            state["description"] = last["description"]
-                        if last.get("project_id") and not state.get("project_id"):
-                            state["project_id"] = last["project_id"]
-                except Exception:
-                    pass
-
-        save_state()
+            _restored_remote_id = None
         _last_cloud_poll_at = time.monotonic()
         return True
     except RateLimitedError as e:
@@ -2343,6 +2459,97 @@ def _init_workspace():
     except Exception as e:
         print(f"Init failed: {e}", file=sys.stderr)
         return False
+
+
+def _begin_startup_scope():
+    global _startup_scope
+    _startup_scope = dict(base=get_api_base(), account=state.get('_account'),
+                          workspace=state.get('workspace_id'), queue_ids=set())
+
+
+def _accept_keyring_token(token, lookup_base):
+    global api_token
+    with toggle_lock:
+        if token and not api_token and get_api_base() == lookup_base:
+            api_token = token
+            if _startup_scope is not None and _startup_scope['base'] == lookup_base:
+                import toggl_projects
+                _startup_scope['resolved_account'] = toggl_projects.account(sys.modules[__name__])
+
+
+def _finish_startup_scope():
+    """Bind only work created in this launch to its unchanged keyring identity.
+
+    Call under toggle_lock after workspace discovery, before replaying the queue.
+    """
+    global _startup_scope
+    if _startup_scope is None or not api_token:
+        return
+    import toggl_projects
+    scope = toggl_projects.context(sys.modules[__name__])
+    startup = _startup_scope
+    if (startup['base'] != get_api_base() or startup.get('resolved_account') != scope['account']
+            or startup['account'] not in (None, scope['account'])
+            or startup['workspace'] not in (None, scope['workspace_id'])):
+        _startup_scope = None
+        return
+    if not scope['workspace_id']:
+        return
+    starts = set()
+    with pending_lock:
+        queue = _load_pending()
+        changed = False
+        for item in queue:
+            context = item.get('_task_context') or {}
+            if (item.get('_queue_id') in startup['queue_ids']
+                    and context.get('account') in (None, scope['account'])
+                    and context.get('workspace_id') in (None, scope['workspace_id'])):
+                item['_task_context'] = scope
+                item['workspace_id'] = scope['workspace_id']
+                verification = item.get('_verify_snapshot')
+                if isinstance(verification, dict) and verification.get('account') is None:
+                    verification['account'] = scope['account']
+                changed = True
+                if item.get('action') == 'start':
+                    starts.add(item.get('start_time'))
+        if changed:
+            _save_pending(queue)
+        _startup_scope = None
+    with state_lock:
+        if state.get('tracking') and state.get('start_time') in starts and state.get('_account') is None:
+            state['_account'] = scope['account']
+            save_state()
+    for entry in _pending_as_entries():
+        if entry.get('start') in starts and entry.get('_task_context') == scope:
+            toggl_task_tree.remember(sys.modules[__name__], dict(
+                tracking=True, start_time=entry['start'], description=entry.get('description', ''),
+                workspace_id=entry.get('workspace_id'), project_id=entry.get('project_id'),
+                task_id=entry.get('task_id'), _account=scope['account']))
+
+
+def _bootstrap_and_sync(stop_event):
+    """Keyring and cloud setup run after the tray event loop becomes ready."""
+    global api_token
+    try:
+        lookup_base = get_api_base()
+        token = get_api_token()
+        if stop_event.is_set():
+            return
+        _accept_keyring_token(token, lookup_base)
+        if api_token:
+            _init_workspace()
+            with toggle_lock:
+                _finish_startup_scope()
+        else:
+            print('No API token found; saved timers remain available offline', file=sys.stderr)
+        _refresh_projects()
+        _refresh_tasks()
+        toggl_task_tree.refresh(sys.modules[__name__])
+        GLib.idle_add(_refresh_project_menu)
+    except Exception as error:
+        _record_sync_failure(error)
+    if not stop_event.is_set():
+        sync_loop(stop_event)
 
 
 def main():
@@ -2367,50 +2574,45 @@ def main():
     Gtk.init([])
 
     load_state()
+    _begin_startup_scope()
     toggl_debug.LOGGER.info('Tray starting tracking=%s entry_id=%s pending_count=%s',
                             state.get('tracking'), state.get('entry_id'), len(_load_pending()))
 
-    api_token = get_api_token()
-    if api_token and state.get("start_time") and state.get("_account_start") != state.get("start_time"):
-        save_state()  # A timer saved by an older version gets stamped with the account it was running under.
-    if not api_token:
-        print("No API token found. Set TOGGL_API_TOKEN env var or use the tray menu.", file=sys.stderr)
-        print("You can also run: secret-tool store --label='Toggl API Token' service toggl username api_token", file=sys.stderr)
-    else:
-        _init_workspace()
-
-    _refresh_projects()
-    _refresh_tasks()
-    toggl_task_tree.refresh(sys.modules[__name__])
-
     import toggl_control
     control_server = toggl_control.start_server(sys.modules[__name__])
+    stop_event = threading.Event()
 
     # Start hotkey listener
     start_hotkey_listener()
 
     # Start update thread
-    updater = threading.Thread(target=update_loop, daemon=True)
+    updater = threading.Thread(target=update_loop, args=(stop_event,), daemon=True)
     updater.start()
-
-    # Start offline sync thread
-    syncer = threading.Thread(target=sync_loop, daemon=True)
-    syncer.start()
 
     # Create and run tray icon
     icon_ref = pystray.Icon("toggl-tray", render_icon(), get_tooltip(), build_menu())
-    if _init_native_status_icon():
-        # XApp owns the visible icon; pystray still supplies its GTK loop and menu adapter.
-        icon_ref.run(setup=lambda _icon: None)
-    else:
+    native = _init_native_status_icon()
+    import toggl_watchdog
+    watchdog = toggl_watchdog.UIWatchdog()
+    watchdog.start(GLib)
+    def ready(icon):
+        if not native:
+            icon.visible = True
+        threading.Thread(target=_bootstrap_and_sync, args=(stop_event,),
+                         name='cloud-sync', daemon=True).start()
+    try:
         _update_panel_timer_label()
-        icon_ref.run()
-    control_server.shutdown()
-    control_server.server_close()
-    lock_fp.close()
-    toggl_debug.LOGGER.info('Tray stopped')
-    if debug_log is not None:
-        debug_log.close()
+        icon_ref.run(setup=ready)
+    finally:
+        stop_event.set()
+        _sync_wakeup.set()
+        watchdog.stop()
+        control_server.shutdown()
+        control_server.server_close()
+        lock_fp.close()
+        toggl_debug.LOGGER.info('Tray stopped')
+        if debug_log is not None:
+            debug_log.close()
     return 0
 
 

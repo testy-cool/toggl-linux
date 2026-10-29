@@ -29,6 +29,10 @@ def snapshot(app):
              and (not current.get("tracking") or e.get("id") != current.get("entry_id"))]
     entries = [e for e in entries if e not in stale]
     warnings = [getattr(app, "_control_warning", ""), getattr(app, "status_message", ""),
+                "Older pending entries need full review; saving applies all displayed fields" if any(
+                    item.get('_verify_running') and not item.get('_verify_snapshot') for item in app._load_pending()) else "",
+                "Pending entry needs review in Today's Entries; edit it or discard local changes" if any(
+                    item.get('_review_error') for item in app._load_pending()) else "",
                 "Today's entries changed; refresh to update durations" if stale else ""]
     warning = " · ".join(dict.fromkeys(message for message in warnings if message))
     return {"state": current, "projects": app._cached_projects(), "tasks": app._cached_tasks(),
@@ -123,6 +127,7 @@ def _edit_entry(app, selected, changes):
                 raise ControlError("Pending entry changed; refresh before editing")
             changes = _changes(app, changes, entry)
             for idx in entry["_pending_indexes"]:
+                app._prepare_pending_edit(queue[idx])
                 queue[idx].update(changes)
             app._save_pending(queue)
         if entry.get("_pending_kind") == "open" and app.state.get("start_time") == entry.get("start"):
@@ -220,7 +225,7 @@ def _dispatch(app, action, payload):
         return result
     if action == "sync":
         with app.toggle_lock:
-            app._run_sync_cycle()
+            app._run_sync_cycle(retry_review=True)
         return snapshot(app)
     if action == "refresh":
         now = time.monotonic()

@@ -228,5 +228,5 @@ def test_stale_start_button_does_not_stop_or_edit_replacement_timer(tmp_state_di
 def test_sync_button_runs_existing_offline_recovery(tmp_state_dir):
     with patch.object(app,'_run_sync_cycle') as sync:
         result=control.dispatch(app,'sync',{})
-    sync.assert_called_once_with()
+    sync.assert_called_once_with(retry_review=True)
     assert 'pending_count' in result

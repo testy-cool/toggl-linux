@@ -504,7 +504,7 @@ def _cli_sync(_args):
     if not app.api_token:
         print("No API token; cannot sync pending entries.", file=sys.stderr)
         return 2
-    remaining = app.sync_pending()
+    remaining = app.sync_pending(retry_review=True)
     app._sync_cloud_state()
     print(f"Sync complete. Pending actions remaining: {remaining}")
     return 0
