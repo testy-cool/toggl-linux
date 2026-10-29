@@ -312,7 +312,7 @@ def _gtk_edit_entry_dialog(entry):
 
         grid.attach(Gtk.Label(label="Description", xalign=0), 0, 0, 1, 1)
         desc_entry = Gtk.Entry()
-        desc_entry.set_text(entry.get("description", ""))
+        desc_entry.set_text(entry.get("description") or "")
         desc_entry.set_hexpand(True)
         desc_entry.set_activates_default(True)
         desc_entry.set_width_chars(34)
@@ -368,9 +368,26 @@ def _gtk_edit_entry_dialog(entry):
         grid.attach(stop_entry, 1, 4, 1, 1)
 
         box.add(grid)
+        time_error = Gtk.Label(label='Use a valid HH:MM time for Start and Stop.')
+        time_error.set_line_wrap(True)
+        box.add(time_error)
         dialog.show_all()
+        time_error.hide()
         desc_entry.grab_focus()
-        resp = dialog.run()
+        while True:
+            resp = dialog.run()
+            if resp != Gtk.ResponseType.OK:
+                break
+            start_text = start_entry.get_text().strip()
+            changed_start = start_text != start_dt.strftime('%H:%M')
+            stop_value = stop_entry.get_text().strip()
+            changed_stop = not running and stop_value != stop_text
+            stop_base = datetime.fromisoformat(entry['stop']).astimezone() if entry.get('stop') else start_dt
+            if ((changed_start and app._parse_hhmm(start_text, start_dt) is None)
+                    or (changed_stop and app._parse_hhmm(stop_value, stop_base) is None)):
+                time_error.show()
+                continue
+            break
 
         if resp == Gtk.ResponseType.REJECT:
             result["value"] = "delete"

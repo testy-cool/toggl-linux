@@ -73,7 +73,7 @@ def test_editing_a_snapshotless_older_stop_preserves_the_explicit_corrections():
     with patch.object(app, 'api_get', return_value=remote_entry(queued)), patch.object(app, 'update_entry') as update:
         assert app.sync_pending() == 0
     assert update.call_args.args[2] == dict(description='Explicit correction', start=revised_start,
-                                          stop=revised_stop, duration=82500, project_id=None)
+                                          stop=revised_stop, duration=82500, project_id=None, task_id=None)
 
 
 def test_control_sync_retries_items_that_background_sync_pauses():

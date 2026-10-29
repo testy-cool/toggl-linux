@@ -737,6 +737,8 @@ def _restored_stop_changes(op):
     review_all = snapshot.get('review_all_fields') is True
     data = {key: op[key] for key in ('description', 'project_id', 'task_id')
             if key in op and (review_all or op[key] != original.get(key, op[key]))}
+    if review_all:
+        data.update(project_id=op.get('project_id'), task_id=op.get('task_id'))
     edited_start = review_all or op.get('start_time') != original.get('start_time', op.get('start_time'))
     edited_stop = review_all or op.get('stop_time') != original.get('stop_time', op.get('stop_time'))
     start = _parse_iso(op.get('start_time') if edited_start else remote.get('start'))

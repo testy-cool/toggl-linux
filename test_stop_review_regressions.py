@@ -54,3 +54,18 @@ def test_changed_review_state_rejects_the_previously_confirmed_delete_intent(unp
     before = app._load_pending()
     assert not app._delete_pending_entry(selected)
     assert app._load_pending() == before
+
+
+def test_full_review_explicitly_clears_a_task_missing_from_the_older_local_stop():
+    queued = restored_stop()
+    queue = app._load_pending()
+    queue[0].pop('_verify_snapshot')
+    queue[0].pop('project_id', None)
+    app._save_pending(queue)
+    assert app._update_pending_entry(app._pending_as_entries()[0], {})
+    app.api_token = 'tok'
+    with patch.object(app, 'api_get', return_value=remote_entry(queued,project_id=7,task_id=31)), \
+         patch.object(app, 'update_entry') as update:
+        assert app.sync_pending() == 0
+    assert update.call_args.args[2]['project_id'] is None
+    assert 'task_id' in update.call_args.args[2] and update.call_args.args[2]['task_id'] is None
