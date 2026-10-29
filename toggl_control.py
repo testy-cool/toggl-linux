@@ -226,7 +226,7 @@ def _dispatch(app, action, payload):
         last = getattr(app, "_control_refreshed_at", None)
         if last is None or time.monotonic() - last >= 60:
             app._control_refreshed_at = time.monotonic()
-            app._refresh_projects()
+            app._refresh_projects(force=True)
             app._refresh_tasks(force=True)
             try:
                 if not app.api_token or app._rate_limit_active() or app._request_budget_remaining() <= app.REQUEST_BUDGET_BACKGROUND_RESERVE:
