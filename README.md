@@ -326,6 +326,8 @@ The current timer stays visible while browsing; editing happens in the same wind
 **Open timer** and **Edit description** open this window's editor directly.
 **Today's entries** opens its Today tab. Stop keeps an unfinished description
 attached to the completed interval so it can still be saved without restarting.
+Entry edits include start and stop times. Older pending intervals without a cloud
+baseline require explicit approval of every displayed field before saving.
 
 The prebuilt interface in `toggl_web_assets/` ships with the Python source. Node
 is needed only to develop or rebuild it:

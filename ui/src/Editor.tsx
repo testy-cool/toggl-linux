@@ -84,6 +84,7 @@ export function Editor({
   hide(): void;
 }) {
   const metadata = d.mode === "task" || d.mode === "new-task";
+  const fullReview = d.mode === "entry" && d.entry?._needs_full_review;
   const staleContext = !contextMatches(d.snapshot, current);
   const staleTimer =
     (d.mode === "current" || d.mode === "new") &&
@@ -188,17 +189,55 @@ export function Editor({
                   />
                 )}
               </FieldGroup>
-              {d.mode === "current" && (
+              {(d.mode === "current" || d.mode === "entry") && (
                 <Field>
                   <FieldLabel htmlFor="work-start">Started at</FieldLabel>
                   <Input
                     id="work-start"
                     type="datetime-local"
+                    step="1"
                     value={d.start}
                     disabled={busy}
                     required
-                    onChange={(e) => change({ ...d, start: e.target.value })}
+                    onChange={(e) =>
+                      change({ ...d, start: e.target.value, reviewed: false })
+                    }
                   />
+                </Field>
+              )}
+              {d.mode === "entry" && d.entry?.stop && (
+                <Field>
+                  <FieldLabel htmlFor="work-stop">Stopped at</FieldLabel>
+                  <Input
+                    id="work-stop"
+                    type="datetime-local"
+                    step="1"
+                    value={d.stop}
+                    disabled={busy}
+                    required
+                    onChange={(e) =>
+                      change({ ...d, stop: e.target.value, reviewed: false })
+                    }
+                  />
+                </Field>
+              )}
+              {fullReview && (
+                <Field>
+                  <FieldDescription>
+                    This older pending entry has no original cloud baseline.
+                    Saving approves all fields above, including its full start
+                    and stop dates and times.
+                  </FieldDescription>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={busy || d.reviewed}
+                    onClick={() => change({ ...d, reviewed: true })}
+                  >
+                    {d.reviewed
+                      ? "Interval reviewed"
+                      : "Approve displayed interval"}
+                  </Button>
                 </Field>
               )}
               {metadata && !nameValid && (
@@ -223,6 +262,7 @@ export function Editor({
                 busy ||
                 staleContext ||
                 staleTimer ||
+                (fullReview && !d.reviewed) ||
                 (metadata && (!nameValid || d.project === "none"))
               }
             >

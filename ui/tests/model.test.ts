@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { afterOwnStop, commandFor, contextMatches, draftFor, localTime, workItems } from '../src/model.ts'
+import { afterOwnStop, commandFor, contextMatches, draftFor, localTime, running, workItems } from '../src/model.ts'
 import type { Snapshot } from '../src/model.ts'
 
 const sample = (): Snapshot => ({
@@ -87,4 +87,43 @@ test('a stopped draft never follows another account or an ambiguous interval', (
   assert.equal(afterOwnStop(draft,result),draft)
   result.project_context.account = 'fixture'
   assert.equal(afterOwnStop(draft,result),draft)
+})
+
+test('a cloud timer with a null description can render its current activity', () => {
+  const data = sample()
+  data.state.description = null
+  data.state.task_id = null
+  data.activities = [{id:6,name:'Studio',last_used:1,activities:[{description:'',last_used:1,count:1}]}]
+  assert.equal(running(data,workItems(data).find(w => !w.task)! ),true)
+})
+test('stopping retains an unsaved start correction on the completed interval', () => {
+  const data=sample(), result=sample()
+  const draft=draftFor(data,'current')
+  draft.start=localTime('2026-10-29T11:30:12Z')
+  result.state.tracking=false
+  result.stopped_entry={id:11,workspace_id:1,project_id:6,task_id:31,description:'Original',start:data.state.start_time!,stop:'2026-10-29T13:00:00Z',duration:3562}
+  const saved=afterOwnStop(draft,result)
+  assert.equal(saved.start,draft.start)
+  assert.deepEqual(commandFor(saved).payload.changes,{start:'2026-10-29T11:30:12.000Z'})
+})
+test('an explicit stopped interval survives the Today filter across midnight', () => {
+  const data=sample(), result=sample()
+  result.state.tracking=false
+  result.entries=[]
+  result.stopped_entry={id:11,workspace_id:1,project_id:6,task_id:31,description:'Original',start:data.state.start_time!,stop:'2026-10-30T01:00:00Z',duration:46762}
+  const draft=draftFor(data,'current')
+  draft.description='Kept overnight'
+  assert.equal(afterOwnStop(draft,result).mode,'entry')
+})
+test('older pending intervals require explicit full review and show exact seconds', () => {
+  const data=sample()
+  const entry={id:11,workspace_id:1,project_id:6,task_id:31,description:'Old',start:data.state.start_time!,stop:'2026-10-29T13:00:17Z',duration:3579,_needs_full_review:true}
+  const draft=draftFor(data,'entry',undefined,entry)
+  assert.equal(draft.start,localTime(entry.start))
+  assert.equal(draft.stop,localTime(entry.stop))
+  assert.equal(draft.start.length,19)
+  assert.throws(()=>commandFor(draft),/approve/)
+  draft.reviewed=true
+  assert.equal(commandFor(draft).payload.reviewed_interval,true)
+  assert.deepEqual(commandFor(draft).payload.changes,{})
 })

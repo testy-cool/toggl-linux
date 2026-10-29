@@ -116,3 +116,122 @@ def test_socket_still_rejects_commands_larger_than_its_bounded_frame():
         with pytest.raises(control.ControlError, match='large'):
             control.request(Path('/private-test'), 'edit-current', {'description': 'x' * control.MAX_COMMAND})
     connection.return_value.__enter__.return_value.sendall.assert_not_called()
+
+
+@pytest.mark.parametrize('count', [9, 100])
+def test_history_response_stays_bounded_without_duplicate_or_partial_descriptions(count):
+    import json
+    activities = [dict(description=str(i) + '🧪' * 9990, last_used=i, count=1) for i in range(count)]
+    groups = [dict(id=None, name='No project', last_used=count, activities=activities, tasks=activities)]
+    server = control.start_server(app)
+    try:
+        with patch.object(control.toggl_task_tree, 'tree', return_value=groups):
+            result = control.request(app.STATE_DIR, 'work-snapshot', {})
+        assert len(json.dumps({'ok': True, 'result': result}, ensure_ascii=False).encode()) < control.MAX_MESSAGE
+        returned = result['activities'][0]['activities']
+        assert returned[0] == activities[-1]
+        assert all(row in activities for row in returned)
+        assert len(returned) + result['activities_omitted'] == count
+        assert 'tasks' not in result['activities'][0]
+        assert bool(result['activities_omitted']) == (count == 100)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize('missing', ['seat', 'pointer', 'primary', 'display'])
+def test_position_handles_missing_native_devices_and_monitors(missing):
+    from types import SimpleNamespace
+    import toggl_webview_launcher as launcher
+    from gi.repository import Gdk
+    display = MagicMock()
+    area = SimpleNamespace(x=1920, y=40, width=1280, height=720)
+    display.get_primary_monitor.return_value.get_workarea.return_value = area
+    display.get_monitor.return_value.get_workarea.return_value = area
+    display.get_monitor_at_point.return_value.get_workarea.return_value = area
+    display.get_default_seat.return_value.get_pointer.return_value = None
+    if missing == 'seat': display.get_default_seat.return_value = None
+    if missing == 'primary': display.get_primary_monitor.return_value = None
+    with patch.object(Gdk.Display, 'get_default', return_value=None if missing == 'display' else display):
+        geometry = launcher._position(None, None)
+    assert geometry['width'] > 0 and geometry['height'] > 0
+    if missing != 'display':
+        assert geometry['x'] >= area.x and geometry['y'] >= area.y
+
+
+def test_stopping_yesterdays_offline_timer_returns_its_exact_editable_interval():
+    from datetime import datetime, timedelta, timezone
+    app.api_token = None
+    yesterday = (datetime.now(timezone.utc).astimezone().replace(hour=12, minute=0, second=0, microsecond=0) - timedelta(days=1)).isoformat()
+    with patch.object(app, '_play_sound'):
+        control.dispatch(app, 'start', {'changes': {'description': 'Overnight'}})
+        control.dispatch(app, 'edit-current', {'changes': {'start': yesterday}})
+        result = control.dispatch(app, 'stop', {'expected': dict(app.state)})
+    assert not result['state']['tracking']
+    assert not result['entries']
+    stopped = result['stopped_entry']
+    assert stopped['start'] == yesterday and stopped['_offline']
+    control.dispatch(app, 'edit-entry', {'entry': stopped, 'changes': {'description': 'Kept overnight'}})
+    assert app._pending_as_entries()[0]['description'] == 'Kept overnight'
+
+
+def test_legacy_pending_review_requires_approval_and_keeps_time_corrections():
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    start, stop = (now-timedelta(hours=3)).isoformat(), (now-timedelta(hours=1)).isoformat()
+    app._save_pending([dict(action='stop', entry_id=99, workspace_id=1, description='Older',
+                            project_id=None, task_id=None, start_time=start, stop_time=stop,
+                            _verify_running=True)])
+    original = app._pending_as_entries()[0]
+    changes = {'description': 'Reviewed', 'start': (now-timedelta(hours=2)).isoformat(),
+               'stop': (now-timedelta(minutes=30)).isoformat()}
+    before = app._load_pending()
+    with pytest.raises(control.ControlError, match='approve'):
+        control.dispatch(app, 'edit-entry', {'entry': original, 'changes': changes})
+    assert app._load_pending() == before
+    control.dispatch(app, 'edit-entry', {'entry': original, 'changes': changes, 'reviewed_interval': True})
+    result = app._pending_as_entries()[0]
+    assert result['start'] == changes['start'] and result['stop'] == changes['stop']
+    assert result['description'] == changes['description']
+    assert app._load_pending()[0]['_verify_snapshot']['review_all_fields'] is True
+
+
+@pytest.mark.parametrize('changes', [{'start': 'invalid'}, {'stop': 'invalid'},
+    {'start': '9999-01-01T00:00:00+00:00'}, {'stop': '2000-01-01T00:00:00+00:00'}])
+def test_invalid_entry_times_cannot_approve_a_pending_review(changes):
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    app._save_pending([dict(action='stop', entry_id=99, workspace_id=1, description='Older',
+                            start_time=(now-timedelta(hours=2)).isoformat(),
+                            stop_time=(now-timedelta(hours=1)).isoformat(), _verify_running=True)])
+    original = app._pending_as_entries()[0]
+    before = app._load_pending()
+    with pytest.raises(control.ControlError, match='times'):
+        control.dispatch(app, 'edit-entry', {'entry': original, 'changes': changes, 'reviewed_interval': True})
+    assert app._load_pending() == before
+
+
+@pytest.mark.parametrize('running', [False, True])
+def test_cloud_time_corrections_send_consistent_duration_and_keep_timer_state(running):
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    original_start = (now-timedelta(hours=2)).isoformat()
+    start = (now-timedelta(hours=3)).isoformat()
+    stop = (now-timedelta(hours=1)).isoformat()
+    entry = dict(id=99, workspace_id=1, project_id=None, task_id=None, description='Cloud',
+                 start=original_start, stop=None if running else stop, duration=-1 if running else 3600)
+    app.api_token = 'fixture'
+    app._control_entries = [entry]
+    app._control_entries_date = now.astimezone().date().isoformat()
+    app.state.update(tracking=running, entry_id=99 if running else None,
+                     workspace_id=1, start_time=original_start if running else None)
+    changes = {'start': start}
+    with patch.object(app, 'update_entry') as update:
+        control.dispatch(app, 'edit-entry', {'entry': dict(entry), 'changes': changes})
+    sent = update.call_args.args[2]
+    assert sent['start'] == start
+    assert sent['duration'] == (-int(datetime.fromisoformat(start).timestamp()) if running else 7200)
+    assert app.state['tracking'] is running
+    if running:
+        assert app.state['start_time'] == start
+        assert 'start' not in app.state and 'duration' not in app.state

@@ -42,6 +42,30 @@ def snapshot(app):
             "project_context": toggl_projects.context(app), "projects_url": toggl_projects.projects_url(app)}
 
 
+def _work_snapshot(app):
+    result = snapshot(app)
+    # The legacy tree aliases activities as tasks. The web protocol needs one copy.
+    history = toggl_task_tree.tree(app)
+    groups = [{k: v for k, v in group.items() if k not in {'tasks', 'activities'}} for group in history]
+    for group in groups:
+        group['activities'] = []
+    result.update(activities=groups, activities_omitted=0)
+    budget = MAX_MESSAGE - len(json.dumps({'ok': True, 'result': result}, ensure_ascii=False).encode()) - 1024
+    candidates = sorted(((activity, index) for index, group in enumerate(history)
+                         for activity in group['activities']), key=lambda item: -item[0]['last_used'])
+    for activity, index in candidates:
+        size = len(json.dumps(activity, ensure_ascii=False).encode()) + 2
+        if size <= budget:
+            groups[index]['activities'].append(activity)
+            budget -= size
+        else:
+            result['activities_omitted'] += 1
+    if result['activities_omitted']:
+        result['warning'] = ' · '.join(filter(None, [result['warning'],
+            f"{result['activities_omitted']} older recent activities exceed the local response limit"]))
+    return result
+
+
 def _changes(app, values, context=None):
     context = app.state if context is None else context
     if not isinstance(values, dict) or set(values) - {"description", "project_id", "task_id", "start"}:
@@ -115,33 +139,49 @@ def _edit_current(app, changes, expected=None):
         app.save_state()
 
 
-def _edit_entry(app, selected, changes):
-    if isinstance(changes, dict) and "start" in changes:
-        raise ControlError("Use the current timer editor to change its start time")
+def _entry_changes(app, values, entry):
+    if not isinstance(values, dict) or set(values) - {'description', 'project_id', 'task_id', 'start', 'stop'}:
+        raise ControlError('Only description, project, task, start and stop may be edited')
+    changes = _changes(app, {k: v for k, v in values.items() if k not in {'start', 'stop'}}, entry)
+    if not {'start', 'stop'} & values.keys():
+        return changes
+    running = entry.get('duration', 0) < 0
+    if running and 'stop' in values:
+        raise ControlError('Stop the running timer before editing its end time')
+    try:
+        start = app._parse_iso(values.get('start', entry.get('start')))
+        stop = app.datetime.now(app.timezone.utc) if running else app._parse_iso(values.get('stop', entry.get('stop')))
+        now = app.datetime.now(app.timezone.utc)
+        if not start or not stop or not start.tzinfo or not stop.tzinfo or start > stop or stop > now:
+            raise ValueError()
+    except (ValueError, TypeError, AttributeError):
+        raise ControlError('Use valid start and stop times in order, no later than now') from None
+    changes.update({key: values[key] for key in ('start', 'stop') if key in values})
+    changes['duration'] = -int(start.timestamp()) if running else int((stop-start).total_seconds())
+    return changes
+
+
+def _edit_entry(app, selected, changes, reviewed_interval=False):
     if not isinstance(selected, dict):
         raise ControlError("Entry is required")
     if selected.get("_offline"):
-        with app.pending_lock:
+        with app.toggle_lock, app.pending_lock:
             queue = app._load_pending()
             entry = app._pending_entry_candidate(queue, selected)
             if not entry:
                 raise ControlError("Pending entry changed; refresh before editing")
-            changes = _changes(app, changes, entry)
-            for idx in entry["_pending_indexes"]:
-                app._prepare_pending_edit(queue[idx])
-                queue[idx].update(changes)
-            app._save_pending(queue)
-        if entry.get("_pending_kind") == "open" and app.state.get("start_time") == entry.get("start"):
-            with app.state_lock:
-                app.state.update(changes)
-                app.save_state()
+            if entry.get('_needs_full_review') and reviewed_interval is not True:
+                raise ControlError('Review and approve all displayed interval fields before saving')
+            changes = _entry_changes(app, changes, entry)
+            if not app._update_pending_entry(entry, changes):
+                raise ControlError('Pending entry changed; refresh before editing')
         toggl_task_tree.correct(app, entry, changes)
     else:
         entries = getattr(app, "_control_entries", [])
         entry = next((e for e in entries if str(e.get("id")) == str(selected.get("id"))), None)
         if not entry:
             raise ControlError("Entry changed; refresh before editing")
-        changes = _changes(app, changes, entry)
+        changes = _entry_changes(app, changes, entry)
         if not app.api_token or app._rate_limit_active() or app._request_budget_exhausted():
             raise ControlError("Cloud entry cannot be edited right now; retry when connected")
         app.update_entry(entry.get("workspace_id") or app.state["workspace_id"], entry["id"], changes)
@@ -149,7 +189,8 @@ def _edit_entry(app, selected, changes):
         entry.update(changes)
         if app.state.get("entry_id") == entry["id"]:
             with app.state_lock:
-                app.state.update(changes)
+                app.state.update({('start_time' if k == 'start' else k): v for k, v in changes.items()
+                                  if k in {'description', 'project_id', 'task_id', 'start'}})
                 app.save_state()
 
 
@@ -197,9 +238,7 @@ def _dispatch(app, action, payload):
         return snapshot(app)
     if action == 'work-snapshot':
         with app.toggle_lock:
-            result = snapshot(app)
-            result['activities'] = toggl_task_tree.tree(app)
-            return result
+            return _work_snapshot(app)
     if action == 'hide-activity':
         with app.toggle_lock:
             if payload.get('context') != toggl_projects.context(app):
@@ -308,7 +347,15 @@ def _dispatch(app, action, payload):
         elif action == "edit-current":
             _edit_current(app, _changes(app, payload.get("changes", {}), before), expected=before)
         elif action == "edit-entry":
-            _edit_entry(app, payload.get("entry"), payload.get("changes", {}))
+            _edit_entry(app, payload.get("entry"), payload.get("changes", {}), payload.get('reviewed_interval', False))
+        stopped_entry = None
+        if action == 'stop' and before.get('tracking') and not app.state.get('tracking'):
+            entries = app._merge_entries_with_pending(getattr(app, '_control_entries', []), app._pending_as_entries())
+            matches = [e for e in entries if e.get('stop') and e.get('start') == before.get('start_time')
+                       and str(e.get('workspace_id')) == str(before.get('workspace_id'))
+                       and (before.get('entry_id') is None or e.get('id') == before['entry_id'])]
+            if len(matches) == 1:
+                stopped_entry = matches[0]
     if app.state.get("tracking") and app.state.get("entry_id"):
         current = app.state
         entry = {"id": current["entry_id"], "workspace_id": current["workspace_id"],
@@ -321,7 +368,10 @@ def _dispatch(app, action, payload):
         app._control_entries_date = app.datetime.now().date().isoformat()
     if app.icon_ref:
         app.GLib.idle_add(_refresh_ui, app)
-    return snapshot(app)
+    result = snapshot(app)
+    if stopped_entry is not None:
+        result['stopped_entry'] = stopped_entry
+    return result
 
 
 def record_stop(app, entry_id, start, description, workspace_id, project_id, task_id, stop):
@@ -362,7 +412,7 @@ def start_server(app):
                 response = {"ok": True, "result": result}
             except Exception as error:
                 response = {"ok": False, "error": str(error)[:500]}
-            self.wfile.write(json.dumps(response).encode() + b"\n")
+            self.wfile.write(json.dumps(response, ensure_ascii=False).encode() + b"\n")
 
     previous_mask = os.umask(0o177)
     try:

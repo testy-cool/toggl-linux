@@ -20,18 +20,19 @@ export type Timer = {
   workspace_id: Id | null;
   project_id: Id | null;
   task_id: Id | null;
-  description: string;
+  description: string | null;
 };
 export type Entry = {
   id: Id;
   workspace_id: Id;
   project_id: Id | null;
   task_id: Id | null;
-  description: string;
+  description: string | null;
   start: string;
   stop: string | null;
   duration: number;
   _offline?: boolean;
+  _needs_full_review?: boolean;
 };
 export type Activity = {
   description: string;
@@ -43,6 +44,7 @@ export type Snapshot = {
   projects: Project[];
   tasks: Task[];
   entries: Entry[];
+  stopped_entry?: Entry;
   activities?: {
     id: Id | null;
     name: string;
@@ -73,6 +75,8 @@ export type Draft = {
   project: string;
   task: string;
   start: string;
+  stop: string;
+  reviewed: boolean;
 };
 export type Command = { action: string; payload: Record<string, unknown> };
 export const sameId = (a: unknown, b: unknown) =>
@@ -93,7 +97,7 @@ export const localTime = (stamp: string | null) => {
   if (!Number.isFinite(date.getTime())) return "";
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000)
     .toISOString()
-    .slice(0, 16);
+    .slice(0, 19);
 };
 export function duration(seconds: number) {
   const value = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
@@ -125,7 +129,9 @@ export function afterOwnStop(draft: Draft, result: Snapshot): Draft {
     return { ...draft, snapshot: structuredClone(result) };
   if (draft.mode !== "current") return draft;
   const original = draft.snapshot.state;
-  const matches = result.entries.filter(
+  const matches = (
+    result.stopped_entry ? [result.stopped_entry] : result.entries
+  ).filter(
     (entry) =>
       entry.stop &&
       entry.duration >= 0 &&
@@ -141,6 +147,7 @@ export function afterOwnStop(draft: Draft, result: Snapshot): Draft {
         mode: "entry",
         entry: structuredClone(matches[0]),
         snapshot: structuredClone(result),
+        stop: localTime(matches[0].stop),
       }
     : draft;
 }
@@ -186,7 +193,8 @@ export const running = (s: Snapshot, w: Work) =>
   s.state.tracking &&
   sameId(s.state.project_id, w.project_id) &&
   sameId(s.state.task_id, w.task_id) &&
-  (w.task != null || s.state.description.trim() === w.description.trim());
+  (w.task != null ||
+    (s.state.description ?? "").trim() === w.description.trim());
 export function draftFor(
   s: Snapshot,
   mode: Mode,
@@ -205,10 +213,14 @@ export function draftFor(
         : (original?.description ?? work?.description ?? ""),
     project: String(original?.project_id ?? work?.project_id ?? "none"),
     task: String(original?.task_id ?? work?.task_id ?? "none"),
-    start: localTime(s.state.start_time),
+    start: localTime(entry?.start ?? s.state.start_time),
+    stop: localTime(entry?.stop ?? null),
+    reviewed: false,
   };
 }
 export function commandFor(d: Draft, asTask = false): Command {
+  if (d.mode === "entry" && d.entry?._needs_full_review && !d.reviewed)
+    throw new Error("Review and approve all interval fields before saving");
   const s = d.snapshot;
   const selectedProject = s.projects.find(
     (p) => sameId(p.id, d.project) && sameId(p.workspace_id, scope(d)),
@@ -250,6 +262,12 @@ export function commandFor(d: Draft, asTask = false): Command {
         delete changes[key];
     if (d.mode === "current" && d.start !== localTime(s.state.start_time))
       changes.start = new Date(d.start).toISOString();
+    if (d.mode === "entry") {
+      if (d.start !== localTime(d.entry!.start))
+        changes.start = new Date(d.start).toISOString();
+      if (d.stop !== localTime(d.entry!.stop))
+        changes.stop = new Date(d.stop).toISOString();
+    }
   }
   return {
     action:
@@ -261,6 +279,9 @@ export function commandFor(d: Draft, asTask = false): Command {
     payload: {
       changes,
       context: s.project_context,
+      ...(d.mode === "entry" && d.entry?._needs_full_review
+        ? { reviewed_interval: d.reviewed }
+        : {}),
       ...(d.mode === "entry" ? { entry: d.entry } : { expected: s.state }),
     },
   };

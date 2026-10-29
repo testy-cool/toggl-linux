@@ -31,7 +31,8 @@ def test_control_edits_prepare_reviewed_entries_for_replay(legacy):
     if legacy:
         queue = app._load_pending(); queue[0].pop('_verify_snapshot'); app._save_pending(queue)
     selected = app._pending_as_entries()[0]
-    control.dispatch(app, 'edit-entry', {'entry':selected, 'changes':{'description':'From control'}})
+    control.dispatch(app, 'edit-entry', {'entry':selected, 'changes':{'description':'From control'},
+                                         'reviewed_interval': legacy})
     assert not app._pending_as_entries()[0].get('_review_error')
     with patch.object(app, 'api_get', return_value=remote_entry(queued)), patch.object(app, 'update_entry') as update:
         assert app.sync_pending() == 0

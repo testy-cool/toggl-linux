@@ -199,17 +199,41 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             assert js("document.getElementById('work-description').value === 'Kept during a conflict'")
             assert js("Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Start timer').disabled")
             app.api_token = None
+            click('Cancel')
+            now = datetime.now(timezone.utc)
+            midnight = now.astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+            legacy_start = midnight.isoformat()
+            legacy_stop = (midnight+(now-midnight)/2).isoformat()
+            app._save_pending([dict(action='stop', entry_id=99, workspace_id=1, project_id=6,
+                                    task_id=None, description='Legacy interval review', start_time=legacy_start,
+                                    stop_time=legacy_stop, _verify_running=True)])
+            click('Today')
+            until(lambda: js("document.body.textContent.includes('Legacy interval review')"))
+            click('Edit entry Legacy interval review')
+            until(lambda: js("!!document.getElementById('work-stop')"))
+            assert js("!!document.getElementById('work-start').value && !!document.getElementById('work-stop').value")
+            assert js("Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Save changes').disabled")
+            text('Fully reviewed inside the window')
+            click('Approve displayed interval')
+            click('Save changes')
+            until(lambda: app._load_pending()[0].get('_verify_snapshot', {}).get('review_all_fields') is True)
+            assert app._load_pending()[0]['start_time'] == legacy_start
+            assert app._load_pending()[0]['stop_time'] == legacy_stop
+            assert app._load_pending()[0]['description'] == 'Fully reviewed inside the window'
+            until(lambda: js("!document.getElementById('work-description')"))
             print(json.dumps(dict(real_webkit=True, real_react=True, private_offline_start=True,
                                   same_interval_edit=True, project_move=True, hidden_draft=True,
                                   draft_after_stop=True, task_create_rename_archive_restore=True,
                                   pending_entry_edit=True, timer_conflict=True, account_conflict=True,
-                                  stop_retained=True, **metrics)), flush=True)
+                                  full_interval_review=True, stop_retained=True, **metrics)), flush=True)
         except BaseException as error:
             errors.append(error)
             import traceback
             traceback.print_exc()
             try:
-                print('UI diagnostics:', js("JSON.stringify({url:location.href,ready:document.readyState,bridge:typeof window.pywebview,api:typeof window.pywebview?.api,body:document.body.innerText,html:document.head.innerHTML})"), flush=True)
+                print('Native readiness:', dict(mapped=window.native.get_mapped(),
+                      injected=window.events._pywebviewready.is_set(), loaded=window.events.loaded.is_set()), flush=True)
+                print('UI diagnostics:', js("JSON.stringify({url:location.href,ready:document.readyState,visibility:document.visibilityState,bridge:typeof window.pywebview,api:typeof window.pywebview?.api,methods:Object.keys(window.pywebview?.api??{}),readyMethod:typeof window.pywebview?.api?.ready,body:document.body.innerText,html:document.head.innerHTML})"), flush=True)
             except Exception as diagnostic:
                 print('UI diagnostics failed:', str(diagnostic), flush=True)
             picture('failure.png')

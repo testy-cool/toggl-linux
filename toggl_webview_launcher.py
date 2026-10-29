@@ -22,14 +22,20 @@ def placement(area, x, y):
 def _position(x, y):
     from gi.repository import Gdk
     display = Gdk.Display.get_default()
+    monitor = None
     if x is None or y is None:
-        pointer = display.get_default_seat().get_pointer()
+        seat = display.get_default_seat() if display else None
+        pointer = seat.get_pointer() if seat else None
         if pointer:
             _, x, y = pointer.get_position()
         else:
-            area = display.get_primary_monitor().get_workarea()
-            x, y = area.x+area.width//2, area.y
-    return placement(display.get_monitor_at_point(x, y).get_workarea(), x, y)
+            monitor = (display.get_primary_monitor() or display.get_monitor(0)) if display else None
+            area = monitor.get_workarea() if monitor else None
+            x, y = (area.x+area.width//2, area.y) if area else (0, 0)
+    monitor = (display.get_monitor_at_point(x, y) or monitor or display.get_monitor(0)) if display else None
+    if monitor:
+        return placement(monitor.get_workarea(), x, y)
+    return dict(x=x, y=y, width=600, height=780)
 
 
 class Launcher:

@@ -85,7 +85,7 @@ jobs:
       - name: Check the shipped offline bundle
         run: git diff --exit-code -- toggl_web_assets
       - name: Exercise the real React window against private offline state
-        run: LIBGL_ALWAYS_SOFTWARE=1 timeout 75s xvfb-run -a python scripts/webview_smoke.py --screenshot-dir "$RUNNER_TEMP/toggl-webview-smoke"
+        run: WEBKIT_DISABLE_DMABUF_RENDERER=1 PYWEBVIEW_LOG=debug LIBGL_ALWAYS_SOFTWARE=1 timeout 75s xvfb-run -a python scripts/webview_smoke.py --screenshot-dir "$RUNNER_TEMP/toggl-webview-smoke"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
