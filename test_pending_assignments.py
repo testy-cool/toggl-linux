@@ -1,7 +1,8 @@
 """Pending entry assignments survive edits, replay and running-timer display."""
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import pytest
 import toggl_tray as app
+import toggl_entries_window as entries
 
 START = '2026-10-29T00:00:00+00:00'
 STOP = '2026-10-29T00:01:00+00:00'
@@ -68,3 +69,41 @@ def test_invalid_task_does_not_report_success_or_modify_queue(metadata):
     before = app._load_pending()
     assert app._update_pending_entry(app._pending_as_entries()[0], {'task_id': 999}) is False
     assert app._load_pending() == before
+
+
+def test_future_start_is_rejected_before_queue_or_running_timer_changes(metadata):
+    app.state.update(tracking=True, entry_id=None, start_time=START, project_id=7, task_id=31)
+    app.queue_action('start', start_time=START, project_id=7, task_id=31)
+    before, state = app._load_pending(), dict(app.state)
+    future = (app.datetime.now(app.timezone.utc) + app.timedelta(hours=1)).isoformat()
+    assert app._update_pending_entry(app._pending_as_entries()[0], {'start': future}) is False
+    assert app._load_pending() == before
+    assert app.state == state
+
+
+def test_description_dialog_preserves_existing_assignments_when_metadata_is_missing():
+    start = app.datetime.now(app.timezone.utc) - app.timedelta(minutes=5)
+    stop = start + app.timedelta(minutes=1)
+    entry = dict(start=start.isoformat(), stop=stop.isoformat(), duration=60,
+                 description='Before', project_id=7, task_id=31, workspace_id='ws_123')
+    widgets = [MagicMock(), MagicMock(), MagicMock()]
+    for widget, value in zip(widgets, ['Changed', start.astimezone().strftime('%H:%M'),
+                                      stop.astimezone().strftime('%H:%M')]):
+        widget.get_text.return_value = value
+    class Combo:
+        def __init__(self): self.items = {}; self.selected = None
+        def append(self, value, label): self.items[value] = label
+        def remove_all(self): self.items.clear()
+        def set_active_id(self, value): self.selected = value if value in self.items else None
+        def get_active_id(self): return self.selected
+        def set_sensitive(self, value): pass
+        def connect(self, *_args): pass
+    dialog = MagicMock()
+    dialog.run.return_value = 1
+    with patch.object(entries.Gtk.ResponseType, 'OK', 1), patch.object(entries.Gtk.ResponseType, 'REJECT', 2), \
+         patch.object(entries.Gtk, 'Dialog', return_value=dialog), patch.object(entries.Gtk, 'Entry', side_effect=widgets), \
+         patch.object(entries.Gtk, 'ComboBoxText', Combo), patch.object(entries.Gtk, 'events_pending', return_value=False), \
+         patch.object(app.GLib, 'idle_add', side_effect=lambda callback: callback()), \
+         patch.object(app, '_cached_projects', return_value=[]), patch.object(app, '_cached_tasks', return_value=[]):
+        result = entries._gtk_edit_entry_dialog(entry)
+    assert result == {'description': 'Changed'}

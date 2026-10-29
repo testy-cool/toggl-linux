@@ -316,6 +316,9 @@ def _gtk_edit_entry_dialog(entry):
                     and (item.get("active") is not False or str(item.get("id")) == str(entry.get("project_id")))]
         for item in projects:
             project_picker.append(str(item["id"]), item.get("name") or str(item["id"]))
+        if entry.get('project_id') is not None and not any(
+                str(item['id']) == str(entry['project_id']) for item in projects):
+            project_picker.append(str(entry['project_id']), 'Current project')
         project_picker.set_active_id("none" if entry.get("project_id") is None else str(entry.get("project_id")))
         grid.attach(project_picker, 1, 1, 1, 1)
 
@@ -331,6 +334,8 @@ def _gtk_edit_entry_dialog(entry):
                      and (item.get("active") is not False or str(item.get("id")) == str(selected))]
             for item in tasks:
                 task_picker.append(str(item["id"]), item.get("name") or str(item["id"]))
+            if selected is not None and not any(str(item['id']) == str(selected) for item in tasks):
+                task_picker.append(str(selected), 'Current task')
             task_picker.set_active_id("none" if selected is None else str(selected))
             task_picker.set_sensitive(project_id not in (None, "none"))
         load_tasks(entry.get("task_id"))

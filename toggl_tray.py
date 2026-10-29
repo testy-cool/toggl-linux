@@ -1949,11 +1949,14 @@ def _update_pending_entry(entry, update):
         if candidate is None:
             return False
         assignments = {key: update[key] for key in ('project_id', 'task_id') if key in update}
+        if 'start' in update:
+            assignments['start'] = update['start']
         try:
             assignments = toggl_control._changes(sys.modules[__name__], assignments, candidate)
         except toggl_control.ControlError as error:
             _notify(str(error))
             return False
+        assignments.pop('start', None)
         indexes = set(candidate["_pending_indexes"])
 
         for idx in indexes:
