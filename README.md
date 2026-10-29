@@ -236,6 +236,12 @@ shows both paths. The debug log can contain project/entry IDs and error details;
 review it before sharing. Native fatal signals such as a segmentation fault may
 still require a system crash report.
 
+The tray opens from saved local state before keyring and cloud refreshes run on
+a background worker. Startup replies are discarded if the timer or account changes
+while a request is in flight. If GTK stops handling its heartbeat for 30 seconds,
+the debug log records Python thread stacks once per stall and notes recovery.
+The watchdog does not restart the app or change timers, and stack dumps omit local variables.
+
 **No tray icon appears**
 - Make sure your desktop has a system tray / notification area. On GNOME, you may need the [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/).
 - Install the appindicator library: `sudo apt install gir1.2-ayatanaappindicator3-0.1`

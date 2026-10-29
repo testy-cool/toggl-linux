@@ -372,13 +372,13 @@ def api_delete(path):
     _api("DELETE", path)
 
 
-def fetch_me():
-    return api_get("/me")
+def fetch_me(**kwargs):
+    return api_get("/me", **kwargs)
 
 
-def fetch_current_entry():
+def fetch_current_entry(**kwargs):
     """Get currently running time entry, or None."""
-    data = api_get("/me/time_entries/current")
+    data = api_get("/me/time_entries/current", **kwargs)
     return data if data else None
 
 
@@ -942,9 +942,11 @@ def _run_sync_cycle(now=None):
 
     # The desktop keyring may not be unlocked when the app autostarts.
     if not api_token:
+        lookup_base = get_api_base()
         token = get_api_token()
-        if token and not api_token:
-            api_token = token
+        with toggle_lock:
+            if token and not api_token and get_api_base() == lookup_base:
+                api_token = token
     if api_token and not state.get("workspace_id"):
         if _request_budget_exhausted():
             _notify(REQUEST_BUDGET_SYNC_MESSAGE)
@@ -972,9 +974,9 @@ def _run_sync_cycle(now=None):
     _record_sync_success()
 
 
-def sync_loop():
+def sync_loop(stop_event=None):
     """Background thread: retry pending actions and sync cloud state."""
-    while True:
+    while stop_event is None or not stop_event.is_set():
         _sync_wakeup.clear()
         try:
             _run_sync_cycle()
@@ -2217,10 +2219,14 @@ def start_hotkey_listener():
 
 # ── Update loop ─────────────────────────────────────────────────────────────
 
-def update_loop():
+def update_loop(stop_event=None):
     """Update icon tooltip and optional panel label with elapsed time."""
     while True:
-        time.sleep(1)
+        if stop_event is not None:
+            if stop_event.wait(1):
+                return
+        else:
+            time.sleep(1)
         if icon_ref:
             tooltip = get_tooltip()
             GLib.idle_add(_set_tray_tooltip, tooltip)
@@ -2271,49 +2277,43 @@ def _init_workspace():
     global api_token, rate_limited_until, _last_cloud_poll_at
     if not api_token:
         return False
+    token, base = api_token, get_api_base()
+    with state_lock:
+        before = dict(state)
     pending = _load_pending()
     has_conflicting_pending = any(
         item.get("action") in ("start", "stop") for item in pending
     )
-    if has_conflicting_pending and state.get("workspace_id"):
+    if has_conflicting_pending and before.get("workspace_id"):
         return True
 
     try:
-        if not state.get("workspace_id"):
-            me = fetch_me()
-            state["workspace_id"] = me["default_workspace_id"]
-
-        if has_conflicting_pending:
+        workspace = before.get('workspace_id')
+        if not workspace:
+            workspace = fetch_me(token=token, base_url=base)['default_workspace_id']
+        current = None if has_conflicting_pending else fetch_current_entry(token=token, base_url=base)
+        recent = []
+        if not has_conflicting_pending and not current and not before.get('description'):
+            try:
+                recent = api_get('/me/time_entries', token=token, base_url=base)
+            except Exception:
+                pass
+        with state_lock:
+            if state != before or api_token != token or get_api_base() != base:
+                return False  # User work or an account change won while the request ran.
+            state['workspace_id'] = workspace
+            if not has_conflicting_pending:
+                if current:
+                    state.update(tracking=True, entry_id=current['id'], start_time=current['start'],
+                                 description=current.get('description', ''), project_id=current.get('project_id'),
+                                 task_id=current.get('task_id'), workspace_id=current.get('workspace_id') or workspace)
+                else:
+                    state.update(tracking=False, entry_id=None, start_time=None)
+                    if isinstance(recent, list) and recent:
+                        state['description'] = recent[0].get('description') or state.get('description', '')
+                        if not state.get('project_id'):
+                            state['project_id'] = recent[0].get('project_id')
             save_state()
-            return True
-
-        # Check for running entry
-        current = fetch_current_entry()
-        if current:
-            state["tracking"] = True
-            state["entry_id"] = current["id"]
-            state["start_time"] = current["start"]
-            state["description"] = current.get("description", "")
-            state["project_id"] = current.get("project_id")
-            state["task_id"] = current.get("task_id")
-            state["workspace_id"] = current.get("workspace_id") or state.get("workspace_id")
-        else:
-            state["tracking"] = False
-            state["entry_id"] = None
-            state["start_time"] = None
-            if not state.get("description"):
-                try:
-                    recent = api_get("/me/time_entries")
-                    if recent and isinstance(recent, list) and len(recent) > 0:
-                        last = recent[0]
-                        if last.get("description"):
-                            state["description"] = last["description"]
-                        if last.get("project_id") and not state.get("project_id"):
-                            state["project_id"] = last["project_id"]
-                except Exception:
-                    pass
-
-        save_state()
         _last_cloud_poll_at = time.monotonic()
         return True
     except RateLimitedError as e:
@@ -2322,6 +2322,31 @@ def _init_workspace():
     except Exception as e:
         print(f"Init failed: {e}", file=sys.stderr)
         return False
+
+
+def _bootstrap_and_sync(stop_event):
+    """Keyring and cloud setup run after the tray event loop becomes ready."""
+    global api_token
+    try:
+        lookup_base = get_api_base()
+        token = get_api_token()
+        if stop_event.is_set():
+            return
+        with toggle_lock:
+            if not api_token and get_api_base() == lookup_base:
+                api_token = token
+        if api_token:
+            _init_workspace()
+        else:
+            print('No API token found; saved timers remain available offline', file=sys.stderr)
+        _refresh_projects()
+        _refresh_tasks()
+        toggl_task_tree.refresh(sys.modules[__name__])
+        GLib.idle_add(_refresh_project_menu)
+    except Exception as error:
+        _record_sync_failure(error)
+    if not stop_event.is_set():
+        sync_loop(stop_event)
 
 
 def main():
@@ -2349,47 +2374,41 @@ def main():
     toggl_debug.LOGGER.info('Tray starting tracking=%s entry_id=%s pending_count=%s',
                             state.get('tracking'), state.get('entry_id'), len(_load_pending()))
 
-    api_token = get_api_token()
-    if api_token and state.get("start_time") and state.get("_account_start") != state.get("start_time"):
-        save_state()  # A timer saved by an older version gets stamped with the account it was running under.
-    if not api_token:
-        print("No API token found. Set TOGGL_API_TOKEN env var or use the tray menu.", file=sys.stderr)
-        print("You can also run: secret-tool store --label='Toggl API Token' service toggl username api_token", file=sys.stderr)
-    else:
-        _init_workspace()
-
-    _refresh_projects()
-    _refresh_tasks()
-    toggl_task_tree.refresh(sys.modules[__name__])
-
     import toggl_control
     control_server = toggl_control.start_server(sys.modules[__name__])
+    stop_event = threading.Event()
 
     # Start hotkey listener
     start_hotkey_listener()
 
     # Start update thread
-    updater = threading.Thread(target=update_loop, daemon=True)
+    updater = threading.Thread(target=update_loop, args=(stop_event,), daemon=True)
     updater.start()
-
-    # Start offline sync thread
-    syncer = threading.Thread(target=sync_loop, daemon=True)
-    syncer.start()
 
     # Create and run tray icon
     icon_ref = pystray.Icon("toggl-tray", render_icon(), get_tooltip(), build_menu())
-    if _init_native_status_icon():
-        # XApp owns the visible icon; pystray still supplies its GTK loop and menu adapter.
-        icon_ref.run(setup=lambda _icon: None)
-    else:
+    native = _init_native_status_icon()
+    import toggl_watchdog
+    watchdog = toggl_watchdog.UIWatchdog()
+    watchdog.start(GLib)
+    def ready(icon):
+        if not native:
+            icon.visible = True
+        threading.Thread(target=_bootstrap_and_sync, args=(stop_event,),
+                         name='cloud-sync', daemon=True).start()
+    try:
         _update_panel_timer_label()
-        icon_ref.run()
-    control_server.shutdown()
-    control_server.server_close()
-    lock_fp.close()
-    toggl_debug.LOGGER.info('Tray stopped')
-    if debug_log is not None:
-        debug_log.close()
+        icon_ref.run(setup=ready)
+    finally:
+        stop_event.set()
+        _sync_wakeup.set()
+        watchdog.stop()
+        control_server.shutdown()
+        control_server.server_close()
+        lock_fp.close()
+        toggl_debug.LOGGER.info('Tray stopped')
+        if debug_log is not None:
+            debug_log.close()
     return 0
 
 
