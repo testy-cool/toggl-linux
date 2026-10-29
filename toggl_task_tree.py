@@ -275,7 +275,14 @@ def select_task(app, project_id, description, context, expected, task_id=None):
     if (expected.get('tracking') and str(expected.get('project_id')) == str(project_id)
             and str(expected.get('task_id')) == str(task_id)
             and ' '.join((expected.get('description') or '').split()) == ' '.join(description.split())):
-        return None
+        with app.toggle_lock:
+            if context != toggl_projects.context(app):
+                raise ValueError('Account or workspace changed; reopen projects and tasks')
+            with app.state_lock:
+                if any(app.state.get(key) != expected.get(key) for key in
+                       ('tracking', 'entry_id', 'start_time', 'description', 'project_id', 'task_id', 'workspace_id')):
+                    raise ValueError('Timer changed; choose work again')
+            return None
     return toggl_control.dispatch(app, 'switch', {'changes': {'project_id': project_id,
                                                 'task_id': task_id, 'description': description},
                                                 'expected': expected, 'context': context})

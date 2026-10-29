@@ -99,6 +99,18 @@ def test_task_selection_starts_a_new_interval_and_passes_exact_timer_and_context
     dispatch.assert_called_once_with(app,'switch',{'changes':{'project_id':7,'task_id':None,'description':'Next'},'expected':before,'context':context})
 
 
+@pytest.mark.parametrize('change', [dict(tracking=False), dict(entry_id=22)])
+def test_stale_running_row_does_not_silently_succeed_after_timer_changes(change):
+    m = module()
+    before = dict(app.state, tracking=True, entry_id=11, project_id=7, task_id=None, description='Selected')
+    app.state.update(before)
+    app.state.update(change)
+    with patch('toggl_control.dispatch') as dispatch:
+        with pytest.raises(ValueError, match='Timer changed'):
+            m.select_task(app, 7, 'Selected', toggl_projects.context(app), before)
+    dispatch.assert_not_called()
+
+
 def test_server_task_entries_do_not_become_recent_activities(tmp_state_dir):
     m = module()
     rows = [entry(1, 7, 'Specific details', task_id=31), entry(2, 7, 'Reusable activity')]
@@ -205,6 +217,7 @@ def test_tray_icon_colour_follows_project_or_task(tmp_state_dir):
 def test_choosing_the_running_task_keeps_its_timer(tmp_state_dir):
     m=module()
     running=dict(app.state,tracking=True,start_time=NOW.isoformat(),project_id=None,description='Stay Safe')
+    app.state.update(running)
     with patch('toggl_control.dispatch') as dispatch:
         assert m.select_task(app,None,'Stay Safe',toggl_projects.context(app),running) is None
         dispatch.assert_not_called()

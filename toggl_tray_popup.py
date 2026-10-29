@@ -389,7 +389,7 @@ class TrayPopup:
         if snapshot['project_context'] != self.context:
             self._say('Account or workspace changed; reopen the panel.')
             return
-        if mode == 'current':
+        if mode in ('current', 'draft'):
             snapshot['state'] = dict(self.rendered_state)
         self.editor = InlineEditor(snapshot, mode, self._submit_edit, self._cancel_edit, row)
         if mode == 'draft' and row and row.get('kind') == 'activity':

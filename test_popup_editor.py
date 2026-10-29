@@ -163,6 +163,26 @@ def test_account_change_cannot_hide_an_old_suggestion_in_the_new_account():
     hide.assert_not_called()
 
 
+def test_new_timer_form_uses_the_displayed_timer_instead_of_an_unseen_replacement():
+    view = panel()
+    view.editor = None
+    view.rendered_state = dict(app.state, tracking=True, entry_id=11, description='Displayed timer')
+    app.state.update(tracking=True, entry_id=22, description='Unseen replacement')
+    view.scroll = MagicMock()
+    view.pages = MagicMock()
+    with patch.object(popup, 'InlineEditor', return_value=MagicMock()) as editor:
+        view._open_editor('draft', row=dict(project_id=None, description='New work'))
+    snapshot = editor.call_args.args[0]
+    assert snapshot['state'] == view.rendered_state
+    changes = dict(project_id=None, task_id=None, description='New work')
+    with patch.object(app, 'toggle_tracking') as toggle:
+        with pytest.raises(control.ControlError, match='changed'):
+            control.dispatch(app, 'switch', dict(changes=changes, expected=snapshot['state'],
+                                                context=snapshot['project_context']))
+    toggle.assert_not_called()
+    assert app.state['entry_id'] == 22
+
+
 @pytest.mark.parametrize('kind,active,expected', [('task', True, 'current'),
                                               ('activity', True, 'current'),
                                               ('activity', False, 'draft'), ('task', False, 'task')])
