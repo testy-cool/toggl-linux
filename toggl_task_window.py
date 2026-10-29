@@ -31,6 +31,7 @@ class TaskEditor:
         self.project_id = task.get("project_id") if task else project_id
         self.on_saved = on_saved
         self.start_after_save = bool(start and not task)
+        self.pending_start_task = None
         self.busy = False
         project = next((p for p in snapshot["projects"] if str(p.get("id")) == str(self.project_id)), None)
         self.window = Gtk.Window(title="Edit Task" if task else "New Task")
@@ -80,6 +81,10 @@ class TaskEditor:
     def _save(self, start=False):
         if self.busy:
             return
+        if self.pending_start_task is not None:
+            if start:
+                self._retry_start()
+            return
         try:
             name = task_name(self.name.get_text())
         except ValueError as error:
@@ -98,15 +103,41 @@ class TaskEditor:
         self.message.set_text("Saving task…")
 
         def worker():
+            saved_result = None
             try:
                 result = toggl_control.request(self.app.STATE_DIR, action, payload)
                 if self.start_after_save:
+                    saved_result = result
                     saved = result["saved_task"]
                     result = toggl_control.request(self.app.STATE_DIR, "switch", {
                         "changes": {"project_id": saved["project_id"], "task_id": saved["id"],
                                     "description": ""},
                         "expected": result["state"], "context": result["project_context"],
                     })
+                GLib.idle_add(self._finish, result, None)
+            except Exception as error:
+                GLib.idle_add(self._finish, saved_result, str(error))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _retry_start(self):
+        self.busy = True
+        self.create_start.set_sensitive(False)
+        self.message.set_text('Starting saved task…')
+        task = deepcopy(self.pending_start_task)
+
+        def worker():
+            try:
+                current = toggl_control.request(self.app.STATE_DIR, 'snapshot', {})
+                if current['project_context'] != self.context:
+                    raise toggl_control.ControlError('Account or workspace changed; reopen the saved task')
+                state = current['state']
+                already_running = (state.get('tracking')
+                                   and str(state.get('task_id')) == str(task['id'])
+                                   and str(state.get('project_id')) == str(task['project_id']))
+                result = current if already_running else toggl_control.request(self.app.STATE_DIR, 'switch', {
+                    'changes': {'project_id': task['project_id'], 'task_id': task['id'], 'description': ''},
+                    'expected': state, 'context': self.context,
+                })
                 GLib.idle_add(self._finish, result, None)
             except Exception as error:
                 GLib.idle_add(self._finish, None, str(error))
@@ -121,7 +152,19 @@ class TaskEditor:
         if hasattr(self, "create_start"):
             self.create_start.set_sensitive(True)
         if error:
-            self.message.set_text(error)
+            if result is not None and result.get('saved_task'):
+                self.pending_start_task = deepcopy(result['saved_task'])
+                self.original = deepcopy(self.pending_start_task)
+                if self.on_saved:
+                    self.on_saved(result)
+            if self.pending_start_task is not None:
+                self.name.set_sensitive(False)
+                self.save.set_label('Task Saved')
+                self.save.set_sensitive(False)
+                self.create_start.set_label('Retry Start')
+                self.message.set_text('Task saved, but the timer could not start. ' + error)
+            else:
+                self.message.set_text(error)
         else:
             if self.on_saved:
                 self.on_saved(result)
