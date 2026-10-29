@@ -40,13 +40,14 @@ def test_invalid_changed_time_keeps_full_review_open_and_does_not_save(field_ind
     assert dialog.run.call_count == 2
 
 
-def test_null_description_is_not_mistaken_for_an_explicit_blank_edit():
+@pytest.mark.parametrize('description', [None, '  Existing text  '])
+def test_unchanged_description_is_not_mistaken_for_an_explicit_edit(description):
     now = datetime.now(timezone.utc)
     start, stop = now-timedelta(hours=2), now-timedelta(hours=1)
     entry = dict(start=start.isoformat(), stop=stop.isoformat(), duration=3600,
-                 description=None, project_id=None, task_id=None)
+                 description=description, project_id=None, task_id=None)
     fields = [MagicMock(), MagicMock(), MagicMock()]
-    for field, value in zip(fields, ['', start.astimezone().strftime('%H:%M'), stop.astimezone().strftime('%H:%M')]):
+    for field, value in zip(fields, [description or '', start.astimezone().strftime('%H:%M'), stop.astimezone().strftime('%H:%M')]):
         field.get_text.return_value = value
     dialog, combo = MagicMock(), MagicMock()
     dialog.run.return_value = 1

@@ -739,7 +739,8 @@ def _restored_stop_changes(op):
             if key in op and (review_all or op[key] != original.get(key, op[key]))}
     if review_all:
         data.update(project_id=op.get('project_id'), task_id=op.get('task_id'))
-    elif 'project_id' in data:
+    elif ('project_id' in data and (op.get('task_id') is not None or remote.get('task_id') is None
+                                  or str(remote.get('project_id')) != str(op.get('project_id')))):
         data['task_id'] = op.get('task_id')
     edited_start = review_all or op.get('start_time') != original.get('start_time', op.get('start_time'))
     edited_stop = review_all or op.get('stop_time') != original.get('stop_time', op.get('stop_time'))

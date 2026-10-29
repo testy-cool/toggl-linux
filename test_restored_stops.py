@@ -167,7 +167,8 @@ def test_missing_or_unsupported_target_lookup_keeps_the_pending_entry_editable(s
     assert app._pending_as_entries()[0]['description'] == 'Still editable'
 
 
-def test_project_change_clears_a_remotely_added_task_without_overwriting_other_metadata():
+@pytest.mark.parametrize('remote_project', [7, 8])
+def test_project_change_preserves_compatible_remote_tasks_and_clears_incompatible_ones(remote_project):
     app.state.update(project_id=7, task_id=None)
     queued = restored_stop()
     projects = [dict(id=7, workspace_id='ws_123',name='Before'), dict(id=8,workspace_id='ws_123',name='After')]
@@ -176,7 +177,7 @@ def test_project_change_clears_a_remotely_added_task_without_overwriting_other_m
         control.dispatch(app, 'edit-entry', {'entry':selected,'changes':{'project_id':8}})
     app.api_token = 'tok'
     earlier = (app._parse_iso(queued['stop_time'])-timedelta(hours=1)).isoformat()
-    with patch.object(app, 'api_get', return_value=remote_entry(queued,stop=earlier,project_id=7,task_id=31,
+    with patch.object(app, 'api_get', return_value=remote_entry(queued,stop=earlier,project_id=remote_project,task_id=31,
                       description='New remote description')), patch.object(app, 'update_entry') as update:
         assert app.sync_pending() == 0
-    assert update.call_args.args[2] == {'project_id':8,'task_id':None}
+    assert update.call_args.args[2] == ({'project_id':8,'task_id':None} if remote_project == 7 else {'project_id':8})
