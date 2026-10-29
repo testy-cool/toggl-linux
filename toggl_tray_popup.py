@@ -46,10 +46,8 @@ def running_timer(current, projects, tasks, now=None):
 
 
 def project_action(current, project_id):
-    """Choose explicit start semantics when there is no current timer to edit."""
-    if current.get('tracking'):
-        return 'edit-current', {'project_id': project_id, 'task_id': None}
-    return 'start', {'project_id': project_id, 'task_id': None, 'description': ''}
+    """Starting work in a project never moves an existing interval."""
+    return 'switch', {'project_id': project_id, 'task_id': None, 'description': ''}
 
 
 def rows(groups, projects, current, query='', tasks=None, expanded=()):
@@ -77,26 +75,25 @@ def rows(groups, projects, current, query='', tasks=None, expanded=()):
         on_project = tracking and str(current.get('project_id')) == str(group['id'])
         result.append(dict(kind='project', project_id=group['id'], label=group.get('name') or str(group['id']),
                            color=color, active=on_project,
-                           hint='Use this project for the current timer' if tracking
-                           else 'Start a timer with this project'))
+                           hint='Start a new timer in this project'))
         for task in sorted(server_tasks, key=lambda item: item.get('name', '').casefold()):
             result.append(dict(kind='task', project_id=group['id'], task_id=task['id'], task=task,
                                description='', label=task.get('name') or 'Unnamed task', color=color,
                                active=on_project and str(current.get('task_id')) == str(task['id'])))
         if activities:
-            if needle or str(group['id']) in {str(item) for item in expanded}:
-                visible = activities if needle else activities[:ACTIVITIES_PER_PROJECT]
-                result.append(dict(kind='activity-heading', project_id=group['id'],
-                                   label='Recent activities', color=color, active=False))
-                for activity in visible:
-                    description = ' '.join(activity['description'].split())
-                    result.append(dict(kind='activity', project_id=group['id'], task_id=None,
-                                       description=activity['description'], label=description or 'No description',
-                                       color=color, active=on_project and current.get('task_id') is None
-                                       and description == running))
-            else:
+            show_all = bool(needle) or str(group['id']) in {str(item) for item in expanded}
+            visible = activities if show_all else activities[:ACTIVITIES_PER_PROJECT]
+            result.append(dict(kind='activity-heading', project_id=group['id'],
+                               label='Recent work', color=color, active=False))
+            for activity in visible:
+                description = ' '.join(activity['description'].split())
+                result.append(dict(kind='activity', project_id=group['id'], task_id=None,
+                                   description=activity['description'], label=description or 'No description',
+                                   color=color, active=on_project and current.get('task_id') is None
+                                   and description == running))
+            if not show_all and len(activities) > ACTIVITIES_PER_PROJECT:
                 result.append(dict(kind='activity-toggle', project_id=group['id'],
-                                   label=f'Show {len(activities)} recent activit' + ('y' if len(activities) == 1 else 'ies'),
+                                   label=f'Show {len(activities) - ACTIVITIES_PER_PROJECT} more',
                                    color=color, active=False))
     return result
 
@@ -335,7 +332,7 @@ class TrayPopup:
             expected = dict(self.app.state)
         self.busy = True
         self.list.set_sensitive(False)
-        self._say('Starting…' if row['kind'] in ('task', 'activity') else 'Assigning project…')
+        self._say('Starting…')
         def work():
             error = None
             try:

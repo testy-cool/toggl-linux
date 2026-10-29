@@ -320,13 +320,14 @@ Use **Resume Recent Activity** in the timer window, or **Start Again** on a comp
 
 Left-click the tray icon to open a small window under it. Projects contain real
 OpenTickly tasks; choosing one starts it with a blank description. Historical
-time-entry descriptions appear separately under **Recent activities**, collapsed by
-default. Activities can be started again, saved as real tasks, or hidden. A project
+time-entry descriptions appear under **Recent work**, visible immediately. The five
+most recent descriptions per project appear first; **Show more** reveals the rest.
+Activities can be started again, saved as real tasks, or hidden. A project
 row can create a task, and **Manage Tasks** supports rename, archive, and restore.
 Type to search everything; Enter starts the first matching task or activity.
 
 The running timer stays pinned above the list with its description or task name,
-project, elapsed time, and **Stop** and **Edit** controls. Search, collapsed history,
+project, elapsed time, and **Stop** and **Edit** controls. Search, capped history,
 hidden activities, and archived tasks cannot hide it. It updates every second while
 the popup is open; matching task/activity rows also say **Running**.
 
