@@ -214,6 +214,8 @@ def _cli_doctor(args):
     print(f"State file: {app.STATE_FILE} ({_file_json_status(app.STATE_FILE)})")
     print(f"Pending file: {app.PENDING_FILE} ({_file_json_status(app.PENDING_FILE)})")
     print(f"Ledger file: {app.LEDGER_FILE} ({'ok' if app.LEDGER_FILE.exists() else 'missing'})")
+    debug_path = app.STATE_DIR / 'debug.log'
+    print(f"Debug log: {debug_path} ({'ok' if debug_path.exists() else 'missing; created when tray starts'})")
     print(f"Config file: {app.CONFIG_FILE} ({_file_json_status(app.CONFIG_FILE)})")
     print(f"API base: {app.get_api_base()}")
     print(f"API token: {'yes' if app.api_token else 'no'}")

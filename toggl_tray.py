@@ -22,6 +22,7 @@ if __name__ == "__main__":
     sys.modules.setdefault("toggl_tray", sys.modules[__name__])
 import toggl_task_tree
 import toggl_tasks
+import toggl_debug
 import requests
 from requests.auth import HTTPBasicAuth
 from PIL import Image
@@ -330,10 +331,19 @@ def _api(method, path, json=None, params=None, token=None, base_url=None):
     api_base = base_url if base_url is not None else get_api_base()
     if _request_budget_applies(api_base):
         _record_api_request()
-    r = requests.request(
-        method, f"{api_base}{path}",
-        auth=_auth() if token is None else HTTPBasicAuth(token, "api_token"), json=json, params=params, timeout=10,
-    )
+    started = time.monotonic()
+    route = urlsplit(path).path  # Never log query parameters, headers or request bodies.
+    try:
+        r = requests.request(
+            method, f"{api_base}{path}",
+            auth=_auth() if token is None else HTTPBasicAuth(token, "api_token"), json=json, params=params, timeout=10,
+        )
+    except Exception as error:
+        toggl_debug.LOGGER.warning('API %s %s failed=%s duration_ms=%.0f', method, route,
+                                    type(error).__name__, (time.monotonic() - started) * 1000)
+        raise
+    toggl_debug.LOGGER.debug('API %s %s status=%s duration_ms=%.0f', method, route,
+                             r.status_code, (time.monotonic() - started) * 1000)
     if r.status_code == 429:
         try:
             wait = int(r.headers.get("X-Toggl-Quota-Resets-In", SYNC_INTERVAL_SECONDS))
@@ -484,6 +494,9 @@ def _load_json_with_backup(path, default):
 
 
 def _append_event(event, **data):
+    toggl_debug.LOGGER.info('Event %s tracking=%s entry_id=%s project_id=%s task_id=%s', event,
+                            state.get('tracking'), data.get('entry_id', state.get('entry_id')),
+                            state.get('project_id'), state.get('task_id'))
     record = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "event": event,
@@ -2318,12 +2331,20 @@ def main():
 
     # Single instance lock
     lock_fp = _acquire_instance_lock()
+    try:
+        debug_log = toggl_debug.DebugLog(STATE_DIR, lambda: [api_token, os.environ.get('TOGGL_API_TOKEN')])
+        debug_log.capture_glib(GLib)
+    except OSError as error:
+        print(f'Debug logging unavailable: {error}', file=sys.stderr)
+        debug_log = None
 
     # Init GTK for thread safety
     GLib.threads_init = lambda: None  # already init'd by import
     Gtk.init([])
 
     load_state()
+    toggl_debug.LOGGER.info('Tray starting tracking=%s entry_id=%s pending_count=%s',
+                            state.get('tracking'), state.get('entry_id'), len(_load_pending()))
 
     api_token = get_api_token()
     if api_token and state.get("start_time") and state.get("_account_start") != state.get("start_time"):
@@ -2363,6 +2384,9 @@ def main():
     control_server.shutdown()
     control_server.server_close()
     lock_fp.close()
+    toggl_debug.LOGGER.info('Tray stopped')
+    if debug_log is not None:
+        debug_log.close()
     return 0
 
 

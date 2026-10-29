@@ -76,9 +76,11 @@ def test_resume_offline_keeps_old_project_and_workspace_on_stop(history):
 def test_resume_completed_pending_entry_preserves_original_interval(history):
     app.api_token = None
     app._control_entries = []
-    app.queue_action("start", start_time=history["start"], description="Pending task", project_id=17,
+    # The snapshot shows today's pending entries, including just after midnight.
+    start = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+    app.queue_action("start", start_time=start.isoformat(), description="Pending task", project_id=17,
                      workspace_id="pending-ws")
-    app.queue_action("stop", stop_time=history["stop"], workspace_id="pending-ws")
+    app.queue_action("stop", stop_time=datetime.now(timezone.utc).isoformat(), workspace_id="pending-ws")
     selected = control.snapshot(app)["entries"][0]
     original_queue = app._load_pending()
     result = control.dispatch(app, "resume", {"entry": selected, "expected": dict(app.state)})
