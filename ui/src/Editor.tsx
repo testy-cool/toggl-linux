@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Field,
   FieldDescription,
@@ -129,73 +130,85 @@ export function Editor({
               ? `This saved task stays in ${projectName(d.snapshot, d.work!.project_id)}.`
               : "Save a reusable task in this project.";
   return (
-    <Frame variant="ghost" dense data-testid="editor">
-      <FramePanel>
+    <Frame
+      variant="ghost"
+      dense
+      data-testid="editor"
+      className="editor-frame min-h-0"
+    >
+      <FramePanel className="flex min-h-0 flex-col">
         <FrameHeader>
           <FrameTitle>{title}</FrameTitle>
           <FrameDescription>{note}</FrameDescription>
         </FrameHeader>
         <form
+          className="flex min-h-0 flex-col"
           onSubmit={(event) => {
             event.preventDefault();
             save();
           }}
         >
-          <FieldGroup className="gap-4 py-3">
-            <Field>
-              <FieldLabel htmlFor="work-description">
-                {metadata ? "Task name" : "Description"}
-              </FieldLabel>
-              <Input
-                id="work-description"
-                autoFocus
-                value={d.description}
-                placeholder={
-                  metadata ? "Name this task" : "What are you working on?"
-                }
-                maxLength={metadata ? 200 : 10000}
-                disabled={busy}
-                onChange={(e) => change({ ...d, description: e.target.value })}
-              />
-            </Field>
-            <FieldGroup className="grid gap-4 min-[480px]:grid-cols-2">
-              <Choice
-                label="Project"
-                value={d.project}
-                options={[{ id: "none", name: "No project" }, ...projects]}
-                disabled={busy || d.mode === "task"}
-                onChange={(project) => change({ ...d, project, task: "none" })}
-              />
-              {!metadata && (
-                <Choice
-                  label="Task"
-                  value={d.task}
-                  options={[{ id: "none", name: "No task" }, ...tasks]}
-                  disabled={busy || d.project === "none"}
-                  onChange={(task) => change({ ...d, task })}
-                />
-              )}
-            </FieldGroup>
-            {d.mode === "current" && (
+          <ScrollArea className="min-h-0 flex-1">
+            <FieldGroup className="gap-4 py-3">
               <Field>
-                <FieldLabel htmlFor="work-start">Started at</FieldLabel>
+                <FieldLabel htmlFor="work-description">
+                  {metadata ? "Task name" : "Description"}
+                </FieldLabel>
                 <Input
-                  id="work-start"
-                  type="datetime-local"
-                  value={d.start}
+                  id="work-description"
+                  autoFocus
+                  value={d.description}
+                  placeholder={
+                    metadata ? "Name this task" : "What are you working on?"
+                  }
+                  maxLength={metadata ? 200 : 10000}
                   disabled={busy}
-                  required
-                  onChange={(e) => change({ ...d, start: e.target.value })}
+                  onChange={(e) =>
+                    change({ ...d, description: e.target.value })
+                  }
                 />
               </Field>
-            )}
-            {metadata && !nameValid && (
-              <FieldDescription>
-                Enter a task name of 1–200 characters.
-              </FieldDescription>
-            )}
-          </FieldGroup>
-          <FrameFooter className="flex flex-wrap justify-between gap-2">
+              <FieldGroup className="grid gap-4 min-[480px]:grid-cols-2">
+                <Choice
+                  label="Project"
+                  value={d.project}
+                  options={[{ id: "none", name: "No project" }, ...projects]}
+                  disabled={busy || d.mode === "task"}
+                  onChange={(project) =>
+                    change({ ...d, project, task: "none" })
+                  }
+                />
+                {!metadata && (
+                  <Choice
+                    label="Task"
+                    value={d.task}
+                    options={[{ id: "none", name: "No task" }, ...tasks]}
+                    disabled={busy || d.project === "none"}
+                    onChange={(task) => change({ ...d, task })}
+                  />
+                )}
+              </FieldGroup>
+              {d.mode === "current" && (
+                <Field>
+                  <FieldLabel htmlFor="work-start">Started at</FieldLabel>
+                  <Input
+                    id="work-start"
+                    type="datetime-local"
+                    value={d.start}
+                    disabled={busy}
+                    required
+                    onChange={(e) => change({ ...d, start: e.target.value })}
+                  />
+                </Field>
+              )}
+              {metadata && !nameValid && (
+                <FieldDescription>
+                  Enter a task name of 1–200 characters.
+                </FieldDescription>
+              )}
+            </FieldGroup>
+          </ScrollArea>
+          <FrameFooter className="flex shrink-0 flex-wrap justify-between gap-2">
             <Button
               type="button"
               variant="ghost"
@@ -217,7 +230,9 @@ export function Editor({
                 ? "Saving…"
                 : d.mode === "new"
                   ? "Start timer"
-                  : "Save changes"}
+                  : d.mode === "new-task"
+                    ? "Create task"
+                    : "Save changes"}
             </Button>
           </FrameFooter>
         </form>
@@ -225,7 +240,7 @@ export function Editor({
           <div className="flex flex-wrap gap-2 pt-3">
             <Button
               variant="ghost"
-              size="sm"
+              size="default"
               disabled={
                 busy ||
                 staleContext ||
@@ -240,7 +255,7 @@ export function Editor({
             {d.work && (
               <Button
                 variant="ghost"
-                size="sm"
+                size="default"
                 disabled={busy || staleContext}
                 onClick={hide}
               >

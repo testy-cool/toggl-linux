@@ -324,6 +324,8 @@ separate pywebview process talks only to its private control socket. Closing the
 window hides it, so reopening preserves search, scroll and any unfinished draft.
 The current timer stays visible while browsing; editing happens in the same window.
 **Open timer** and **Edit description** open this window's editor directly.
+**Today's entries** opens its Today tab. Stop keeps an unfinished description
+attached to the completed interval so it can still be saved without restarting.
 
 The prebuilt interface in `toggl_web_assets/` ships with the Python source. Node
 is needed only to develop or rebuild it:

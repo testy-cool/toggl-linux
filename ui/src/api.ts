@@ -11,7 +11,11 @@ declare global {
   }
 }
 export async function host(): Promise<Host> {
-  if (window.pywebview?.api) return window.pywebview.api;
+  if (
+    typeof window.pywebview?.api?.command === "function" &&
+    typeof window.pywebview.api.ready === "function"
+  )
+    return window.pywebview.api;
   return new Promise((resolve) =>
     window.addEventListener(
       "pywebviewready",

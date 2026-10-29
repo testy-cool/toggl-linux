@@ -79,6 +79,8 @@ class Launcher:
         if mode == 'timer':
             import toggl_timer_window
             toggl_timer_window.show(self.app)
+        elif mode == 'today':
+            self.app.on_view_today(None, None)
         else:
             import toggl_tray_popup
             toggl_tray_popup.toggle(self.app, geometry['x']+geometry['width']//2, geometry['y'])

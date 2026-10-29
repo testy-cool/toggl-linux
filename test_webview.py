@@ -52,6 +52,15 @@ def test_hide_keeps_the_same_webview_and_draft_in_memory():
     bridge._window.destroy.assert_not_called()
 
 
+def test_late_frontend_readiness_does_not_reopen_a_window_the_user_closed():
+    bridge = Bridge(Path('/private-test'), managed=True)
+    bridge._window = MagicMock()
+    bridge.close()
+    assert bridge.ready() == {'mode': 'work'}
+    assert not bridge._visible
+    bridge._window.show.assert_not_called()
+
+
 def test_tray_reuses_one_window_process_and_does_not_pass_its_api_token():
     import toggl_webview_launcher as launcher
     view = launcher.Launcher(app)
@@ -79,3 +88,31 @@ def test_window_placement_stays_inside_each_monitor():
     assert rect['x'] >= area.x and rect['y'] >= area.y
     assert rect['x']+rect['width'] <= area.x+area.width
     assert rect['y']+rect['height'] <= area.y+area.height
+
+
+def test_socket_keeps_valid_unicode_descriptions_editable_and_stoppable():
+    app.api_token = None
+    original = '🧪' * 10000
+    updated = '🕒' * 10000
+    server = control.start_server(app)
+    try:
+        with patch.object(app, '_play_sound'):
+            control.dispatch(app, 'start', {'changes': {'description': original}})
+            result = control.request(app.STATE_DIR, 'edit-current', {
+                'changes': {'description': updated}, 'expected': dict(app.state),
+                'context': toggl_projects.context(app)})
+            assert result['state']['description'] == updated
+            result = control.request(app.STATE_DIR, 'stop', {'expected': result['state'],
+                                                           'context': result['project_context']})
+        assert not result['state']['tracking']
+        assert app._pending_as_entries()[0]['description'] == updated
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_socket_still_rejects_commands_larger_than_its_bounded_frame():
+    with patch.object(control.socket, 'socket') as connection:
+        with pytest.raises(control.ControlError, match='large'):
+            control.request(Path('/private-test'), 'edit-current', {'description': 'x' * control.MAX_COMMAND})
+    connection.return_value.__enter__.return_value.sendall.assert_not_called()

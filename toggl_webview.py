@@ -34,8 +34,6 @@ class Bridge:
 
     def ready(self):
         self._ready.set()
-        self._window.show()
-        self._visible = True
         return {'mode': self._mode}
 
     def close(self):
@@ -69,6 +67,8 @@ class Bridge:
                     self._visible = True
                     if message.get('mode') == 'timer':
                         self._window.evaluate_js("window.dispatchEvent(new Event('toggl-edit-current'))")
+                    elif message.get('mode') == 'today':
+                        self._window.evaluate_js("window.dispatchEvent(new Event('toggl-open-today'))")
                 except (ValueError, KeyError, TypeError):
                     continue
         finally:
@@ -89,6 +89,7 @@ def create_window(bridge, *, x=None, y=None, width=600, height=780):
                                     frameless=True, easy_drag=False, hidden=False,
                                     background_color='#17191d', text_select=True)
     bridge._window = window
+    bridge._visible = True
     window.events.closing += bridge._closing
     return window
 
@@ -97,7 +98,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state-dir', type=Path, default=Path.home()/'.local/share/toggl-tray')
     parser.add_argument('--managed', action='store_true')
-    parser.add_argument('--mode', choices=('work', 'timer'), default='work')
+    parser.add_argument('--mode', choices=('work', 'timer', 'today'), default='work')
     parser.add_argument('--x', type=int)
     parser.add_argument('--y', type=int)
     parser.add_argument('--width', type=int, default=600)

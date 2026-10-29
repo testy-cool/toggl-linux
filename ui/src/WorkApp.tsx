@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { cn } from "cn";
 import {
   Check,
   Clock3,
@@ -48,6 +49,7 @@ import { Editor, Choice } from "./Editor";
 import { host, request } from "./api";
 import {
   commandFor,
+  afterOwnStop,
   draftFor,
   elapsed,
   projectName,
@@ -70,11 +72,13 @@ export default function WorkApp() {
   const [now, setNow] = useState(Date.now);
   const epoch = useRef(0);
   const writing = useRef(false);
+  const reading = useRef(false);
   const mounted = useRef(true);
   const todayLoaded = useRef(false);
 
   const poll = useCallback(async () => {
-    if (writing.current) return;
+    if (writing.current || reading.current) return;
+    reading.current = true;
     const version = epoch.current;
     try {
       const snapshot = await request("work-snapshot");
@@ -83,16 +87,65 @@ export default function WorkApp() {
     } catch (failure) {
       if (mounted.current && version === epoch.current)
         setError(String(failure instanceof Error ? failure.message : failure));
+    } finally {
+      reading.current = false;
     }
   }, []);
+  const act = useCallback(
+    async (command: Command, closeDraft = false) => {
+      if (writing.current) return;
+      if (
+        command.action === "edit-current" &&
+        Object.keys(command.payload.changes as object).length === 0
+      ) {
+        setDraft(null);
+        return;
+      }
+      writing.current = true;
+      epoch.current += 1;
+      setBusy(true);
+      setError("");
+      try {
+        const result = await request(command.action, command.payload);
+        if (mounted.current) {
+          setData((previous) =>
+            previous ? { ...previous, ...result } : result,
+          );
+          if (command.action === "stop")
+            setDraft((previous) =>
+              previous ? afterOwnStop(previous, result) : null,
+            );
+          if (closeDraft) setDraft(null);
+        }
+      } catch (failure) {
+        setError(String(failure instanceof Error ? failure.message : failure));
+      } finally {
+        writing.current = false;
+        epoch.current += 1;
+        setBusy(false);
+        void poll();
+      }
+    },
+    [poll],
+  );
+  const changeTab = useCallback(
+    (value: string) => {
+      setTab(value);
+      if (value === "today" && !todayLoaded.current && !writing.current) {
+        todayLoaded.current = true;
+        void act({ action: "refresh", payload: {} });
+      }
+    },
+    [act],
+  );
   useEffect(() => {
     mounted.current = true;
     let stopped = false;
     async function start() {
-      const bridge = await host();
-      if (stopped) return;
-      const mode = await bridge.ready();
       try {
+        const bridge = await host();
+        if (stopped) return;
+        const mode = await bridge.ready();
         const snapshot = await request("work-snapshot");
         if (stopped) return;
         setData(snapshot);
@@ -100,6 +153,7 @@ export default function WorkApp() {
           setDraft(
             draftFor(snapshot, snapshot.state.tracking ? "current" : "new"),
           );
+        else if (mode.mode === "today") changeTab("today");
       } catch (failure) {
         if (!stopped)
           setError(
@@ -116,7 +170,7 @@ export default function WorkApp() {
       clearInterval(timer);
       clearInterval(refresh);
     };
-  }, [poll]);
+  }, [poll, changeTab]);
   useEffect(() => {
     const open = () => {
       if (data)
@@ -126,6 +180,8 @@ export default function WorkApp() {
         );
     };
     window.addEventListener("toggl-edit-current", open);
+    const today = () => changeTab("today");
+    window.addEventListener("toggl-open-today", today);
     const key = (event: KeyboardEvent) => {
       if (
         event.key === "Escape" &&
@@ -139,38 +195,14 @@ export default function WorkApp() {
     window.addEventListener("keydown", key);
     return () => {
       window.removeEventListener("toggl-edit-current", open);
+      window.removeEventListener("toggl-open-today", today);
       window.removeEventListener("keydown", key);
     };
-  }, [data, draft]);
+  }, [data, draft, changeTab]);
+  useEffect(() => {
+    if (tab === "today" && !busy && !todayLoaded.current) changeTab("today");
+  }, [tab, busy, changeTab]);
 
-  async function act(command: Command, closeDraft = false) {
-    if (writing.current) return;
-    if (
-      command.action === "edit-current" &&
-      Object.keys(command.payload.changes as object).length === 0
-    ) {
-      setDraft(null);
-      return;
-    }
-    writing.current = true;
-    epoch.current += 1;
-    setBusy(true);
-    setError("");
-    try {
-      const result = await request(command.action, command.payload);
-      if (mounted.current) {
-        setData((previous) => (previous ? { ...previous, ...result } : result));
-        if (closeDraft) setDraft(null);
-      }
-    } catch (failure) {
-      setError(String(failure instanceof Error ? failure.message : failure));
-    } finally {
-      writing.current = false;
-      epoch.current += 1;
-      setBusy(false);
-      void poll();
-    }
-  }
   function openWork(work: Work) {
     if (!data || busy) return;
     setError("");
@@ -194,13 +226,6 @@ export default function WorkApp() {
         entry,
       ),
     );
-  }
-  function changeTab(value: string) {
-    setTab(value);
-    if (value === "today" && !todayLoaded.current) {
-      todayLoaded.current = true;
-      void act({ action: "refresh", payload: {} });
-    }
   }
   function saveDraft(asTask = false) {
     if (!draft) return;
@@ -242,12 +267,30 @@ export default function WorkApp() {
           <div className="pywebview-drag-region flex min-w-0 flex-1 items-center gap-3">
             <Clock3 aria-hidden="true" className="app-mark" />
             <span className="font-semibold">Toggl</span>
-            <span className="text-sm text-muted-foreground">
+            <span className="min-w-0 truncate text-sm text-muted-foreground">
               {draft && data?.state.tracking
                 ? `${projectName(data, data.state.project_id)} · ${elapsed(data.state, now)}`
                 : "Work timer"}
             </span>
           </div>
+          {draft && data?.state.tracking && (
+            <Button
+              variant="destructive"
+              disabled={busy}
+              aria-label="Stop timer and keep draft"
+              onClick={() =>
+                void act({
+                  action: "stop",
+                  payload: {
+                    expected: data.state,
+                    context: data.project_context,
+                  },
+                })
+              }
+            >
+              Stop
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon"
@@ -271,7 +314,7 @@ export default function WorkApp() {
               <AlertDescription>{error}</AlertDescription>
               <Button
                 variant="ghost"
-                size="sm"
+                size="default"
                 onClick={() => {
                   setError("");
                   void poll();
@@ -388,61 +431,70 @@ export default function WorkApp() {
                   }
                 />
               )}
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <Tabs value={tab} onValueChange={changeTab}>
-                  <TabsList>
-                    <TabsTrigger value="work">Work</TabsTrigger>
-                    <TabsTrigger value="tasks">Tasks</TabsTrigger>
-                    <TabsTrigger value="today">Today</TabsTrigger>
-                  </TabsList>
-                </Tabs>
-                <div className="flex gap-1">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={
-                      busy || !!draft || data.task_capability === "unavailable"
-                    }
-                    onClick={() => setDraft(draftFor(data, "new-task"))}
-                  >
-                    New task
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={busy || !!draft}
-                    onClick={() => setDraft(draftFor(data, "new"))}
-                  >
-                    <Plus data-icon="inline-start" />
-                    New timer
-                  </Button>
-                </div>
-              </div>
-              <div className="search-row">
-                <Input
-                  aria-label="Search work"
-                  placeholder="Search your work…"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                />
-                <div className="project-filter">
-                  <Choice
-                    label="Filter by project"
-                    value={project}
-                    options={[
-                      { id: "all", name: "All projects" },
-                      { id: "none", name: "No project" },
-                      ...projects.map((p) => ({
-                        id: String(p.id),
-                        name: p.name,
-                      })),
-                    ]}
-                    onChange={setProject}
-                  />
-                </div>
-              </div>
+              {!draft && (
+                <>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <Tabs value={tab} onValueChange={changeTab}>
+                      <TabsList>
+                        <TabsTrigger value="work">Work</TabsTrigger>
+                        <TabsTrigger value="tasks">Tasks</TabsTrigger>
+                        <TabsTrigger value="today">Today</TabsTrigger>
+                      </TabsList>
+                    </Tabs>
+                    <div className="flex gap-1">
+                      <Button
+                        variant="ghost"
+                        size="default"
+                        disabled={
+                          busy ||
+                          !!draft ||
+                          data.task_capability === "unavailable"
+                        }
+                        onClick={() => setDraft(draftFor(data, "new-task"))}
+                      >
+                        New task
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="default"
+                        disabled={busy || !!draft}
+                        onClick={() => setDraft(draftFor(data, "new"))}
+                      >
+                        <Plus data-icon="inline-start" />
+                        New timer
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="search-row">
+                    <Input
+                      aria-label="Search work"
+                      placeholder="Search your work…"
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                    />
+                    <div className="project-filter">
+                      <Choice
+                        label="Filter by project"
+                        value={project}
+                        options={[
+                          { id: "all", name: "All projects" },
+                          { id: "none", name: "No project" },
+                          ...projects.map((p) => ({
+                            id: String(p.id),
+                            name: p.name,
+                          })),
+                        ]}
+                        onChange={setProject}
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
               <ScrollArea
-                className="work-list min-h-24 flex-1"
+                className={cn(
+                  "work-list flex-1",
+                  draft ? "min-h-0" : "min-h-24",
+                )}
                 data-testid="work-list"
               >
                 <ItemGroup
@@ -484,7 +536,7 @@ export default function WorkApp() {
                             {work.task?.active === false ? (
                               <Button
                                 variant="ghost"
-                                size="sm"
+                                size="default"
                                 disabled={busy || !!draft}
                                 onClick={() =>
                                   void act({
@@ -655,7 +707,7 @@ export default function WorkApp() {
                 </span>
                 <Button
                   variant="ghost"
-                  size="sm"
+                  size="default"
                   disabled={busy}
                   onClick={() =>
                     void act({ action: "refresh", payload: { force: true } })

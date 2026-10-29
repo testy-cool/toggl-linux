@@ -119,6 +119,32 @@ export const timerMatches = (a: Timer, b: Timer) =>
     "task_id",
   ].every((k) => a[k as keyof Timer] === b[k as keyof Timer]);
 
+export function afterOwnStop(draft: Draft, result: Snapshot): Draft {
+  if (!contextMatches(draft.snapshot, result)) return draft;
+  if (draft.mode === "new" && !result.state.tracking)
+    return { ...draft, snapshot: structuredClone(result) };
+  if (draft.mode !== "current") return draft;
+  const original = draft.snapshot.state;
+  const matches = result.entries.filter(
+    (entry) =>
+      entry.stop &&
+      entry.duration >= 0 &&
+      sameId(entry.workspace_id, original.workspace_id) &&
+      Date.parse(entry.start) === Date.parse(original.start_time ?? "") &&
+      (original.entry_id == null || sameId(entry.id, original.entry_id)),
+  );
+  // Only our explicit Stop action can retarget a draft, and only to its exact
+  // completed interval. External status updates never rebase a form.
+  return matches.length === 1
+    ? {
+        ...draft,
+        mode: "entry",
+        entry: structuredClone(matches[0]),
+        snapshot: structuredClone(result),
+      }
+    : draft;
+}
+
 export function workItems(s: Snapshot, includeArchived = false): Work[] {
   const recent: Work[] = (s.activities ?? []).flatMap((p) =>
     p.activities.map((a) => ({
@@ -134,7 +160,13 @@ export function workItems(s: Snapshot, includeArchived = false): Work[] {
     .filter(
       (t) =>
         (includeArchived || t.active !== false) &&
-        sameId(t.workspace_id, s.state.workspace_id),
+        sameId(t.workspace_id, s.state.workspace_id) &&
+        s.projects.some(
+          (p) =>
+            sameId(p.id, t.project_id) &&
+            sameId(p.workspace_id, t.workspace_id) &&
+            p.active !== false,
+        ),
     )
     .map((t) => ({
       key: `task:${t.id}`,

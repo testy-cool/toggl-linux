@@ -2231,6 +2231,11 @@ def on_open_task_popup(_icon, _item):
     GLib.idle_add(toggl_webview_launcher.show, sys.modules[__name__])
 
 
+def on_open_today(_icon, _item):
+    import toggl_webview_launcher
+    GLib.idle_add(toggl_webview_launcher.show, sys.modules[__name__], None, None, 'today')
+
+
 def _tray_project_items():
     """Project choices and project management; tasks are picked in the popup."""
     import toggl_projects
@@ -2284,7 +2289,7 @@ def build_menu():
         pystray.MenuItem(toggle_label, on_toggle),
         pystray.MenuItem("Edit description...", on_open_timer),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Today's entries", on_view_today),
+        pystray.MenuItem("Today's entries", on_open_today),
         pystray.MenuItem("Doctor", on_doctor),
         pystray.MenuItem("Audit today", on_audit_today),
         pystray.Menu.SEPARATOR,

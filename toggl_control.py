@@ -12,6 +12,7 @@ import toggl_debug
 from pathlib import Path
 
 MAX_MESSAGE = 2 * 1024 * 1024
+MAX_COMMAND = 256 * 1024  # A 10,000-character Unicode description plus its guarded original.
 
 
 class ControlError(Exception):
@@ -353,8 +354,8 @@ def start_server(app):
         def handle(self):
             self.request.settimeout(10)
             try:
-                line = self.rfile.readline(16385)
-                if len(line) > 16384 or not line.endswith(b"\n"):
+                line = self.rfile.readline(MAX_COMMAND + 1)
+                if len(line) > MAX_COMMAND or not line.endswith(b"\n"):
                     raise ControlError("Command is too large or incomplete")
                 command = json.loads(line)
                 result = dispatch(app, command["action"], command.get("payload", {}))
@@ -381,7 +382,7 @@ def request(state_dir, action, payload):
         except OSError as error:
             raise ControlError("Toggl Tray is not running. Launch the tray app and try again.") from error
         command = json.dumps({"action": action, "payload": payload}).encode() + b"\n"
-        if len(command) > 16384:
+        if len(command) > MAX_COMMAND:
             raise ControlError("Command is too large")
         client.sendall(command)
         with client.makefile("rb") as reader:
