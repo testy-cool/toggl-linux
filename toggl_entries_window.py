@@ -394,7 +394,7 @@ def _gtk_edit_entry_dialog(entry):
         elif resp == Gtk.ResponseType.OK:
             update = {}
             new_desc = desc_entry.get_text().strip()
-            if new_desc != entry.get("description", ""):
+            if new_desc != (entry.get("description") or ""):
                 update["description"] = new_desc
 
             project_id = project_picker.get_active_id()
