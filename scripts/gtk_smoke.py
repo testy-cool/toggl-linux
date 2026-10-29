@@ -24,7 +24,7 @@ sys.path.insert(0, str(args.project_root.resolve()))
 
 import gi
 gi.require_version('Gtk', '3.0')
-from gi.repository import Gtk, GLib, Pango
+from gi.repository import Gtk, GLib, Pango, Gdk
 import toggl_control as control
 import toggl_debug
 import toggl_entries_window
@@ -32,6 +32,7 @@ import toggl_task_window
 import toggl_timer_window
 import toggl_tray as app
 import toggl_tray_popup
+import toggl_tasks
 
 
 def drain():
@@ -92,7 +93,8 @@ with tempfile.TemporaryDirectory(prefix='toggl-native-gtk-') as scratch:
             drain()
             row = next(row for row in popup.list.get_children() if row.data['kind'] == 'task')
             popup._clicked(popup.list, row)
-            until(lambda: popup.window is None)
+            until(lambda: not popup.busy)
+            assert popup.window is not None  # Starting no longer discards browsing context.
             assert app.state['tracking'] and app.state['task_id'] == 31
             assert app.state['description'] == ''
             assert app._load_pending()[0]['task_id'] == 31
@@ -128,6 +130,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-native-gtk-') as scratch:
             timer._tick()
             assert timer.task.get_active_id() == '42'
 
+            popup.window.destroy()
             current = toggl_tray_popup.TrayPopup(app, 400, 40)
             current._close_unless_busy = lambda: False
             current.search.set_text('does not match any saved row')
@@ -136,6 +139,107 @@ with tempfile.TemporaryDirectory(prefix='toggl-native-gtk-') as scratch:
             assert current.current.get_visible()
             assert current.current_title.get_text() == 'Created smoke task'
             assert current.current_project.get_text() == 'Project: Smoke project'
+
+            layout_widths = []
+            def picture(name):
+                current.window.present()
+                # Let GTK allocate the newly selected Stack page on its frame clock.
+                for _ in range(20):
+                    drain()
+                    time.sleep(0.01)
+                drain()
+                width, height = current.window.get_size()
+                layout_widths.append(width)
+                for widget in widgets(current.window):
+                    if not widget.get_mapped():
+                        continue
+                    font = widget.get_style_context().get_property('font', Gtk.StateFlags.NORMAL)
+                    if font and font.get_size():
+                        px = font.get_size() / Pango.SCALE * (1 if font.get_size_is_absolute() else 96 / 72)
+                        assert px >= 12, (type(widget).__name__, px)
+                    translated = widget.translate_coordinates(current.window, 0, 0)
+                    if translated and widget.get_allocated_width() > 1:
+                        assert translated[0] >= 0
+                        assert translated[0] + widget.get_allocated_width() <= width, type(widget).__name__
+                if args.screenshot_dir:
+                    args.screenshot_dir.mkdir(parents=True, exist_ok=True)
+                    width, height = current.window.get_size()
+                    pixels = Gdk.pixbuf_get_from_window(current.window.get_window(), 0, 0, width, height)
+                    assert pixels is not None
+                    pixels.savev(str(args.screenshot_dir / name), 'png', [], [])
+
+            # The same native panel edits the actual pending interval, preserving its start.
+            started = app.state['start_time']
+            before_windows = {w for w in Gtk.Window.list_toplevels() if w.get_visible()}
+            current._edit_current()
+            drain()
+            assert {w for w in Gtk.Window.list_toplevels() if w.get_visible()} == before_windows
+            current.editor.description.set_text('Inline corrected description')
+            current._tick()
+            assert current.editor.description.get_text() == 'Inline corrected description'
+            picture('inline-editor.png')
+            current.editor._save()
+            until(lambda: not current.busy)
+            assert current.editor is None
+            assert app.state['description'] == 'Inline corrected description'
+            assert app.state['start_time'] == started and app.state['task_id'] == 42
+            assert current.search.get_text() == 'does not match any saved row'
+
+            # Project changes clear the old task without starting a new interval.
+            current._edit_current()
+            current.editor.project.set_active_id('none')
+            current.editor._save()
+            until(lambda: not current.busy)
+            assert app.state['project_id'] is None and app.state['task_id'] is None
+            assert app.state['start_time'] == started
+            assert app._load_pending()[-1]['description'] == 'Inline corrected description'
+
+            current.search.set_text('')
+            current._fill()
+            drain()
+            assert any(row.data['kind'] == 'activity' for row in current.list.get_children())
+            picture('running-popup.png')
+
+            current._new_task(6)
+            current.editor.description.set_text('Inline saved task')
+            def save_task(_app, action, payload):
+                assert action == 'task-create'
+                task = dict(id=43, workspace_id=1, project_id=6, name=payload['name'], active=True)
+                app._task_cache['tasks'].append(task)
+                return task
+            with patch.object(toggl_tasks, 'write', side_effect=save_task):
+                current.editor._save()
+                until(lambda: not current.busy)
+            assert current.editor is None and app.state['project_id'] is None
+            assert any(row.data.get('task_id') == 43 for row in current.list.get_children())
+
+            # Browse state survives closing the panel; unsaved edits survive focus loss.
+            current.expanded.add(6)
+            current.search.set_text('Inline')
+            current.window.destroy()
+            current = toggl_tray_popup.TrayPopup(app, 400, 40)
+            drain()
+            assert current.search.get_text() == 'Inline' and 6 in current.expanded
+            current._edit_current()
+            current.editor.description.set_text('Kept draft')
+            current._close_unless_busy()
+            assert current.window is not None and current.editor.description.get_text() == 'Kept draft'
+            current._cancel_edit()
+            assert len(set(layout_widths)) == 1, layout_widths
+
+            app._task_cache['tasks'].extend(dict(id=100+i, workspace_id=1, project_id=6,
+                                                 name=f'Browse task {i}', active=True) for i in range(25))
+            current.search.set_text('')
+            current._fill()
+            until(lambda: current.scroll.get_vadjustment().get_upper() > 800)
+            current.scroll.get_vadjustment().set_value(140)
+            current.window.destroy()
+            current = toggl_tray_popup.TrayPopup(app, 400, 40)
+            current._close_unless_busy = lambda: False
+            until(lambda: current.scroll.get_vadjustment().get_value() == 140)
+            current._edit_current()
+            current._cancel_edit()
+            until(lambda: current.scroll.get_vadjustment().get_value() == 140)
             manager = toggl_task_window.TaskManager(app)
             with patch.object(app, 'fetch_entries_for_date', return_value=[]):
                 toggl_entries_window._show_entries_window()
@@ -147,17 +251,10 @@ with tempfile.TemporaryDirectory(prefix='toggl-native-gtk-') as scratch:
                     if widget.get_visible():
                         font = widget.get_style_context().get_property('font', Gtk.StateFlags.NORMAL)
                         if font and font.get_size():
-                            sizes.append(font.get_size() / Pango.SCALE * 96 / 72)
+                            sizes.append(font.get_size() / Pango.SCALE *
+                                         (1 if font.get_size_is_absolute() else 96 / 72))
             assert sizes and min(sizes) >= 12, sizes
             assert current.window.get_size()[0] <= 560, current.window.get_size()
-            if args.screenshot_dir:
-                args.screenshot_dir.mkdir(parents=True, exist_ok=True)
-                width, height = current.window.get_size()
-                # Draw the widget itself: other windows can obscure its Xvfb pixels.
-                picture = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
-                current.window.draw(cairo.Context(picture))
-                picture.write_to_png(str(args.screenshot_dir/'running-popup.png'))
-
             Gtk.Label().set_markup('<invalid-tag>smoke-secret-token</invalid-tag>')
             def failed_callback():
                 raise RuntimeError('Native GTK callback diagnostic probe')
@@ -169,7 +266,9 @@ with tempfile.TemporaryDirectory(prefix='toggl-native-gtk-') as scratch:
             assert 'smoke-secret-token' not in log
             network.assert_not_called()
             print(json.dumps(dict(real_gtk=True, private_offline_switch=True, task_form_callback=True,
-                                  timer_edit=True, pinned_current=True, min_font_px=min(sizes),
+                                  timer_edit=True, inline_edit=True, inline_project_move=True,
+                                  inline_task_create=True, preserved_draft=True, browse_restored=True,
+                                  pinned_current=True, min_font_px=min(sizes),
                                   native_warning=True, callback_traceback=True, network_calls=0)))
     finally:
         for window in Gtk.Window.list_toplevels():

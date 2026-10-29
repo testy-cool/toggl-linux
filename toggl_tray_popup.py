@@ -1,4 +1,4 @@
-"""Left-click popup: projects, real tasks, and explicitly separate recent activities."""
+"""Left-click work panel with visible recent work and embedded editing."""
 import threading
 import time
 from datetime import datetime, timezone
@@ -8,6 +8,7 @@ import toggl_projects
 import toggl_task_tree
 import toggl_tasks
 import toggl_control
+from toggl_popup_editor import InlineEditor
 
 NO_PROJECT_COLOR = '#8a8a8a'
 ACTIVITIES_PER_PROJECT = 5
@@ -16,6 +17,7 @@ MAX_HEIGHT = 560
 
 _popup = None
 _closed_at = 0.0
+_browse_state = None
 
 
 def running_timer(current, projects, tasks, now=None):
@@ -45,11 +47,6 @@ def running_timer(current, projects, tasks, now=None):
                 task=task_name if description else '', elapsed=f'{hours}:{minutes:02d}:{seconds:02d}')
 
 
-def project_action(current, project_id):
-    """Starting work in a project never moves an existing interval."""
-    return 'switch', {'project_id': project_id, 'task_id': None, 'description': ''}
-
-
 def rows(groups, projects, current, query='', tasks=None, expanded=()):
     """Flatten the tree into display rows. Pure, so it can be tested without GTK."""
     colors = {str(p.get('id')): p.get('color') for p in projects if isinstance(p, dict)}
@@ -61,6 +58,8 @@ def rows(groups, projects, current, query='', tasks=None, expanded=()):
     for group in groups:
         activities = group.get('activities', group.get('tasks', []))
         server_tasks = [task for task in tasks if str(task.get('project_id')) == str(group['id'])
+                        and (current.get('workspace_id') is None
+                             or str(task.get('workspace_id')) == str(current['workspace_id']))
                         and task.get('active') is not False]
         project_match = needle and needle in (group.get('name') or '').casefold()
         if needle and not project_match:
@@ -102,7 +101,9 @@ class TrayPopup:
     def __init__(self, app, x, y):
         self.app = app
         self.context = toggl_projects.context(app)
-        self.expanded = set()
+        saved = _browse_state if _browse_state and _browse_state['context'] == self.context else {}
+        self.expanded = set(saved.get('expanded', ()))
+        self.editor = None
         self.busy = False
         self.rendered_state = {}
         self._render_key = None
@@ -128,11 +129,17 @@ class TrayPopup:
         ''')
         Gtk.StyleContext.add_provider_for_screen(self.window.get_screen(), self.css,
                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         for side in ('top', 'bottom', 'start', 'end'):
-            getattr(box, 'set_margin_'+side)(10)
-        self.window.add(box)
-        self.search = Gtk.SearchEntry(placeholder_text='Search projects, tasks, and activities…')
+            getattr(root, 'set_margin_'+side)(12)
+        self.window.add(root)
+        self.pages = Gtk.Stack()
+        self.pages.set_vhomogeneous(False)
+        root.pack_start(self.pages, True, True, 0)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.pages.add_named(box, 'browse')
+        self.search = Gtk.SearchEntry(placeholder_text='Search work…')
+        self.search.set_text(saved.get('query', ''))
         self.search.connect('search-changed', lambda *_: self._fill())
         self.search.connect('activate', lambda *_: self._activate_first())
         box.pack_start(self.search, False, False, 0)
@@ -169,16 +176,23 @@ class TrayPopup:
         box.pack_start(self.scroll, True, True, 0)
         self.message = Gtk.Label(xalign=0)
         self.message.set_line_wrap(True)
-        box.pack_start(self.message, False, False, 0)
+        root.pack_start(self.message, False, False, 0)
+        footer = Gtk.Box(spacing=8)
+        new = Gtk.Button(label='New timer')
+        new.connect('clicked', lambda *_: self._open_editor('draft'))
+        footer.pack_start(new, True, True, 0)
         manage = Gtk.Button(label='Manage Tasks')
         manage.connect('clicked', self._manage_tasks)
         manage.set_sensitive(toggl_tasks.capability(app) != 'unavailable')
-        box.pack_start(manage, False, False, 0)
+        footer.pack_start(manage, True, True, 0)
+        box.pack_start(footer, False, False, 0)
         self.window.set_size_request(WIDTH, -1)
         self.window.connect('key-press-event', self._key)
         self.window.connect('focus-out-event', lambda *_: self._close_unless_busy())
         self.window.connect('destroy', self._destroy)
+        self.window.connect('size-allocate', lambda *_: self._place(x, y))
         self._fill()
+        GLib.idle_add(self._restore_scroll, saved.get('scroll', 0))
         self.window.show_all()
         self.current.set_visible(bool(self.rendered_state.get('tracking')))
         self.message.set_visible(False)
@@ -200,7 +214,7 @@ class TrayPopup:
         self.window.move(left, max(area.y, min(top, area.y+area.height-height)))
 
     def _fill(self):
-        if self.window is None:
+        if self.window is None or self.editor is not None:
             return
         adjustment = self.scroll.get_vadjustment()
         position = adjustment.get_value()
@@ -217,11 +231,24 @@ class TrayPopup:
             self.list.add(self._row(row))
         self._render_key = (current, projects, tasks, display_rows)
         self.list.show_all()
+        GLib.idle_add(self._resize)
         GLib.idle_add(self._restore_scroll, position)
         if not display_rows:
-            self._say('No matching project, task, or activity.')
+            self._say('No matching work.')
         else:
             self._say('')
+
+    def _resize(self):
+        if self.window is None:
+            return False
+        height = self.window.get_child().get_preferred_height()[1]
+        display = Gdk.Display.get_default()
+        x, y = self.window.get_position()
+        monitor = display.get_monitor_at_point(x, y) if display else None
+        if monitor:
+            height = min(height, monitor.get_workarea().height)
+        self.window.resize(WIDTH, max(1, height))
+        return False
 
     def _update_current(self, current, projects, tasks):
         self.rendered_state = dict(current)
@@ -241,8 +268,14 @@ class TrayPopup:
         if self.window is None:
             return False
         if toggl_projects.context(self.app) != self.context:
+            if self.editor is not None:
+                self.editor.save.set_sensitive(False)
+                self._say('Account or workspace changed. Copy your draft, then cancel and reopen the panel.')
+                return True
             self.window.destroy()
             return False
+        if self.editor is not None:
+            return True  # Never rebuild an input or its choices underneath a draft.
         if not self.busy:
             with self.app.state_lock:
                 current = dict(self.app.state)
@@ -285,21 +318,13 @@ class TrayPopup:
             line.pack_start(Gtk.Label(label='Running'), False, False, 0)
         if (row['kind'] == 'project' and row['project_id'] is not None
                 and toggl_tasks.capability(self.app) != 'unavailable'):
-            add = Gtk.Button(label='New Task')
+            add = Gtk.Button(label='New task')
             add.connect('clicked', lambda *_: self._new_task(row['project_id']))
             line.pack_end(add, False, False, 0)
-        elif row['kind'] == 'task':
+        elif row['kind'] in ('task', 'activity'):
             edit = Gtk.Button(label='Edit')
-            edit.connect('clicked', lambda *_: self._edit_task(row['task']))
+            edit.connect('clicked', lambda *_: self._edit_row(row))
             line.pack_end(edit, False, False, 0)
-        elif row['kind'] == 'activity':
-            save = Gtk.Button(label='Save as Task')
-            save.connect('clicked', lambda *_: self._save_activity(row))
-            hide = Gtk.Button(label='Hide')
-            hide.connect('clicked', lambda *_: self._hide_activity(row))
-            line.pack_end(hide, False, False, 0)
-            if row['project_id'] is not None:
-                line.pack_end(save, False, False, 0)
         widget.add(line)
         if row['kind'] == 'task':
             widget.set_tooltip_text('Start this task with a blank description')
@@ -328,53 +353,118 @@ class TrayPopup:
             self.expanded.add(row['project_id'])
             self._fill()
             return
-        with self.app.state_lock:
-            expected = dict(self.app.state)
+        if row['kind'] == 'project':
+            self._open_editor('draft', row=dict(project_id=row['project_id'], description=''))
+            return
+        expected = dict(self.rendered_state)
         self.busy = True
         self.list.set_sensitive(False)
         self._say('Starting…')
         def work():
             error = None
             try:
-                if row['kind'] in ('task', 'activity'):
-                    toggl_task_tree.select_task(self.app, row['project_id'], row['description'], self.context,
-                                                expected, row.get('task_id'))
-                else:
-                    action, changes = project_action(expected, row['project_id'])
-                    toggl_control.dispatch(self.app, action, {'changes': changes, 'expected': expected,
-                                                              'context': self.context})
+                toggl_task_tree.select_task(self.app, row['project_id'], row['description'], self.context,
+                                            expected, row.get('task_id'))
             except Exception as exc:
                 error = str(exc)
             GLib.idle_add(self._finish, error)
         threading.Thread(target=work, daemon=True).start()
 
-    def _new_task(self, project_id, name='', start=False):
-        import toggl_task_window
-        editor = toggl_task_window.show(self.app, project_id, parent=self.window,
-                                        on_saved=lambda _snapshot: self._fill(), start=start)
-        if name:
-            key = next((key for key, value in toggl_task_window._editors.items()
-                        if value.project_id == project_id and value.original is None), None)
-            if key is not None:
-                toggl_task_window._editors[key].name.set_text(name)
-        return editor
+    def _new_task(self, project_id):
+        self._open_editor('new-task', row=dict(project_id=project_id, description=''))
 
-    def _edit_task(self, task):
-        import toggl_task_window
-        toggl_task_window.show(self.app, task['project_id'], task=task, parent=self.window,
-                               on_saved=lambda _snapshot: self._fill())
+    def _edit_row(self, row):
+        if row['active']:
+            self._edit_current()
+        elif row['kind'] == 'task':
+            self._open_editor('task', row=row['task'])
+        else:
+            self._open_editor('draft', row=row)
 
-    def _save_activity(self, row):
-        self._new_task(row['project_id'], ' '.join(row['description'].split()))
+    def _open_editor(self, mode, row=None):
+        if self.busy or self.window is None or self.editor is not None:
+            return
+        self.browse_position = self.scroll.get_vadjustment().get_value()
+        snapshot = toggl_control.snapshot(self.app)
+        if snapshot['project_context'] != self.context:
+            self._say('Account or workspace changed; reopen the panel.')
+            return
+        if mode == 'current':
+            snapshot['state'] = dict(self.rendered_state)
+        self.editor = InlineEditor(snapshot, mode, self._submit_edit, self._cancel_edit, row)
+        if mode == 'draft' and row and row.get('kind') == 'activity':
+            hide = Gtk.Button(label='Hide suggestion')
+            hide.connect('clicked', lambda *_: self._hide_edited_activity(row))
+            self.editor.widget.pack_start(hide, False, False, 0)
+        self.pages.add_named(self.editor.widget, 'edit')
+        self.editor.widget.show_all()
+        self.pages.set_visible_child_name('edit')
+        self._say('')
+        GLib.idle_add(self._resize)
+        self.editor.description.grab_focus()
 
-    def _hide_activity(self, row):
+    def _cancel_edit(self):
+        if self.busy or self.editor is None:
+            return
+        if toggl_projects.context(self.app) != self.context:
+            self.window.destroy()
+            return
+        self.pages.set_visible_child_name('browse')
+        self.pages.remove(self.editor.widget)
+        self.editor = None
+        self._fill()
+        GLib.idle_add(self._restore_scroll, self.browse_position)
+        self.search.grab_focus()
+
+    def _hide_edited_activity(self, row):
+        if self.busy:
+            return
+        if toggl_projects.context(self.app) != self.context:
+            self._say('Account or workspace changed; cancel and reopen the panel.')
+            return
         try:
             toggl_task_tree.hide_activity(self.app, row['project_id'], row['description'])
-            self._fill()
         except ValueError as error:
             self._say(str(error))
+            return
+        self._cancel_edit()
+
+    def _submit_edit(self, action, payload, success):
+        if self.busy or self.editor is None:
+            return
+        if toggl_projects.context(self.app) != self.context:
+            self._say('Account or workspace changed. Copy your draft, then cancel and reopen the panel.')
+            return
+        if action == 'edit-current' and not payload.get('changes'):
+            self._cancel_edit()
+            self._say('No changes to save')
+            return
+        self.busy = True
+        self.editor.widget.set_sensitive(False)
+        self._say('Saving…' if action != 'switch' else 'Starting…')
+
+        def worker():
+            error = None
+            try:
+                toggl_control.dispatch(self.app, action, payload)
+            except Exception as exc:
+                error = str(exc)
+            GLib.idle_add(self._edit_finished, error, success)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _edit_finished(self, error, success):
+        if self.window is None:
+            return False
+        self.busy = False
+        self.editor.widget.set_sensitive(True)
+        if not error:
+            self._cancel_edit()
+        self._say(error or success)
+        return False
 
     def _manage_tasks(self, *_):
+        if self.busy:
+            return
         import toggl_task_window
         toggl_task_window.manage(self.app, self.window)
 
@@ -399,21 +489,18 @@ class TrayPopup:
     def _edit_current(self, *_):
         if self.busy or self.window is None:
             return
-        import toggl_timer_window
-        self.window.destroy()
-        toggl_timer_window.show(self.app)
+        self._open_editor('current')
 
     def _finish(self, error):
         if self.window is None:
             return False
         self.busy = False
-        if error:
-            self.list.set_sensitive(True)
-            self.stop.set_sensitive(True)
-            self.edit.set_sensitive(True)
-            self._say(error)
-        else:
-            self.window.destroy()
+        self.list.set_sensitive(True)
+        self.stop.set_sensitive(True)
+        self.edit.set_sensitive(True)
+        if not error:
+            self._fill()
+        self._say(error or '')
         return False
 
     def _say(self, text):
@@ -423,18 +510,26 @@ class TrayPopup:
         self.message.set_visible(bool(text))
 
     def _close_unless_busy(self):
-        if not self.busy and self.window is not None:
+        if not self.busy and self.editor is None and self.window is not None:
             self.window.destroy()
         return False
 
     def _key(self, _window, event):
         if event.keyval == Gdk.KEY_Escape:
-            self.window.destroy()
+            if self.busy:
+                return True
+            if self.editor is not None:
+                self._cancel_edit()
+            else:
+                self.window.destroy()
             return True
         return False
 
     def _destroy(self, *_):
-        global _popup, _closed_at
+        global _popup, _closed_at, _browse_state
+        _browse_state = dict(context=self.context, query=self.search.get_text(), expanded=set(self.expanded),
+                             scroll=getattr(self, 'browse_position', self.scroll.get_vadjustment().get_value())
+                             if self.editor is not None else self.scroll.get_vadjustment().get_value())
         _closed_at = time.monotonic()
         if self.tick_source is not None:
             GLib.source_remove(self.tick_source)
@@ -463,7 +558,10 @@ def toggle(app, x, y):
     """Open the popup at the icon, or close it when it is already open."""
     global _popup
     if _popup is not None and _popup.window is not None:
-        _popup.window.destroy()
+        if _popup.editor is not None or _popup.busy:
+            _popup.window.present()
+        else:
+            _popup.window.destroy()
     elif time.monotonic()-_closed_at > 0.4:  # this click already closed it by taking focus away
         _popup = TrayPopup(app, x, y)
     return False

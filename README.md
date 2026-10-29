@@ -322,9 +322,20 @@ Left-click the tray icon to open a small window under it. Projects contain real
 OpenTickly tasks; choosing one starts it with a blank description. Historical
 time-entry descriptions appear under **Recent work**, visible immediately. The five
 most recent descriptions per project appear first; **Show more** reveals the rest.
-Activities can be started again, saved as real tasks, or hidden. A project
-row can create a task, and **Manage Tasks** supports rename, archive, and restore.
+Every work row has **Edit**. For running work, this edits its description, project,
+and task inside the panel; **Save changes** keeps the same interval. For earlier
+work, **Edit** lets you change the description/project before starting a new interval,
+save the description as a reusable task, or hide the suggestion. Earlier time entries
+stay unchanged. Saved tasks can be renamed in place; OpenTickly's task API keeps
+them in their original project.
+
+Clicking a project opens a new-timer form. It never silently reassigns existing
+time. **New task** creates a saved task in place; **Manage Tasks** opens the advanced
+rename, archive, and restore window. **New timer** starts with no project selected.
 Type to search everything; Enter starts the first matching task or activity.
+Starting and stopping keep the panel open. Search, expanded groups, and scroll
+position survive closing and reopening it. During editing, focus loss keeps the
+draft visible, Escape cancels the form, and failed saves preserve the inputs.
 
 The running timer stays pinned above the list with its description or task name,
 project, elapsed time, and **Stop** and **Edit** controls. Search, capped history,

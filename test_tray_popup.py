@@ -54,6 +54,13 @@ def test_search_filters_real_tasks_and_activities_without_losing_their_project()
         ('project', 'Stay Safe'), ('activity-heading', 'Recent work'), ('activity', 'Review notes')]
 
 
+def test_equal_project_ids_in_other_workspaces_do_not_supply_tasks():
+    tasks = [dict(id=31, project_id=4, workspace_id=2, name='Other workspace task', active=True)]
+    visible = popup.rows([group(4, 'Stay Safe')], PROJECTS,
+                         dict(tracking=False, workspace_id=1), tasks=tasks)
+    assert [row['kind'] for row in visible] == ['project']
+
+
 def test_project_row_explains_that_it_starts_when_timer_is_stopped():
     stopped = popup.rows([group(4, 'Stay Safe')], PROJECTS, dict(tracking=False))[0]
     running = popup.rows([group(4, 'Stay Safe')], PROJECTS, dict(tracking=True))[0]
@@ -62,12 +69,16 @@ def test_project_row_explains_that_it_starts_when_timer_is_stopped():
     assert running['hint'] == stopped['hint']
 
 
-def test_stopped_project_choice_starts_blank_instead_of_reusing_old_task():
-    stopped = dict(tracking=False, project_id=4, description='Stay Safe')
-
-    changes = {'project_id': 6, 'task_id': None, 'description': ''}
-    assert popup.project_action(stopped, 6) == ('switch', changes)
-    assert popup.project_action(dict(stopped, tracking=True), 6) == ('switch', changes)
+def test_project_choice_opens_a_draft_instead_of_moving_the_running_entry():
+    view = popup.TrayPopup.__new__(popup.TrayPopup)
+    view.busy = False
+    view._open_editor = MagicMock()
+    app.state.update(tracking=True, project_id=4, description='Stay Safe')
+    with patch.object(popup.toggl_control, 'dispatch') as dispatch:
+        view._clicked(None, MagicMock(data=dict(kind='project', project_id=6)))
+    view._open_editor.assert_called_once_with('draft', row=dict(project_id=6, description=''))
+    dispatch.assert_not_called()
+    assert app.state['project_id'] == 4 and app.state['description'] == 'Stay Safe'
 
 
 def test_menu_item_opens_the_popup_even_without_a_pointer():
@@ -130,6 +141,7 @@ def test_popup_tick_reloads_timer_changes_but_elapsed_ticks_keep_the_list_intact
     view.app = app
     view.window = MagicMock()
     view.busy = False
+    view.editor = None
     view.expanded = {4}
     view.search = MagicMock()
     view.search.get_text.return_value = 'kept search'
@@ -157,6 +169,7 @@ def test_popup_tick_reloads_timer_changes_but_elapsed_ticks_keep_the_list_intact
 def test_closed_popup_ignores_saved_task_and_scroll_callbacks():
     view = popup.TrayPopup.__new__(popup.TrayPopup)
     view.window = None
+    view.editor = None
     view.list = MagicMock()
     view.scroll = MagicMock()
     view._fill()
@@ -191,6 +204,7 @@ def test_popup_tick_closes_when_account_changes():
     view.app = app
     view.window = MagicMock()
     view.context = popup.toggl_projects.context(app)
+    view.editor = None
     app.api_token = 'changed-test-token'
     assert view._tick() is False
     view.window.destroy.assert_called_once_with()
