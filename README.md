@@ -216,6 +216,15 @@ Pending billable entries are not expired or garbage-collected automatically.
 
 ## Troubleshooting
 
+CI also runs `scripts/gtk_smoke.py` with real GTK under Xvfb, independently of
+the mocked-desktop unit suite. It exercises task switching, the timer editor,
+task-form callbacks, the pinned running timer, font sizes, and GTK error logging.
+All state is temporary and account/network requests are blocked. Run it locally with:
+
+```bash
+xvfb-run -a .venv/bin/python scripts/gtk_smoke.py
+```
+
 The running tray automatically keeps a timestamped debug log at
 `~/.local/share/toggl-tray/debug.log`. It records startup, timer events,
 command outcomes, API method/path/status/timing, stderr diagnostics, GTK warnings,
