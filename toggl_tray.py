@@ -617,6 +617,15 @@ def _stop_verification_snapshot(item, account):
         key: item.get(key) for key in ('start_time', 'stop_time', 'description', 'project_id', 'task_id')})
 
 
+def _prepare_pending_edit(item):
+    if item.get('_verify_running') and not item.get('_verify_snapshot'):
+        item['_verify_snapshot'] = _stop_verification_snapshot(
+            item, (item.get('_task_context') or {}).get('account'))
+        # Without an original baseline, reviewing an edit confirms the displayed interval.
+        item['_verify_snapshot']['review_all_fields'] = True
+    item.pop('_review_error', None)
+
+
 def _save_pending(queue):
     if queue:
         _atomic_write_text(PENDING_FILE, json.dumps(queue, indent=2))
@@ -725,10 +734,11 @@ def _restored_stop_changes(op):
             or str(remote.get('workspace_id')) != str(op.get('workspace_id') or state.get('workspace_id'))):
         raise RestoredStopReviewError('Target or account changed; review the local changes')
     original = snapshot.get('fields') or {}
+    review_all = snapshot.get('review_all_fields') is True
     data = {key: op[key] for key in ('description', 'project_id', 'task_id')
-            if key in op and op[key] != original.get(key, op[key])}
-    edited_start = op.get('start_time') != original.get('start_time', op.get('start_time'))
-    edited_stop = op.get('stop_time') != original.get('stop_time', op.get('stop_time'))
+            if key in op and (review_all or op[key] != original.get(key, op[key]))}
+    edited_start = review_all or op.get('start_time') != original.get('start_time', op.get('start_time'))
+    edited_stop = review_all or op.get('stop_time') != original.get('stop_time', op.get('stop_time'))
     start = _parse_iso(op.get('start_time') if edited_start else remote.get('start'))
     desired_stop = _parse_iso(op.get('stop_time'))
     remote_stop = _parse_iso(remote.get('stop'))
@@ -1162,6 +1172,7 @@ def _pending_entries_from_queue(queue, date_obj=None):
             "_pending_kind": op["kind"],
             "_remote_entry_id": op.get("entry_id"),
             "_review_error": op.get('review_error'),
+            "_needs_full_review": op.get('verify_running') and not op.get('verify_snapshot'),
         })
 
     if date_obj is None:
@@ -2050,10 +2061,7 @@ def _update_pending_entry(entry, update):
         for idx in indexes:
             item = queue[idx]
             action = item.get("action")
-            if item.get('_verify_running') and not item.get('_verify_snapshot'):
-                item['_verify_snapshot'] = _stop_verification_snapshot(
-                    item, (item.get('_task_context') or {}).get('account'))
-            item.pop('_review_error', None)
+            _prepare_pending_edit(item)
 
             if "description" in update:
                 item["description"] = update["description"]
@@ -2072,6 +2080,8 @@ def _delete_pending_entry(entry):
         candidate = _pending_entry_candidate(queue, entry)
         if candidate is None:
             return False
+        if bool(candidate.get('_review_error')) != bool(entry.get('_review_error')):
+            return False  # The confirmed Delete/Discard intent no longer matches.
         indexes = set(candidate["_pending_indexes"])
 
         remaining = [item for idx, item in enumerate(queue) if idx not in indexes]

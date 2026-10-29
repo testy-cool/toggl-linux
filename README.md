@@ -250,7 +250,8 @@ in Today's Entries. It stays editable without blocking cloud updates or spending
 requests on every background retry. **Sync Now** retries it; editing also enables
 a retry. **Discard Local Changes** removes only that local correction and keeps
 the cloud entry. Stops from older versions without a verification snapshot require
-an edit or local discard before replay.
+full review or local discard before replay. Their editor explains that **Save All Fields**
+applies the displayed interval, including corrections made before upgrading.
 Activity started during this launch's keyring lookup receives the resolved account
 identity once it is known; older unscoped queue items are left untouched.
 

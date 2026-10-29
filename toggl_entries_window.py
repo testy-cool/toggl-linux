@@ -287,7 +287,7 @@ def _gtk_edit_entry_dialog(entry):
         dialog.add_buttons(
             "Discard Local Changes" if entry.get('_review_error') else "Delete", Gtk.ResponseType.REJECT,
             Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
-            Gtk.STOCK_OK, Gtk.ResponseType.OK,
+            "Save All Fields" if entry.get('_needs_full_review') else Gtk.STOCK_OK, Gtk.ResponseType.OK,
         )
         dialog.set_default_response(Gtk.ResponseType.OK)
 
@@ -302,6 +302,11 @@ def _gtk_edit_entry_dialog(entry):
         box.set_margin_end(18)
         box.set_margin_top(16)
         box.set_margin_bottom(12)
+        if entry.get('_needs_full_review'):
+            notice = Gtk.Label(label='This older entry needs full review. Saving applies all displayed times and metadata.')
+            notice.set_line_wrap(True)
+            notice.set_max_width_chars(50)
+            box.add(notice)
 
         grid = Gtk.Grid(column_spacing=12, row_spacing=10)
 
@@ -399,7 +404,7 @@ def _gtk_edit_entry_dialog(entry):
                     if parsed:
                         update["stop"] = parsed.isoformat()
 
-            if update:
+            if update or entry.get('_needs_full_review'):
                 result["value"] = update
 
         dialog.destroy()
