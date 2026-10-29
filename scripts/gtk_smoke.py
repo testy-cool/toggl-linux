@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 from unittest.mock import patch
+import cairo
 
 os.environ['PYSTRAY_BACKEND'] = 'gtk'
 os.environ['GSETTINGS_BACKEND'] = 'memory'
@@ -23,7 +24,7 @@ sys.path.insert(0, str(args.project_root.resolve()))
 
 import gi
 gi.require_version('Gtk', '3.0')
-from gi.repository import Gtk, GLib, Gdk, Pango
+from gi.repository import Gtk, GLib, Pango
 import toggl_control as control
 import toggl_debug
 import toggl_entries_window
@@ -152,8 +153,10 @@ with tempfile.TemporaryDirectory(prefix='toggl-native-gtk-') as scratch:
             if args.screenshot_dir:
                 args.screenshot_dir.mkdir(parents=True, exist_ok=True)
                 width, height = current.window.get_size()
-                picture = Gdk.pixbuf_get_from_window(current.window.get_window(), 0, 0, width, height)
-                picture.savev(str(args.screenshot_dir/'running-popup.png'), 'png', [], [])
+                # Draw the widget itself: other windows can obscure its Xvfb pixels.
+                picture = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+                current.window.draw(cairo.Context(picture))
+                picture.write_to_png(str(args.screenshot_dir/'running-popup.png'))
 
             Gtk.Label().set_markup('<invalid-tag>smoke-secret-token</invalid-tag>')
             def failed_callback():
