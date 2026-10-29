@@ -1530,8 +1530,8 @@ def _set_tray_menu(menu):
 
 def _on_native_status_icon_press(_icon, x, y, button, _time, _position):
     if button == 1:
-        import toggl_tray_popup
-        GLib.idle_add(toggl_tray_popup.toggle, sys.modules[__name__], x, y)
+        import toggl_webview_launcher
+        GLib.idle_add(toggl_webview_launcher.show, sys.modules[__name__], x, y, 'work', True)
 
 
 def _init_native_status_icon():
@@ -1896,8 +1896,8 @@ def on_toggle_panel_description(icon, item):
 
 
 def on_open_timer(icon, item):
-    import toggl_timer_window
-    GLib.idle_add(toggl_timer_window.show, sys.modules[__name__])
+    import toggl_webview_launcher
+    GLib.idle_add(toggl_webview_launcher.show, sys.modules[__name__], None, None, 'timer')
 
 
 def on_toggle(icon, item):
@@ -2227,8 +2227,8 @@ def on_manage_projects(_icon, _item):
 
 
 def on_open_task_popup(_icon, _item):
-    import toggl_tray_popup
-    GLib.idle_add(toggl_tray_popup.toggle_at_pointer, sys.modules[__name__])
+    import toggl_webview_launcher
+    GLib.idle_add(toggl_webview_launcher.show, sys.modules[__name__])
 
 
 def _tray_project_items():
@@ -2282,7 +2282,7 @@ def build_menu():
             checked=lambda _item: get_panel_description_enabled(),
         ),
         pystray.MenuItem(toggle_label, on_toggle),
-        pystray.MenuItem("Edit description...", on_set_description),
+        pystray.MenuItem("Edit description...", on_open_timer),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Today's entries", on_view_today),
         pystray.MenuItem("Doctor", on_doctor),
@@ -2606,6 +2606,8 @@ def main():
     finally:
         stop_event.set()
         _sync_wakeup.set()
+        import toggl_webview_launcher
+        toggl_webview_launcher.stop()
         watchdog.stop()
         control_server.shutdown()
         control_server.server_close()

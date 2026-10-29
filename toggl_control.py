@@ -173,10 +173,10 @@ def _resume_entry(app, selected):
 
 
 def dispatch(app, action, payload):
-    if action == 'snapshot':
+    if action in {'snapshot', 'work-snapshot'}:
         return _dispatch(app, action, payload)
     known = {'set-api-base', 'project-create', 'project-update', 'task-create', 'task-update',
-             'sync', 'refresh', 'start', 'switch', 'resume', 'stop', 'edit-current', 'edit-entry'}
+             'sync', 'refresh', 'start', 'switch', 'resume', 'stop', 'edit-current', 'edit-entry', 'hide-activity'}
     label = action if isinstance(action, str) and action in known else 'unknown'
     toggl_debug.LOGGER.debug('Control action=%s requested', label)
     try:
@@ -194,6 +194,19 @@ def _dispatch(app, action, payload):
         raise ControlError("Command payload must be an object")
     if action == "snapshot":
         return snapshot(app)
+    if action == 'work-snapshot':
+        with app.toggle_lock:
+            result = snapshot(app)
+            result['activities'] = toggl_task_tree.tree(app)
+            return result
+    if action == 'hide-activity':
+        with app.toggle_lock:
+            if payload.get('context') != toggl_projects.context(app):
+                raise ControlError('Account or workspace changed; reopen the work panel')
+            values = _changes(app, {'project_id': payload.get('project_id'),
+                                    'description': payload.get('description')})
+            toggl_task_tree.hide_activity(app, values['project_id'], values['description'])
+            return _dispatch(app, 'work-snapshot', {})
     if action == "set-api-base":
         with app.toggle_lock:
             try:

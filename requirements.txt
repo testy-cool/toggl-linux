@@ -3,3 +3,4 @@ Pillow>=10.0
 PyGObject>=3.42
 requests>=2.31
 python-xlib>=0.33
+pywebview>=6.2.1,<7
