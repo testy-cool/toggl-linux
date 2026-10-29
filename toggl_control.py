@@ -223,11 +223,16 @@ def _dispatch(app, action, payload):
             app._run_sync_cycle()
         return snapshot(app)
     if action == "refresh":
+        now = time.monotonic()
         last = getattr(app, "_control_refreshed_at", None)
-        if last is None or time.monotonic() - last >= 60:
-            app._control_refreshed_at = time.monotonic()
-            app._refresh_projects()
-            app._refresh_tasks(force=True)
+        last_manual = getattr(app, "_control_forced_at", None)
+        force = payload.get("force") is True and (last_manual is None or now - last_manual >= 60)
+        if last is None or now - last >= 60 or force:
+            app._control_refreshed_at = now
+            if force:
+                app._control_forced_at = now
+            app._refresh_projects(force=force)
+            app._refresh_tasks(force=force)
             try:
                 if not app.api_token or app._rate_limit_active() or app._request_budget_remaining() <= app.REQUEST_BUDGET_BACKGROUND_RESERVE:
                     raise ControlError("Cloud refresh unavailable; showing cached and pending entries")

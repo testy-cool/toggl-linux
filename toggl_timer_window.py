@@ -170,7 +170,7 @@ class TimerEditor:
         for item in (self.panel_timer, self.panel_description):
             menu.append(item)
         for title, callback in (("Sync Now", lambda *_: self._act("sync", {})),
-                                ("Refresh Projects", lambda *_: self._act("refresh", {})),
+                                ("Refresh Projects", lambda *_: self._act("refresh", {"force": True})),
                                 ("Connection…", lambda *_: app.on_set_token(None, None))):
             item = Gtk.MenuItem(label=title)
             item.connect("activate", callback)

@@ -150,7 +150,7 @@ export default function Timer() {
   const state = snapshot?.state;
   const project = snapshot?.projects.find(p => String(p.id) === String(state?.project_id) && String(p.workspace_id) === String(state?.workspace_id));
   const task = snapshot?.tasks.find(item => String(item.id) === String(state?.task_id));
-  const refresh = <Action title="Refresh" icon={Icon.ArrowClockwise} onAction={() => run("refresh")} shortcut={{modifiers:["ctrl"], key:"r"}} />;
+  const refresh = <Action title="Refresh" icon={Icon.ArrowClockwise} onAction={() => run("refresh", { force: true })} shortcut={{modifiers:["ctrl"], key:"r"}} />;
   return <List isLoading={loading} navigationTitle="Toggl Tray" searchBarPlaceholder="Search today's entries…">
     {error && <List.Item title="Connection problem" subtitle={error} icon={Icon.Exclamationmark} actions={<ActionPanel>{refresh}</ActionPanel>} />}
     {!snapshot && !loading && <List.EmptyView title="Launch Toggl Tray to connect" description="Install the CLI launcher, launch the tray app, and check the extension's CLI path preference." icon={Icon.Stopwatch} />}
