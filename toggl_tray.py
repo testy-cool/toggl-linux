@@ -442,8 +442,8 @@ def fetch_today_entries():
     return fetch_entries_for_date(datetime.now().date())
 
 
-def update_entry(workspace_id, entry_id, data):
-    return api_put(f"/workspaces/{workspace_id}/time_entries/{entry_id}", data)
+def update_entry(workspace_id, entry_id, data, **kwargs):
+    return api_put(f"/workspaces/{workspace_id}/time_entries/{entry_id}", data, **kwargs)
 
 
 def delete_entry(workspace_id, entry_id):
@@ -618,6 +618,8 @@ def queue_action(action, **kwargs):
     """Queue an offline action for later sync."""
     if action == 'stop' and kwargs.get('entry_id') is not None and kwargs['entry_id'] == _restored_remote_id:
         kwargs['_verify_running'] = True
+        kwargs['_verify_snapshot'] = dict(base=get_api_base(), account=state.get('_account'), fields={
+            key: kwargs.get(key) for key in ('start_time', 'stop_time', 'description', 'project_id', 'task_id')})
     if "workspace_id" not in kwargs and state.get("workspace_id"):
         kwargs["workspace_id"] = state["workspace_id"]
     import toggl_projects
@@ -688,6 +690,40 @@ def _completed_entry_payload(op, workspace_id):
     return payload
 
 
+def _restored_stop_changes(op):
+    """Reconcile the target interval, preserving remote data and explicit local edits."""
+    import toggl_projects
+    token, base = api_token, get_api_base()
+    snapshot = op.get('verify_snapshot') or {}
+    if (snapshot.get('base', base) != base
+            or snapshot.get('account') not in (None, toggl_projects.account(sys.modules[__name__]))):
+        raise RuntimeError('Account changed; restored stop kept pending')
+    auth = dict(token=token, base_url=base)
+    remote = api_get(f"/me/time_entries/{int(op['entry_id'])}", **auth)
+    if (api_token != token or get_api_base() != base or not isinstance(remote, dict)
+            or str(remote.get('id')) != str(op['entry_id'])
+            or str(remote.get('workspace_id')) != str(op.get('workspace_id') or state.get('workspace_id'))):
+        raise RuntimeError('Restored entry could not be verified; stop kept pending')
+    original = snapshot.get('fields') or {}
+    data = {key: op[key] for key in ('description', 'project_id', 'task_id')
+            if key in op and op[key] != original.get(key, op[key])}
+    edited_start = op.get('start_time') != original.get('start_time', op.get('start_time'))
+    edited_stop = op.get('stop_time') != original.get('stop_time', op.get('stop_time'))
+    start = _parse_iso(op.get('start_time') if edited_start else remote.get('start'))
+    desired_stop = _parse_iso(op.get('stop_time'))
+    remote_stop = _parse_iso(remote.get('stop'))
+    if remote_stop is None and isinstance(remote.get('duration'), (int, float)) and remote['duration'] >= 0:
+        remote_stop = _parse_iso(remote.get('start')) + timedelta(seconds=remote['duration'])
+    stop = desired_stop if edited_stop or remote_stop is None else min(remote_stop, desired_stop)
+    if start is None or stop is None or start.tzinfo is None or stop.tzinfo is None or stop < start:
+        raise RuntimeError('Restored interval times need correction; stop kept pending')
+    if edited_start:
+        data['start'] = op['start_time']
+    if edited_start or edited_stop or stop != remote_stop:
+        data.update(stop=stop.isoformat(), duration=int((stop-start).total_seconds()))
+    return data, auth
+
+
 def _pending_operations(queue):
     """Normalize raw pending events into sync/display operations."""
     ops = []
@@ -724,6 +760,7 @@ def _pending_operations(queue):
                     "indexes": [idx],
                     "entry_id": item["entry_id"],
                     "verify_running": item.get('_verify_running', False),
+                    "verify_snapshot": item.get('_verify_snapshot'),
                     "start_time": item.get("start_time"),
                     "stop_time": stop_time,
                     "duration": _duration_seconds(item.get("start_time"), stop_time),
@@ -875,13 +912,6 @@ def sync_pending():
                     payload = _completed_entry_payload(op, workspace_id)
                     api_post(f"/workspaces/{workspace_id}/time_entries", payload)
                 elif op["kind"] == "update_stop":
-                    if op.get('verify_running'):
-                        current = fetch_current_entry()
-                        if (not current or str(current.get('id')) != str(op['entry_id'])
-                                or current.get('stop')):
-                            _append_event('restored_stop_already_ended', entry_id=op['entry_id'])
-                            synced_indexes.update(op['indexes'])
-                            continue
                     data = {"stop": op["stop_time"]}
                     if op.get("start_time"):
                         data["start"] = op["start_time"]
@@ -893,14 +923,19 @@ def sync_pending():
                         data["project_id"] = op["project_id"]
                     if "task_id" in op:
                         data["task_id"] = op["task_id"]
-                    try:
-                        update_entry(workspace_id, op["entry_id"], data)
-                    except requests.exceptions.HTTPError as e:
-                        status = e.response.status_code if e.response is not None else 0
-                        if status in (404, 410) and op.get('verify_running'):
+                    auth = {}
+                    if op.get('verify_running'):
+                        data, auth = _restored_stop_changes(op)
+                        if not data:
                             _append_event('restored_stop_already_ended', entry_id=op['entry_id'])
                             synced_indexes.update(op['indexes'])
                             continue
+                    try:
+                        update_entry(workspace_id, op["entry_id"], data, **auth)
+                    except requests.exceptions.HTTPError as e:
+                        status = e.response.status_code if e.response is not None else 0
+                        if op.get('verify_running'):
+                            raise  # Missing/unsupported targets remain editable, never recreated.
                         if status in (404, 410) and op.get("start_time") and op.get("stop_time"):
                             payload = _completed_entry_payload(op, workspace_id)
                             api_post(f"/workspaces/{workspace_id}/time_entries", payload)
@@ -2397,6 +2432,9 @@ def _finish_startup_scope():
                     and context.get('workspace_id') in (None, scope['workspace_id'])):
                 item['_task_context'] = scope
                 item['workspace_id'] = scope['workspace_id']
+                verification = item.get('_verify_snapshot')
+                if isinstance(verification, dict) and verification.get('account') is None:
+                    verification['account'] = scope['account']
                 changed = True
                 if item.get('action') == 'start':
                     starts.add(item.get('start_time'))

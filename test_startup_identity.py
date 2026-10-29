@@ -101,3 +101,21 @@ def test_bootstrap_work_is_not_adopted_after_its_server_or_workspace_changes(cha
         with patch.object(app, 'get_api_base', return_value='https://changed.example.test/api/v9'):
             resolve_keyring()
     assert app._load_pending() == before
+
+
+def test_a_legacy_restored_stop_is_pinned_after_its_bootstrap_account_resolves():
+    app.api_token = None
+    app.state.update(tracking=True, entry_id=123,
+                     start_time='2026-10-28T00:00:00+00:00', _account=None)
+    app.save_state()
+    app.load_state()
+    app._begin_startup_scope()
+    with patch.object(app, '_notify'), patch.object(app, '_play_sound'):
+        app.toggle_tracking(prompt_for_description=False)
+    resolve_keyring()
+    queued = app._load_pending()[0]
+    assert queued['_verify_snapshot']['account'] == projects.account(app)
+    app.api_token = 'another-account-token'
+    with patch.object(app, 'api_get') as get:
+        assert app.sync_pending() == 1
+    get.assert_not_called()
