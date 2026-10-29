@@ -76,6 +76,26 @@ class TestGetTooltip:
 
 
 class TestPanelTimerLabel:
+    def test_blank_description_task_lookup_does_not_reenter_state_lock(self):
+        import toggl_tasks
+        toggl_tray.state.update(tracking=True, description='', project_id=6, task_id=4,
+                                start_time=datetime.now(timezone.utc).isoformat())
+        toggl_tray._task_cache = {'context': toggl_tasks.context(toggl_tray), 'tasks': [
+            {'id': 4, 'project_id': 6, 'workspace_id': toggl_tray.state['workspace_id'], 'name': 'Real task'}]}
+        lock = toggl_tray.threading.Lock()
+
+        class BoundedLock:
+            def __enter__(self):
+                assert lock.acquire(timeout=0.1), 'Task lookup reentered the non-reentrant state lock'
+
+            def __exit__(self, *_args):
+                lock.release()
+
+        with patch.object(toggl_tray, 'state_lock', BoundedLock()):
+            panel = toggl_tray._panel_timer_snapshot()
+        assert panel['tracking'] is True
+        assert panel['description'] == 'Real task'
+
     def test_tracking_label_shows_only_elapsed_time(self):
         panel = {
             "tracking": True,
