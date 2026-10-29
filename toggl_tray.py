@@ -1337,8 +1337,11 @@ def _panel_timer_snapshot():
     with state_lock:
         tracking = state.get("tracking", False)
         start_time = state.get("start_time")
-        description = state.get("description", "") or next((item.get("name") for item in _cached_tasks()
-                                                              if str(item.get("id")) == str(state.get("task_id"))), "")
+        description = state.get("description", "")
+        task_id = state.get("task_id")
+    if not description and task_id is not None:
+        description = next((item.get("name") for item in _cached_tasks()
+                            if str(item.get("id")) == str(task_id)), "")
 
     elapsed_seconds = 0
     if tracking and start_time:
