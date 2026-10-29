@@ -1,8 +1,10 @@
 """Pending entry assignments survive edits, replay and running-timer display."""
 from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
 import pytest
 import toggl_tray as app
 import toggl_entries_window as entries
+import toggl_cli as cli
 
 START = '2026-10-29T00:00:00+00:00'
 STOP = '2026-10-29T00:01:00+00:00'
@@ -79,6 +81,32 @@ def test_future_start_is_rejected_before_queue_or_running_timer_changes(metadata
     assert app._update_pending_entry(app._pending_as_entries()[0], {'start': future}) is False
     assert app._load_pending() == before
     assert app.state == state
+
+
+def test_cli_rejects_future_pending_start_without_changing_active_state(capsys):
+    start = (app.datetime.now(app.timezone.utc) - app.timedelta(minutes=10)).isoformat()
+    app.state.update(tracking=True, entry_id=None, start_time=start)
+    app.queue_action('start', start_time=start)
+    state, queue = dict(app.state), app._load_pending()
+    future = app.datetime.now(app.timezone.utc) + app.timedelta(minutes=5)
+    with patch.object(cli, '_load_cli_runtime'), patch.object(app, '_parse_hhmm', return_value=future), \
+         patch.object(app, 'save_state') as save:
+        assert cli._cli_set_start(SimpleNamespace(time=future.strftime('%H:%M'))) == 2
+    assert app.state == state and app._load_pending() == queue
+    save.assert_not_called()
+    assert 'Start time set' not in capsys.readouterr().out
+
+
+def test_cli_does_not_change_active_state_after_a_rejected_pending_edit():
+    start = (app.datetime.now(app.timezone.utc) - app.timedelta(minutes=10)).isoformat()
+    app.state.update(tracking=True, entry_id=None, start_time=start)
+    app.queue_action('start', start_time=start)
+    before = dict(app.state)
+    with patch.object(cli, '_load_cli_runtime'), patch.object(app, '_update_pending_entry', return_value=False), \
+         patch.object(app, 'save_state') as save:
+        assert cli._cli_set_start(SimpleNamespace(time='00:00')) == 2
+    assert app.state == before
+    save.assert_not_called()
 
 
 def test_description_dialog_preserves_existing_assignments_when_metadata_is_missing():
