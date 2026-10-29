@@ -56,6 +56,7 @@ def reset_state(tmp_path):
         toggl_tray.native_status_icon_ref = None
         toggl_tray.native_status_menu_ref = None
         toggl_tray.api_token = "tok"
+        toggl_tray._restored_remote_id = None
         toggl_tray.rate_limited_until = 0.0
         toggl_tray.status_message = ""
         toggl_tray._control_entries = []

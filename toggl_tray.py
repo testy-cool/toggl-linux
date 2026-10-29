@@ -93,6 +93,7 @@ timer_window_ref = None
 native_status_icon_ref = None
 native_status_menu_ref = None
 api_token = None
+_restored_remote_id = None
 rate_limited_until = 0.0
 status_message = ""
 _request_budget_lock = threading.Lock()
@@ -541,9 +542,11 @@ def save_state():
 
 
 def load_state():
+    global _restored_remote_id
     saved = _load_json_with_backup(STATE_FILE, None)
     if isinstance(saved, dict):
         state.update(saved)
+    _restored_remote_id = state.get('entry_id') if state.get('tracking') else None
 
 
 def _clear_remote_ids():
@@ -612,6 +615,8 @@ def _save_pending(queue):
 
 def queue_action(action, **kwargs):
     """Queue an offline action for later sync."""
+    if action == 'stop' and kwargs.get('entry_id') is not None and kwargs['entry_id'] == _restored_remote_id:
+        kwargs['_verify_running'] = True
     if "workspace_id" not in kwargs and state.get("workspace_id"):
         kwargs["workspace_id"] = state["workspace_id"]
     import toggl_projects
@@ -714,6 +719,7 @@ def _pending_operations(queue):
                     "kind": "update_stop",
                     "indexes": [idx],
                     "entry_id": item["entry_id"],
+                    "verify_running": item.get('_verify_running', False),
                     "start_time": item.get("start_time"),
                     "stop_time": stop_time,
                     "duration": _duration_seconds(item.get("start_time"), stop_time),
@@ -865,6 +871,13 @@ def sync_pending():
                     payload = _completed_entry_payload(op, workspace_id)
                     api_post(f"/workspaces/{workspace_id}/time_entries", payload)
                 elif op["kind"] == "update_stop":
+                    if op.get('verify_running'):
+                        current = fetch_current_entry()
+                        if (not current or str(current.get('id')) != str(op['entry_id'])
+                                or current.get('stop')):
+                            _append_event('restored_stop_already_ended', entry_id=op['entry_id'])
+                            synced_indexes.update(op['indexes'])
+                            continue
                     data = {"stop": op["stop_time"]}
                     if op.get("start_time"):
                         data["start"] = op["start_time"]
@@ -880,6 +893,10 @@ def sync_pending():
                         update_entry(workspace_id, op["entry_id"], data)
                     except requests.exceptions.HTTPError as e:
                         status = e.response.status_code if e.response is not None else 0
+                        if status in (404, 410) and op.get('verify_running'):
+                            _append_event('restored_stop_already_ended', entry_id=op['entry_id'])
+                            synced_indexes.update(op['indexes'])
+                            continue
                         if status in (404, 410) and op.get("start_time") and op.get("stop_time"):
                             payload = _completed_entry_payload(op, workspace_id)
                             api_post(f"/workspaces/{workspace_id}/time_entries", payload)
@@ -2279,7 +2296,7 @@ def _acquire_instance_lock():
 
 def _init_workspace():
     """Fetch workspace and project info, sync running entry."""
-    global api_token, rate_limited_until, _last_cloud_poll_at
+    global api_token, rate_limited_until, _last_cloud_poll_at, _restored_remote_id
     if not api_token:
         return False
     token, base = api_token, get_api_base()
@@ -2319,6 +2336,7 @@ def _init_workspace():
                         if not state.get('project_id'):
                             state['project_id'] = recent[0].get('project_id')
             save_state()
+            _restored_remote_id = None
         _last_cloud_poll_at = time.monotonic()
         return True
     except RateLimitedError as e:
