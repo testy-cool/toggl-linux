@@ -10,7 +10,7 @@ def test_manual_refresh_fetches_projects_even_when_the_cache_is_fresh():
     app._project_cache = {'account': app._project_account(), 'fetched_at': app.time.time(), 'projects': [old]}
     app._last_project_refresh_attempt = app.time.monotonic()
     with patch.object(app, '_api', return_value=[old, new]) as api, \
-         patch.object(app, '_refresh_tasks'), patch.object(app, 'fetch_today_entries', return_value=[]):
+         patch.object(app, '_refresh_tasks'), patch.object(app, 'api_get', return_value=[]):
         result = control.dispatch(app, 'refresh', {'force': True})
     assert [project['id'] for project in result['projects']] == [7, 8]
     api.assert_called_once_with('GET', '/me/projects', token=app.api_token)
@@ -18,7 +18,7 @@ def test_manual_refresh_fetches_projects_even_when_the_cache_is_fresh():
 
 def test_manual_refresh_keeps_the_one_minute_throttle():
     with patch.object(app, '_refresh_projects') as projects, patch.object(app, '_refresh_tasks') as tasks, \
-         patch.object(app, 'fetch_today_entries', return_value=[]):
+         patch.object(app, 'api_get', return_value=[]):
         control.dispatch(app, 'refresh', {'force': True})
         control.dispatch(app, 'refresh', {'force': True})
     projects.assert_called_once_with(force=True)
@@ -35,7 +35,7 @@ def test_forced_project_refresh_still_respects_request_budget_reserve():
 def test_automatic_refresh_keeps_fresh_project_metadata():
     app._project_cache = {'account': app._project_account(), 'fetched_at': app.time.time(), 'projects': []}
     with patch.object(app, '_api') as api, patch.object(app, '_refresh_tasks'), \
-         patch.object(app, 'fetch_today_entries', return_value=[]):
+         patch.object(app, 'api_get', return_value=[]):
         control.dispatch(app, 'refresh', {})
         app._control_refreshed_at -= 61
         control.dispatch(app, 'refresh', {})
@@ -44,7 +44,7 @@ def test_automatic_refresh_keeps_fresh_project_metadata():
 
 def test_manual_refresh_is_not_swallowed_by_an_automatic_view_refresh():
     with patch.object(app, '_refresh_projects') as projects, patch.object(app, '_refresh_tasks'), \
-         patch.object(app, 'fetch_today_entries', return_value=[]):
+         patch.object(app, 'api_get', return_value=[]):
         control.dispatch(app, 'refresh', {})
         control.dispatch(app, 'refresh', {'force': True})
         control.dispatch(app, 'refresh', {'force': True})

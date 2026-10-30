@@ -9,7 +9,7 @@ import threading
 import toggl_control
 
 ASSETS = Path(__file__).resolve().parent / 'toggl_web_assets'
-ACTIONS = frozenset({'work-snapshot', 'refresh', 'sync', 'start', 'switch', 'resume', 'stop',
+ACTIONS = frozenset({'work-snapshot', 'refresh', 'refresh-today', 'sync', 'start', 'switch', 'resume', 'stop',
                      'edit-current', 'edit-entry', 'task-create', 'task-update',
                      'project-create', 'project-update', 'hide-activity'})
 

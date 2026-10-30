@@ -9,6 +9,7 @@ import toggl_projects
 import toggl_task_tree
 import toggl_tasks
 import toggl_debug
+import toggl_today
 from pathlib import Path
 
 MAX_MESSAGE = 2 * 1024 * 1024
@@ -26,21 +27,35 @@ class ControlError(Exception):
     pass
 
 
+def _cached_entries(app, context):
+    tag = getattr(app, '_control_entries_context', None)
+    legacy = (getattr(app, '_control_entries', [])
+              if getattr(app, '_control_entries_date', '') == app.datetime.now().date().isoformat()
+              and (tag is None or tag.get('account') == context['account']) else [])
+    scoped = toggl_today.cached(app) or []
+    return list({(str(e.get('workspace_id')), str(e.get('id'))): e for e in [*legacy, *scoped]}.values())
+
+
 def snapshot(app):
     with app.pending_lock:
         all_pending = app._pending_as_entries()
         with app.state_lock:
             current = dict(app.state)
     today = app.datetime.now().date()
-    pending = [entry for entry in all_pending if app._entry_local_date(entry) == today]
+    context = toggl_projects.context(app)
+    pending = [entry for entry in all_pending if (entry.get('_task_context') is None
+               or isinstance(entry['_task_context'], dict) and entry['_task_context'].get('account') == context['account'])
+               and toggl_today.overlaps(app, entry, current)]
     current_pending = [entry for entry in all_pending if current.get('tracking') and current.get('entry_id') is None
                        and entry.get('_pending_kind') == 'open' and entry.get('start') == current.get('start_time')
                        and str(entry.get('workspace_id')) == str(current.get('workspace_id'))]
-    cached = getattr(app, "_control_entries", []) if getattr(app, "_control_entries_date", "") == today.isoformat() else []
+    cached = _cached_entries(app, context)
     entries = app._merge_entries_with_pending(cached, pending)
     stale = [e for e in entries if not e.get("_offline") and e.get("duration", 0) < 0
              and (not current.get("tracking") or e.get("id") != current.get("entry_id"))]
     entries = [e for e in entries if e not in stale]
+    entries = [dict(entry, _activity_key=toggl_today.activity_key(
+        entry.get('project_id'), entry.get('description'))) for entry in entries]
     warnings = [getattr(app, "_control_warning", ""), getattr(app, "status_message", ""),
                 "Older pending entries need full review; saving applies all displayed fields" if any(
                     item.get('_verify_running') and not item.get('_verify_snapshot') for item in app._load_pending()) else "",
@@ -48,11 +63,15 @@ def snapshot(app):
                     item.get('_review_error') for item in app._load_pending()) else "",
                 "Today's entries changed; refresh to update durations" if stale else ""]
     warning = " · ".join(dict.fromkeys(message for message in warnings if message))
+    freshness = toggl_today.status(app)
+    freshness['today_incomplete'] = freshness['today_incomplete'] or bool(stale)
     return {"state": current, "projects": app._cached_projects(), "tasks": app._cached_tasks(),
             "task_capability": toggl_tasks.capability(app), "entries": entries,
             "pending_count": len(app._load_pending()), "warning": warning,
             "project_context": toggl_projects.context(app), "projects_url": toggl_projects.projects_url(app),
-            "current_pending": current_pending[0] if len(current_pending) == 1 else None}
+            "current_pending": current_pending[0] if len(current_pending) == 1 else None,
+            "current_activity_key": toggl_today.activity_key(current.get('project_id'), current.get('description')),
+            **freshness}
 
 
 def _same_pending(source, selected):
@@ -104,6 +123,7 @@ def record_pending_resolution(app, queue, op, remote):
         cached = getattr(app, '_control_entries', []) if getattr(app, '_control_entries_date', '') == today else []
         app._control_entries = [item for item in cached if item.get('id') != entry['id']] + [entry]
         app._control_entries_date = today
+        toggl_today.remember(app, entry)
 
 
 def _pending_resolution(app, selected):
@@ -116,7 +136,7 @@ def _pending_resolution(app, selected):
 
 def _known_entry(app, selected):
     context = toggl_projects.context(app)
-    cached = getattr(app, '_control_entries', [])
+    cached = _cached_entries(app, context)
     resolved = [record['entry'] for record in getattr(app, '_pending_resolutions', []) if record['context'] == context]
     entry = next((entry for entry in [*cached, *reversed(resolved)]
                  if str(entry.get('id')) == str(selected.get('id'))
@@ -164,6 +184,7 @@ def _work_snapshot(app, payload):
     candidates = sorted(((activity, index) for index, group in enumerate(history)
                          for activity in group['activities']), key=lambda item: -item[0]['last_used'])
     for activity, index in candidates:
+        activity = dict(activity, key=toggl_today.activity_key(groups[index]['id'], activity['description']))
         size = len(_json_bytes(activity)) + 2
         if size <= budget:
             groups[index]['activities'].append(activity)
@@ -299,6 +320,9 @@ def _edit_entry(app, selected, changes, reviewed_interval=False):
         app.update_entry(entry.get("workspace_id") or app.state["workspace_id"], entry["id"], changes)
         toggl_task_tree.correct(app, dict(entry), changes)
         entry.update(changes)
+        with app.pending_lock:
+            _update_resolution_entries(getattr(app, '_pending_resolutions', []), entry, toggl_projects.context(app))
+        toggl_today.remember(app, entry)
         if app.state.get("entry_id") == entry["id"]:
             with app.state_lock:
                 app.state.update({('start_time' if k == 'start' else k): v for k, v in changes.items()
@@ -330,7 +354,7 @@ def dispatch(app, action, payload):
     if action in {'snapshot', 'work-snapshot'}:
         return _dispatch(app, action, payload)
     known = {'set-api-base', 'project-create', 'project-update', 'task-create', 'task-update',
-             'sync', 'refresh', 'start', 'switch', 'resume', 'stop', 'edit-current', 'edit-entry', 'hide-activity'}
+             'sync', 'refresh', 'refresh-today', 'start', 'switch', 'resume', 'stop', 'edit-current', 'edit-entry', 'hide-activity'}
     label = action if isinstance(action, str) and action in known else 'unknown'
     toggl_debug.LOGGER.debug('Control action=%s requested', label)
     try:
@@ -349,6 +373,9 @@ def _dispatch(app, action, payload):
     if action == "snapshot":
         return snapshot(app)
     if action == 'work-snapshot':
+        return _work_snapshot(app, payload)
+    if action == 'refresh-today':
+        toggl_today.refresh(app, force=payload.get('force') is True)
         return _work_snapshot(app, payload)
     if action == 'hide-activity':
         with app.toggle_lock:
@@ -405,8 +432,8 @@ def _dispatch(app, action, payload):
             try:
                 if not app.api_token or app._rate_limit_active() or app._request_budget_remaining() <= app.REQUEST_BUDGET_BACKGROUND_RESERVE:
                     raise ControlError("Cloud refresh unavailable; showing cached and pending entries")
-                app._control_entries = app.fetch_today_entries()
-                app._control_entries_date = app.datetime.now().date().isoformat()
+                if not toggl_today.refresh(app, force=force):
+                    raise ControlError('Today refresh unavailable')
                 app._control_warning = ""
             except Exception:
                 app._control_warning = "Cloud refresh unavailable; showing cached and pending entries"
@@ -478,6 +505,7 @@ def _dispatch(app, action, payload):
         cache = getattr(app, "_control_entries", [])
         app._control_entries = [e for e in cache if e.get("id") != entry["id"]] + [entry]
         app._control_entries_date = app.datetime.now().date().isoformat()
+        toggl_today.remember(app, entry)
     if app.icon_ref:
         app.GLib.idle_add(_refresh_ui, app)
     result = snapshot(app)
@@ -500,6 +528,7 @@ def record_stop(app, entry_id, start, description, workspace_id, project_id, tas
         _update_resolution_entries(getattr(app, '_pending_resolutions', []), entry, context)
         app._control_entries = [e for e in cache if e.get("id") != entry_id] + [entry]
         app._control_entries_date = today
+        toggl_today.remember(app, entry)
 
 
 def _refresh_ui(app):

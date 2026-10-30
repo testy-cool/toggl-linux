@@ -63,6 +63,9 @@ def reset_state(tmp_path):
         toggl_tray.status_message = ""
         toggl_tray._control_entries = []
         toggl_tray._control_entries_date = ""
+        toggl_tray._control_entries_context = None
+        toggl_tray._today_cache = None
+        toggl_tray._today_attempt = None
         toggl_tray._control_warning = ""
         toggl_tray._pending_resolutions = []
         toggl_tray._control_refreshed_at = None

@@ -1193,6 +1193,8 @@ def _pending_entries_from_queue(queue, date_obj=None):
             "_pending_ids": pending_ids,
             "_task_context": queue[op["indexes"][0]].get("_task_context"),
             "_pending_kind": op["kind"],
+            "_pending_missing": [key for key in ('project_id', 'task_id') if key not in op]
+                if op['kind'] == 'update_stop' else [],
             "_remote_entry_id": op.get("entry_id"),
             "_review_error": op.get('review_error'),
             "_needs_full_review": op.get('verify_running') and not op.get('verify_snapshot'),
