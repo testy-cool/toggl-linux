@@ -33,6 +33,9 @@ export type Entry = {
   duration: number;
   _offline?: boolean;
   _needs_full_review?: boolean;
+  _pending_ids?: string[];
+  _pending_kind?: string;
+  _remote_entry_id?: Id | null;
 };
 export type Activity = {
   description: string;
@@ -45,6 +48,12 @@ export type Snapshot = {
   tasks: Task[];
   entries: Entry[];
   stopped_entry?: Entry;
+  current_pending?: Entry | null;
+  draft_resolution?: {
+    source: Entry;
+    entry: Entry;
+    context: Snapshot["project_context"];
+  };
   activities?: {
     id: Id | null;
     name: string;
@@ -77,6 +86,7 @@ export type Draft = {
   start: string;
   stop: string;
   reviewed: boolean;
+  pending?: Entry;
 };
 export type Command = { action: string; payload: Record<string, unknown> };
 export const sameId = (a: unknown, b: unknown) =>
@@ -123,30 +133,162 @@ export const timerMatches = (a: Timer, b: Timer) =>
     "task_id",
   ].every((k) => a[k as keyof Timer] === b[k as keyof Timer]);
 
+export function samePending(
+  a: Entry | undefined | null,
+  b: Entry | undefined | null,
+) {
+  const left = a?._pending_ids,
+    right = b?._pending_ids;
+  return (
+    !!a &&
+    !!b &&
+    Array.isArray(left) &&
+    Array.isArray(right) &&
+    !!left.length &&
+    left.length === right.length &&
+    [...left].sort().every((id, index) => id === [...right].sort()[index]) &&
+    [
+      "start",
+      "stop",
+      "description",
+      "project_id",
+      "task_id",
+      "workspace_id",
+      "_pending_kind",
+      "_remote_entry_id",
+    ].every((key) => a[key as keyof Entry] === b[key as keyof Entry])
+  );
+}
+export const pendingSource = (d: Draft) =>
+  d.mode === "current" ? d.pending : d.entry?._offline ? d.entry : undefined;
+export const isCurrentEntry = (s: Snapshot, entry: Entry) =>
+  s.state.tracking &&
+  entry.duration < 0 &&
+  (s.state.entry_id != null
+    ? sameId(entry.id, s.state.entry_id)
+    : samePending(entry, s.current_pending));
+
+function rebaseFields(d: Draft, source: Entry, entry: Entry): Draft {
+  const projectChanged = !sameId(d.project, source.project_id);
+  return {
+    ...d,
+    description:
+      d.description === (source.description ?? "")
+        ? (entry.description ?? "")
+        : d.description,
+    project: projectChanged ? d.project : String(entry.project_id ?? "none"),
+    task:
+      projectChanged || !sameId(d.task, source.task_id)
+        ? d.task
+        : String(entry.task_id ?? "none"),
+    start:
+      d.start === localTime(source.start) ? localTime(entry.start) : d.start,
+    stop: d.stop === localTime(source.stop) ? localTime(entry.stop) : d.stop,
+  };
+}
+
+export function rebaseSyncedDraft(d: Draft, result: Snapshot): Draft {
+  const resolution = result.draft_resolution,
+    source = pendingSource(d);
+  if (
+    !resolution ||
+    !source ||
+    !contextMatches(d.snapshot, result) ||
+    resolution.context.account !== result.project_context.account ||
+    !sameId(
+      resolution.context.workspace_id,
+      result.project_context.workspace_id,
+    ) ||
+    !samePending(source, resolution.source)
+  )
+    return d;
+  const entry = resolution.entry;
+  if (!entry.stop) {
+    const state = result.state;
+    if (
+      !state.tracking ||
+      !sameId(state.entry_id, entry.id) ||
+      !sameId(state.workspace_id, entry.workspace_id) ||
+      state.start_time !== entry.start ||
+      (state.description ?? "") !== (entry.description ?? "") ||
+      !sameId(state.project_id, entry.project_id) ||
+      !sameId(state.task_id, entry.task_id)
+    )
+      return d;
+    return {
+      ...rebaseFields(d, source, entry),
+      mode: "current",
+      entry: undefined,
+      pending: undefined,
+      snapshot: structuredClone(result),
+    };
+  }
+  if (d.mode !== "entry") return d; // External stops never redirect a running-timer form.
+  return {
+    ...rebaseFields(d, source, entry),
+    entry: structuredClone(entry),
+    pending: undefined,
+    snapshot: structuredClone(result),
+  };
+}
+
 export function afterOwnStop(draft: Draft, result: Snapshot): Draft {
   if (!contextMatches(draft.snapshot, result)) return draft;
   if (draft.mode === "new" && !result.state.tracking)
     return { ...draft, snapshot: structuredClone(result) };
   if (draft.mode !== "current") return draft;
   const original = draft.snapshot.state;
-  const matches = (
-    result.stopped_entry ? [result.stopped_entry] : result.entries
-  ).filter(
+  const resolution = result.draft_resolution;
+  const resolved =
+    resolution &&
+    resolution.context.account === result.project_context.account &&
+    sameId(
+      resolution.context.workspace_id,
+      result.project_context.workspace_id,
+    ) &&
+    samePending(pendingSource(draft), resolution.source)
+      ? resolution.entry
+      : undefined;
+  const candidates = resolved?.stop
+    ? [resolved]
+    : result.stopped_entry
+      ? [result.stopped_entry]
+      : result.entries;
+  const matches = candidates.filter(
     (entry) =>
       entry.stop &&
       entry.duration >= 0 &&
       sameId(entry.workspace_id, original.workspace_id) &&
-      Date.parse(entry.start) === Date.parse(original.start_time ?? "") &&
-      (original.entry_id == null || sameId(entry.id, original.entry_id)),
+      ((resolved?.id ?? original.entry_id) != null
+        ? sameId(entry.id, resolved?.id ?? original.entry_id)
+        : Date.parse(entry.start) === Date.parse(original.start_time ?? "")),
   );
   // Only our explicit Stop action can retarget a draft, and only to its exact
   // completed interval. External status updates never rebase a form.
   return matches.length === 1
     ? {
-        ...draft,
+        ...rebaseFields(
+          draft,
+          {
+            id: original.entry_id ?? matches[0].id,
+            workspace_id: original.workspace_id!,
+            description: original.description,
+            project_id: original.project_id,
+            task_id: original.task_id,
+            start: original.start_time!,
+            stop: null,
+            duration: -1,
+          },
+          matches[0],
+        ),
         mode: "entry",
         entry: structuredClone(matches[0]),
         snapshot: structuredClone(result),
+        pending: undefined,
+        start:
+          draft.start === localTime(original.start_time)
+            ? localTime(matches[0].start)
+            : draft.start,
         stop: localTime(matches[0].stop),
       }
     : draft;
@@ -218,6 +360,10 @@ export function draftFor(
     ),
     stop: localTime(mode === "entry" ? (entry?.stop ?? null) : null),
     reviewed: false,
+    pending:
+      mode === "current" && s.state.entry_id == null && s.current_pending
+        ? structuredClone(s.current_pending)
+        : undefined,
   };
 }
 export function commandFor(d: Draft, asTask = false): Command {
@@ -281,6 +427,7 @@ export function commandFor(d: Draft, asTask = false): Command {
     payload: {
       changes,
       context: s.project_context,
+      ...(d.mode === "current" && d.pending ? { draft_entry: d.pending } : {}),
       ...(d.mode === "entry" && d.entry?._needs_full_review
         ? { reviewed_interval: d.reviewed }
         : {}),

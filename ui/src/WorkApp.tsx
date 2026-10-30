@@ -58,6 +58,9 @@ import {
   taskName,
   timerTitle,
   workItems,
+  pendingSource,
+  rebaseSyncedDraft,
+  isCurrentEntry,
 } from "./model";
 import type { Command, Draft, Entry, Snapshot, Work } from "./model";
 
@@ -75,15 +78,33 @@ export default function WorkApp() {
   const reading = useRef(false);
   const mounted = useRef(true);
   const todayLoaded = useRef(false);
+  const draftRef = useRef<Draft | null>(null);
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
 
   const poll = useCallback(async () => {
     if (writing.current || reading.current) return;
     reading.current = true;
     const version = epoch.current;
     try {
-      const snapshot = await request("work-snapshot");
-      if (mounted.current && version === epoch.current && !writing.current)
+      const frozen = draftRef.current;
+      const source = frozen && pendingSource(frozen);
+      const snapshot = await request(
+        "work-snapshot",
+        source
+          ? {
+              draft_entry: source,
+              draft_context: frozen!.snapshot.project_context,
+            }
+          : {},
+      );
+      if (mounted.current && version === epoch.current && !writing.current) {
         setData(snapshot);
+        setDraft((previous) =>
+          previous ? rebaseSyncedDraft(previous, snapshot) : null,
+        );
+      }
     } catch (failure) {
       if (mounted.current && version === epoch.current)
         setError(String(failure instanceof Error ? failure.message : failure));
@@ -106,7 +127,18 @@ export default function WorkApp() {
       setBusy(true);
       setError("");
       try {
-        const result = await request(command.action, command.payload);
+        const frozen = draftRef.current,
+          source = frozen && pendingSource(frozen);
+        const result = await request(
+          command.action,
+          command.action === "stop" && source
+            ? {
+                ...command.payload,
+                draft_entry: source,
+                draft_context: frozen!.snapshot.project_context,
+              }
+            : command.payload,
+        );
         if (mounted.current) {
           setData((previous) =>
             previous ? { ...previous, ...result } : result,
@@ -221,9 +253,7 @@ export default function WorkApp() {
     setDraft(
       draftFor(
         data,
-        data.state.tracking && sameId(entry.id, data.state.entry_id)
-          ? "current"
-          : "entry",
+        isCurrentEntry(data, entry) ? "current" : "entry",
         undefined,
         entry,
       ),

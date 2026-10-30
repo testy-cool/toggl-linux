@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { afterOwnStop, commandFor, contextMatches, draftFor, localTime, running, workItems } from '../src/model.ts'
+import { afterOwnStop, commandFor, contextMatches, draftFor, localTime, running, workItems, isCurrentEntry, rebaseSyncedDraft, samePending } from '../src/model.ts'
 import type { Snapshot } from '../src/model.ts'
 
 const sample = (): Snapshot => ({
@@ -137,4 +137,83 @@ test('editing a running Today row uses the live timer instead of its stale cache
   assert.equal(draft.entry,undefined)
   assert.deepEqual(commandFor(draft).payload.changes,{description:'Corrected text only'})
   assert.equal(draftFor(data,'entry',undefined,stale).start,localTime(stale.start))
+})
+
+const pendingFixture = () => {
+  const data=sample()
+  data.state.entry_id=null
+  const pending={id:'pending:one',workspace_id:1,project_id:6,task_id:31,description:'Original',start:data.state.start_time!,stop:null,duration:-1,_offline:true,_pending_ids:['one'],_pending_kind:'open'}
+  data.current_pending=pending
+  data.entries=[pending]
+  return {data,pending}
+}
+test('a running pending Today row opens the current timer editor', () => {
+  const {data,pending}=pendingFixture()
+  assert.equal(isCurrentEntry(data,pending),true)
+  assert.equal(isCurrentEntry(data,{...pending,_pending_ids:['different']}),false)
+})
+test('an offline running draft follows its exact sync confirmation and keeps all edits', () => {
+  const {data,pending}=pendingFixture(), next=sample()
+  const draft=draftFor(data,'current')
+  draft.description='Typed while offline'
+  draft.start=localTime('2026-10-29T11:30:00Z')
+  const entry={...pending,id:11,_offline:false}
+  next.draft_resolution={source:pending,entry,context:data.project_context}
+  const resolved=rebaseSyncedDraft(draft,next)
+  assert.equal(resolved.description,draft.description)
+  assert.equal(resolved.start,draft.start)
+  assert.equal((commandFor(resolved).payload.expected as Snapshot['state']).entry_id,11)
+  assert.deepEqual(commandFor(resolved).payload.changes,{description:draft.description,start:'2026-10-29T11:30:00.000Z'})
+})
+test('a completed pending draft follows sync without copying or cancelling its text', () => {
+  const {data,pending}=pendingFixture(), next=sample()
+  const completed={...pending,stop:'2026-10-29T13:00:00Z',duration:3562,_pending_kind:'create'}
+  const draft=draftFor(data,'entry',undefined,completed)
+  draft.description='Edited before sync'
+  const entry={...completed,id:22,_offline:false}
+  next.draft_resolution={source:completed,entry,context:data.project_context}
+  const resolved=rebaseSyncedDraft(draft,next)
+  assert.equal(resolved.description,draft.description)
+  assert.equal((commandFor(resolved).payload.entry as {id:number}).id,22)
+  assert.deepEqual(commandFor(resolved).payload.changes,{description:draft.description})
+})
+test('sync confirmation cannot redirect a draft to another account or interval', () => {
+  const {data,pending}=pendingFixture(), next=sample()
+  const draft=draftFor(data,'current'), entry={...pending,id:11,_offline:false}
+  next.draft_resolution={source:{...pending,_pending_ids:['other']},entry,context:data.project_context}
+  assert.equal(rebaseSyncedDraft(draft,next),draft)
+  next.draft_resolution.source=pending
+  next.state.entry_id=99
+  assert.equal(rebaseSyncedDraft(draft,next),draft)
+  next.state.entry_id=11
+  next.project_context.account='other-account'
+  assert.equal(rebaseSyncedDraft(draft,next),draft)
+})
+test('Escape-style hiding and subsequent sync leave a pending project correction intact', () => {
+  const {data,pending}=pendingFixture(), next=sample()
+  const draft=draftFor(data,'current')
+  draft.project='7'; draft.task='none'
+  next.draft_resolution={source:pending,entry:{...pending,id:11,_offline:false},context:data.project_context}
+  const resolved=rebaseSyncedDraft(draft,next)
+  assert.equal(resolved.project,'7')
+  assert.equal(resolved.task,'none')
+  assert.deepEqual(commandFor(resolved).payload.changes,{project_id:7,task_id:null})
+})
+test('Stop can retain a pending Today draft even if sync finishes before its reply', () => {
+  const {data,pending}=pendingFixture(), next=sample()
+  const draft=draftFor(data,'current')
+  draft.description='Kept through Stop and sync'
+  const entry={...pending,id:11,_offline:false,stop:'2026-10-29T13:00:00Z',duration:3562}
+  next.state.tracking=false
+  next.entries=[]
+  next.stopped_entry={...entry,id:pending.id,_offline:true}
+  next.draft_resolution={source:pending,entry,context:data.project_context}
+  const stopped=afterOwnStop(draft,next)
+  assert.equal(stopped.mode,'entry')
+  assert.equal(stopped.description,draft.description)
+  assert.equal((commandFor(stopped).payload.entry as {id:number}).id,11)
+})
+test('queue identity comparisons do not confuse different ID arrays', () => {
+  const {pending}=pendingFixture()
+  assert.equal(samePending({...pending,_pending_ids:['a:b','c']},{...pending,_pending_ids:['a','b:c']}),false)
 })

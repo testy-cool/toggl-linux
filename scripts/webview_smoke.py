@@ -226,11 +226,59 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             assert app._load_pending()[0]['stop_time'] == legacy_stop
             assert app._load_pending()[0]['description'] == 'Fully reviewed inside the window'
             until(lambda: js("!document.getElementById('work-description')"))
+            app._save_pending([])
+            app.api_token = 'private-sync-fixture'
+            app._project_cache['account'] = control.toggl_projects.account(app)
+            app._task_cache['context'] = control.toggl_projects.context(app)
+            time.sleep(3)  # Let the cached status poll observe the new private fixture account.
+            click('New timer')
+            until(lambda: js("!!document.getElementById('work-description')"))
+            text('Pending timer opened from Today')
+            with patch.object(app, 'start_entry', side_effect=app.requests.ConnectionError('offline fixture')):
+                click('Start timer')
+                until(lambda: app.state['tracking'] and app.state['entry_id'] is None)
+            until(lambda: js("!document.getElementById('work-description')"))
+            click('Today')
+            until(lambda: js("document.body.textContent.includes('Pending timer opened from Today')"))
+            click('Edit entry Pending timer opened from Today')
+            until(lambda: js("document.body.textContent.includes('Edit running timer')"))
+            text('Draft survives receiving a cloud ID')
+            cloud = dict(id=701, workspace_id=1, project_id=app.state['project_id'], task_id=None,
+                         description=app.state['description'], start=app.state['start_time'], stop=None, duration=-1)
+            with patch.object(app, 'fetch_current_entry', return_value=None), patch.object(app, 'start_entry', return_value=cloud):
+                assert app.sync_pending() == 0
+            until(lambda: js("document.body.textContent.includes('No pending sync')"))
+            until(lambda: js("Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Save changes'&&!b.disabled)"))
+            assert js("document.getElementById('work-description').value === 'Draft survives receiving a cloud ID'")
+            with patch.object(app, 'update_entry', return_value=cloud) as update:
+                click('Save changes')
+                until(lambda: app.state['description'] == 'Draft survives receiving a cloud ID')
+                assert update.call_args.args[1] == 701
+            until(lambda: js("!document.getElementById('work-description')"))
+            click('Edit running timer')
+            until(lambda: js("!!document.getElementById('work-description')"))
+            text('Draft survives completed-entry sync')
+            with patch.object(app, 'stop_entry', side_effect=app.requests.ConnectionError('offline fixture')):
+                click('Stop timer and keep draft')
+                until(lambda: not app.state['tracking'])
+            until(lambda: js("document.body.textContent.includes('Edit time entry')"))
+            pending = app._pending_as_entries()[0]
+            completed = {key: pending.get(key) for key in ('id','workspace_id','project_id','task_id','description','start','stop','duration')}
+            with patch.object(app, 'update_entry', return_value=completed):
+                assert app.sync_pending() == 0
+            with patch.object(app, 'update_entry', return_value=completed) as update:
+                click('Save changes')
+                until(lambda: update.called)
+                until(lambda: js("!document.getElementById('work-description')"))
+                assert update.call_args.args[1] == 701
+                assert update.call_args.args[2] == {'description':'Draft survives completed-entry sync'}
+            assert not app.state['tracking'] and not app._load_pending()
             print(json.dumps(dict(real_webkit=True, real_react=True, private_offline_start=True,
                                   same_interval_edit=True, project_move=True, hidden_draft=True,
                                   draft_after_stop=True, task_create_rename_archive_restore=True,
                                   pending_entry_edit=True, timer_conflict=True, account_conflict=True,
-                                  full_interval_review=True, stop_retained=True, **metrics)), flush=True)
+                                  full_interval_review=True, draft_after_sync=True,
+                                  pending_today_editor=True, stop_retained=True, **metrics)), flush=True)
         except BaseException as error:
             errors.append(error)
             import traceback

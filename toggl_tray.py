@@ -733,6 +733,7 @@ def _restored_stop_changes(op):
             or str(remote.get('id')) != str(op['entry_id'])
             or str(remote.get('workspace_id')) != str(op.get('workspace_id') or state.get('workspace_id'))):
         raise RestoredStopReviewError('Target or account changed; review the local changes')
+    op['_confirmed_entry'] = remote
     original = snapshot.get('fields') or {}
     review_all = snapshot.get('review_all_fields') is True
     data = {key: op[key] for key in ('description', 'project_id', 'task_id')
@@ -875,6 +876,15 @@ def _report_open_start_conflict(current, op):
     )
 
 
+def _remember_synced_interval(queue, op, remote):
+    # UI bookkeeping cannot turn a successful paid write into a duplicate retry.
+    try:
+        import toggl_control
+        toggl_control.record_pending_resolution(sys.modules[__name__], queue, op, remote)
+    except Exception:
+        toggl_debug.LOGGER.warning('Could not retain a synced interval for an open draft', exc_info=True)
+
+
 def sync_pending(retry_review=False):
     """Try to sync all pending actions. Returns number of remaining."""
     global rate_limited_until
@@ -911,6 +921,7 @@ def sync_pending(retry_review=False):
                                 state["workspace_id"] = current.get("workspace_id") or state.get("workspace_id")
                                 save_state()
                             synced_indexes.update(op["indexes"])
+                            _remember_synced_interval(queue, op, current)
                         else:
                             _report_open_start_conflict(current, op)
                     else:
@@ -929,6 +940,7 @@ def sync_pending(retry_review=False):
                             state["task_id"] = op.get("task_id")
                             save_state()
                         synced_indexes.update(op["indexes"])
+                        _remember_synced_interval(queue, op, entry)
                 except RateLimitedError as e:
                     rate_limited_until = time.monotonic() + e.retry_after
                     break
@@ -948,7 +960,8 @@ def sync_pending(retry_review=False):
 
                 if op["kind"] == "create":
                     payload = _completed_entry_payload(op, workspace_id)
-                    api_post(f"/workspaces/{workspace_id}/time_entries", payload)
+                    remote = api_post(f"/workspaces/{workspace_id}/time_entries", payload)
+                    _remember_synced_interval(queue, op, remote)
                 elif op["kind"] == "update_stop":
                     data = {"stop": op["stop_time"]}
                     if op.get("start_time"):
@@ -967,9 +980,13 @@ def sync_pending(retry_review=False):
                         if not data:
                             _append_event('restored_stop_already_ended', entry_id=op['entry_id'])
                             synced_indexes.update(op['indexes'])
+                            _remember_synced_interval(queue, op, op.get('_confirmed_entry'))
                             continue
                     try:
-                        update_entry(workspace_id, op["entry_id"], data, **auth)
+                        remote = update_entry(workspace_id, op["entry_id"], data, **auth)
+                        if not isinstance(remote, dict) or remote.get('id') is None:
+                            remote = dict(op.get('_confirmed_entry') or {}, id=op['entry_id'], workspace_id=workspace_id, **data)
+                        _remember_synced_interval(queue, op, remote)
                     except requests.exceptions.HTTPError as e:
                         status = e.response.status_code if e.response is not None else 0
                         if op.get('verify_running'):
@@ -978,7 +995,8 @@ def sync_pending(retry_review=False):
                             raise  # Missing/unsupported targets remain editable, never recreated.
                         if status in (404, 410) and op.get("start_time") and op.get("stop_time"):
                             payload = _completed_entry_payload(op, workspace_id)
-                            api_post(f"/workspaces/{workspace_id}/time_entries", payload)
+                            remote = api_post(f"/workspaces/{workspace_id}/time_entries", payload)
+                            _remember_synced_interval(queue, op, remote)
                         else:
                             raise
                 elif op["kind"] == "delete":

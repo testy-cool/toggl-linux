@@ -13,6 +13,8 @@ from pathlib import Path
 
 MAX_MESSAGE = 2 * 1024 * 1024
 MAX_COMMAND = 256 * 1024  # A 10,000-character Unicode description plus its guarded original.
+PENDING_FIELDS = ('start', 'stop', 'description', 'project_id', 'task_id', 'workspace_id',
+                  '_pending_kind', '_remote_entry_id')
 
 
 def _json_bytes(value):
@@ -25,10 +27,15 @@ class ControlError(Exception):
 
 
 def snapshot(app):
-    with app.state_lock:
-        current = dict(app.state)
+    with app.pending_lock:
+        all_pending = app._pending_as_entries()
+        with app.state_lock:
+            current = dict(app.state)
     today = app.datetime.now().date()
-    pending = app._pending_as_entries(today)
+    pending = [entry for entry in all_pending if app._entry_local_date(entry) == today]
+    current_pending = [entry for entry in all_pending if current.get('tracking') and current.get('entry_id') is None
+                       and entry.get('_pending_kind') == 'open' and entry.get('start') == current.get('start_time')
+                       and str(entry.get('workspace_id')) == str(current.get('workspace_id'))]
     cached = getattr(app, "_control_entries", []) if getattr(app, "_control_entries_date", "") == today.isoformat() else []
     entries = app._merge_entries_with_pending(cached, pending)
     stale = [e for e in entries if not e.get("_offline") and e.get("duration", 0) < 0
@@ -44,11 +51,98 @@ def snapshot(app):
     return {"state": current, "projects": app._cached_projects(), "tasks": app._cached_tasks(),
             "task_capability": toggl_tasks.capability(app), "entries": entries,
             "pending_count": len(app._load_pending()), "warning": warning,
-            "project_context": toggl_projects.context(app), "projects_url": toggl_projects.projects_url(app)}
+            "project_context": toggl_projects.context(app), "projects_url": toggl_projects.projects_url(app),
+            "current_pending": current_pending[0] if len(current_pending) == 1 else None}
 
 
-def _work_snapshot(app):
-    result = snapshot(app)
+def _same_pending(source, selected):
+    if not isinstance(source, dict) or not isinstance(selected, dict):
+        return False
+    ids = selected.get('_pending_ids')
+    source_ids = source.get('_pending_ids')
+    return (isinstance(ids, list) and bool(ids) and all(isinstance(value, str) for value in ids)
+            and isinstance(source_ids, list) and len(ids) == len(source_ids) == len(set(ids))
+            and set(ids) == set(source_ids)
+            and all(selected.get(key) == source.get(key) for key in PENDING_FIELDS))
+
+
+def record_pending_resolution(app, queue, op, remote):
+    """Keep the identity of a successfully synced interval for open UI drafts."""
+    if not isinstance(remote, dict) or remote.get('id') is None:
+        return
+    app._ensure_pending_ids(queue)
+    source = next((entry for entry in app._pending_entries_from_queue(queue)
+                   if set(entry['_pending_indexes']) == set(op['indexes'])), None)
+    context = toggl_projects.context(app)
+    if (not source or str(source.get('workspace_id')) != str(context['workspace_id'])
+            or source.get('_task_context') not in (None, context)):
+        return
+    entry = {key: remote.get(key, source.get(key)) for key in
+             ('id', 'workspace_id', 'description', 'project_id', 'task_id', 'start', 'stop', 'duration')}
+    if str(entry.get('workspace_id')) != str(source.get('workspace_id')):
+        return
+    if op['kind'] != 'open' and not entry.get('stop'):
+        return  # A handoff must describe the confirmed completed interval.
+    sources = [source]
+    if op['kind'] == 'create' and len(op['indexes']) == 2:
+        first = queue[op['indexes'][0]]
+        if first.get('action') == 'start':
+            sources += app._pending_entries_from_queue([first])
+    records = getattr(app, '_pending_resolutions', [])
+    app._pending_resolutions = (records + [dict(source=dict(source), entry=entry, context=context)
+                                         for source in sources])[-1024:]
+    if app._entry_local_date(entry) == app.datetime.now().date():
+        today = app.datetime.now().date().isoformat()
+        cached = getattr(app, '_control_entries', []) if getattr(app, '_control_entries_date', '') == today else []
+        app._control_entries = [item for item in cached if item.get('id') != entry['id']] + [entry]
+        app._control_entries_date = today
+
+
+def _pending_resolution(app, selected):
+    with app.pending_lock:
+        context = toggl_projects.context(app)
+        matches = [item for item in getattr(app, '_pending_resolutions', [])
+                   if item['context'] == context and _same_pending(item['source'], selected)]
+        return matches[-1] if matches else None
+
+
+def _known_entry(app, selected):
+    context = toggl_projects.context(app)
+    cached = getattr(app, '_control_entries', [])
+    resolved = [record['entry'] for record in getattr(app, '_pending_resolutions', []) if record['context'] == context]
+    return next((entry for entry in [*cached, *reversed(resolved)]
+                 if str(entry.get('id')) == str(selected.get('id'))
+                 and str(entry.get('workspace_id')) == str(selected.get('workspace_id'))), None)
+
+
+def _confirmed_current_draft(app, payload, expected, current):
+    selected = payload.get('draft_entry')
+    if not isinstance(expected, dict) or not isinstance(selected, dict):
+        return False
+    resolved = _pending_resolution(app, selected)
+    if not resolved or expected.get('entry_id') is not None or not expected.get('tracking'):
+        return False
+    entry = resolved['entry']
+    for timer, target in ((expected, selected), (current, entry)):
+        if (timer.get('start_time') != target.get('start')
+                or (timer.get('description') or '') != (target.get('description') or '')
+                or any(str(timer.get(key)) != str(target.get(key)) for key in ('project_id','task_id','workspace_id'))):
+            return False
+    return (current.get('tracking') is True and not entry.get('stop')
+            and str(current.get('entry_id')) == str(entry.get('id')))
+
+
+def _attach_resolution(app, payload, result):
+    selected = payload.get('draft_entry')
+    if selected and payload.get('draft_context') == result['project_context']:
+        resolved = _pending_resolution(app, selected)
+        if resolved is not None and resolved['context'] == result['project_context']:
+            result['draft_resolution'] = dict(source=selected, entry=resolved['entry'], context=resolved['context'])
+    return result
+
+
+def _work_snapshot(app, payload):
+    result = _attach_resolution(app, payload, snapshot(app))
     # The legacy tree aliases activities as tasks. The web protocol needs one copy.
     history = toggl_task_tree.tree(app)
     groups = [{k: v for k, v in group.items() if k not in {'tasks', 'activities'}} for group in history]
@@ -174,6 +268,9 @@ def _edit_entry(app, selected, changes, reviewed_interval=False):
             queue = app._load_pending()
             entry = app._pending_entry_candidate(queue, selected)
             if not entry:
+                resolved = _pending_resolution(app, selected)
+                if resolved is not None:
+                    return _edit_entry(app, resolved['entry'], changes, reviewed_interval)
                 raise ControlError("Pending entry changed; refresh before editing")
             if entry.get('_needs_full_review') and reviewed_interval is not True:
                 raise ControlError('Review and approve all displayed interval fields before saving')
@@ -182,8 +279,7 @@ def _edit_entry(app, selected, changes, reviewed_interval=False):
                 raise ControlError('Pending entry changed; refresh before editing')
         toggl_task_tree.correct(app, entry, changes)
     else:
-        entries = getattr(app, "_control_entries", [])
-        entry = next((e for e in entries if str(e.get("id")) == str(selected.get("id"))), None)
+        entry = _known_entry(app, selected)
         if not entry:
             raise ControlError("Entry changed; refresh before editing")
         changes = _entry_changes(app, changes, entry)
@@ -242,7 +338,7 @@ def _dispatch(app, action, payload):
     if action == "snapshot":
         return snapshot(app)
     if action == 'work-snapshot':
-        return _work_snapshot(app)
+        return _work_snapshot(app, payload)
     if action == 'hide-activity':
         with app.toggle_lock:
             if payload.get('context') != toggl_projects.context(app):
@@ -319,7 +415,8 @@ def _dispatch(app, action, payload):
             if action == "resume":
                 fields += ("workspace_id",)
             if not isinstance(expected, dict) or any(expected.get(k) != before.get(k) for k in fields):
-                raise ControlError("Timer changed; refresh before editing")
+                if action != 'edit-current' or not _confirmed_current_draft(app, payload, expected, before):
+                    raise ControlError("Timer changed; refresh before editing")
         if action == "resume":
             entry = _resume_entry(app, payload.get("entry"))
             changes = _changes(app, {"description": entry.get("description", ""),
@@ -375,7 +472,7 @@ def _dispatch(app, action, payload):
     result = snapshot(app)
     if stopped_entry is not None:
         result['stopped_entry'] = stopped_entry
-    return result
+    return _attach_resolution(app, payload, result)
 
 
 def record_stop(app, entry_id, start, description, workspace_id, project_id, task_id, stop):
@@ -435,7 +532,7 @@ def request(state_dir, action, payload):
             client.connect(str(Path(state_dir) / "control.sock"))
         except OSError as error:
             raise ControlError("Toggl Tray is not running. Launch the tray app and try again.") from error
-        command = json.dumps({"action": action, "payload": payload}).encode() + b"\n"
+        command = _json_bytes({"action": action, "payload": payload}) + b"\n"
         if len(command) > MAX_COMMAND:
             raise ControlError("Command is too large")
         client.sendall(command)
