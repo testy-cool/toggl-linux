@@ -103,7 +103,8 @@ export function WorkTree({
   ]);
   useEffect(() => {
     tree.rebuildTree();
-    if (!tree.getFocusedItem()?.getItemMeta()) tree.getItems()[0]?.setFocused();
+    if (!tree.getItems().some((item) => item.isFocused()))
+      tree.getItems()[0]?.setFocused();
   }, [tree, structure]);
 
   return (
@@ -263,7 +264,10 @@ export function WorkTree({
                             <MoreHorizontal />
                           </Button>
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
+                        <DropdownMenuContent
+                          align="end"
+                          onClick={(event) => event.stopPropagation()}
+                        >
                           <DropdownMenuGroup>
                             <DropdownMenuItem onSelect={() => rename(work)}>
                               Rename task
