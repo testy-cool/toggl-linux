@@ -185,3 +185,21 @@ def test_next_day_fetches_again_instead_of_reusing_yesterdays_complete_flag():
         assert today.status(app)['today_fetched_at'] is None
         assert today.refresh(app)
     assert api.call_count==2
+
+
+def test_returning_to_an_account_during_a_read_cannot_overwrite_new_local_work():
+    original_token=app.api_token
+    for _ in range(5):
+        today.remember(app,interval())
+    old_open=interval(stop=None)
+    old_open.update(stop=None,duration=-1)
+    def fetch(*args,**kwargs):
+        app.api_token='another-fixture-account'
+        today.remember(app,interval(9))
+        app.api_token=original_token
+        today.remember(app,interval(description='New stop after returning'))
+        return [old_open]
+    with patch.object(app,'api_get',side_effect=fetch):
+        today.refresh(app)
+    assert today.cached(app)[0]['stop'] is not None
+    assert today.cached(app)[0]['description']=='New stop after returning'

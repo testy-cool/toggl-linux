@@ -104,6 +104,7 @@ def refresh(app, force=False):
                 if not force and value['fetched_at']:
                     return True
                 app._today_attempt = (scope, day, now)
+                app._today_cache = value
                 baseline = value['version']
             if (not token or not scope['workspace_id'] or app._rate_limit_active()
                     or app._request_budget_remaining() <= app.REQUEST_BUDGET_BACKGROUND_RESERVE):
@@ -130,7 +131,9 @@ def refresh(app, force=False):
             if toggl_projects.context(app) != scope or window(app)[0] != day:
                 return False
             with _cache_lock:
-                latest = _cache(app) or _empty(app)
+                latest = _cache(app)
+                if latest is not value:
+                    return False  # The account/day changed away and back during the read.
                 incoming = {_key(e): dict(e) for e in response[:MAX_ENTRIES]
                             if isinstance(e, dict) and e.get('id') is not None
                             and not e.get('server_deleted_at') and not e.get('deleted_at')
