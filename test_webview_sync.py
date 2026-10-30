@@ -180,3 +180,96 @@ def test_invalid_pending_identity_cannot_mutate_a_confirmed_timer(variant):
             control.dispatch(app,'edit-current',{'expected':original['state'], 'context':original['project_context'],
                 'draft_entry':selected,'changes':{'description':'Do not apply'}})
     update.assert_not_called()
+
+
+def test_refresh_cannot_turn_a_completed_overnight_handoff_back_into_a_running_entry():
+    from datetime import datetime,timedelta,timezone
+    offline_timer()
+    yesterday=(datetime.now(timezone.utc).astimezone().replace(hour=12,minute=0,second=0,microsecond=0)-timedelta(days=1)).isoformat()
+    control.dispatch(app,'edit-current',{'changes':{'start':yesterday}})
+    confirm_open()
+    with patch.object(app,'stop_entry',return_value={}):
+        stopped=control.dispatch(app,'stop',{})['stopped_entry']
+    with patch.object(app,'_refresh_projects'), patch.object(app,'_refresh_tasks'), \
+         patch.object(app,'_request_budget_remaining',return_value=100), patch.object(app,'fetch_today_entries',return_value=[]):
+        control.dispatch(app,'refresh',{})
+    changed=(datetime.fromisoformat(yesterday)+timedelta(minutes=10)).isoformat()
+    with patch.object(app,'update_entry') as update:
+        control.dispatch(app,'edit-entry',{'entry':stopped,'changes':{'start':changed}})
+    assert update.call_args.args[2]['duration'] >= 0, 'A completed edit must never send a running duration'
+    assert not app.state['tracking']
+    new_stop=(datetime.fromisoformat(stopped['stop'])-timedelta(minutes=1)).isoformat()
+    with patch.object(app,'update_entry') as update:
+        control.dispatch(app,'edit-entry',{'entry':stopped,'changes':{'stop':new_stop}})
+    assert update.call_args.args[2]['duration'] >= 0
+
+
+def test_a_new_interval_draft_can_switch_after_its_current_timer_syncs():
+    original,selected=offline_timer()
+    confirm_open()
+    from datetime import datetime,timezone
+    new=dict(id=803,start=datetime.now(timezone.utc).isoformat(),description='Next work',workspace_id='ws_123')
+    with patch.object(app,'stop_entry',return_value={}) as stop,patch.object(app,'start_entry',return_value=new) as start:
+        control.dispatch(app,'switch',{'expected':original['state'],'context':original['project_context'],
+            'draft_entry':selected,'changes':{'description':'Next work','project_id':None,'task_id':None}})
+    assert stop.call_args.args[1] == 801
+    assert start.call_count == 1 and app.state['entry_id'] == 803
+
+
+def test_a_completed_form_is_never_applied_to_a_stale_running_handoff():
+    offline_timer()
+    cloud=confirm_open()
+    app._control_entries=[]
+    from datetime import datetime,timezone
+    selected=dict(cloud,stop=datetime.now(timezone.utc).isoformat(),duration=0)
+    with patch.object(app,'update_entry') as update:
+        with pytest.raises(control.ControlError,match='changed'):
+            control.dispatch(app,'edit-entry',{'entry':selected,'changes':{'start':cloud['start']}})
+    update.assert_not_called()
+
+
+def test_stop_racing_with_confirmation_updates_the_handoff_to_its_completed_state():
+    import threading,time
+    offline_timer()
+    remote=dict(id=801,workspace_id='ws_123',project_id=None,task_id=None,description=app.state['description'],
+                start=app.state['start_time'],stop=None,duration=-1)
+    entering,release=threading.Event(),threading.Event()
+    original=control.record_pending_resolution
+    errors=[]
+    def delayed(*args):
+        entering.set()
+        assert release.wait(3)
+        return original(*args)
+    def sync():
+        try: app.sync_pending()
+        except BaseException as error: errors.append(error)
+    def stop():
+        try: control.dispatch(app,'stop',{})
+        except BaseException as error: errors.append(error)
+    with patch.object(control,'record_pending_resolution',side_effect=delayed), \
+         patch.object(app,'fetch_current_entry',return_value=None),patch.object(app,'start_entry',return_value=remote), \
+         patch.object(app,'stop_entry',return_value={}):
+        syncing=threading.Thread(target=sync,daemon=True); syncing.start()
+        assert entering.wait(1)
+        stopping=threading.Thread(target=stop,daemon=True); stopping.start()
+        deadline=time.monotonic()+2
+        while app.state['tracking'] and time.monotonic()<deadline: time.sleep(0.01)
+        release.set(); syncing.join(3); stopping.join(3)
+    assert not syncing.is_alive() and not stopping.is_alive() and not errors
+    assert app._pending_resolutions[-1]['entry']['stop']
+    assert app._pending_resolutions[-1]['entry']['duration'] >= 0
+
+
+def test_all_pending_aliases_share_the_latest_confirmed_interval_fields():
+    original,opened=offline_timer()
+    confirm_open()
+    with patch.object(app,'stop_entry',side_effect=app.requests.ConnectionError('offline')):
+        control.dispatch(app,'stop',{})
+    closed=app._pending_as_entries()[0]
+    remote={k:closed.get(k) for k in ['id','workspace_id','description','project_id','task_id','start','stop','duration']}
+    with patch.object(app,'update_entry',return_value=remote): assert app.sync_pending() == 0
+    with patch.object(app,'update_entry'):
+        control.dispatch(app,'edit-entry',{'entry':closed,'changes':{'description':'Latest confirmed text'}})
+    result=control.dispatch(app,'work-snapshot',{'draft_entry':opened,'draft_context':original['project_context']})
+    assert result['draft_resolution']['entry']['description'] == 'Latest confirmed text'
+    assert result['draft_resolution']['entry']['stop']

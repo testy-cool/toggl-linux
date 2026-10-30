@@ -217,3 +217,16 @@ test('queue identity comparisons do not confuse different ID arrays', () => {
   const {pending}=pendingFixture()
   assert.equal(samePending({...pending,_pending_ids:['a:b','c']},{...pending,_pending_ids:['a','b:c']}),false)
 })
+
+test('a New timer draft keeps its proposed work through current-timer sync', () => {
+  const {data,pending}=pendingFixture(), next=sample()
+  const draft=draftFor(data,'new')
+  draft.description='Next interval description'; draft.project='7'; draft.task='none'
+  next.draft_resolution={source:pending,entry:{...pending,id:11,_offline:false},context:data.project_context}
+  const resolved=rebaseSyncedDraft(draft,next)
+  assert.equal(resolved.description,draft.description)
+  assert.equal(resolved.project,'7')
+  assert.equal(resolved.task,'none')
+  assert.equal((commandFor(resolved).payload.expected as Snapshot['state']).entry_id,11)
+  assert.deepEqual(commandFor(resolved).payload.changes,{description:draft.description,project_id:7,task_id:null})
+})

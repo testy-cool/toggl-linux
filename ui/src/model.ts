@@ -160,7 +160,11 @@ export function samePending(
   );
 }
 export const pendingSource = (d: Draft) =>
-  d.mode === "current" ? d.pending : d.entry?._offline ? d.entry : undefined;
+  d.mode === "current" || d.mode === "new"
+    ? d.pending
+    : d.entry?._offline
+      ? d.entry
+      : undefined;
 export const isCurrentEntry = (s: Snapshot, entry: Entry) =>
   s.state.tracking &&
   entry.duration < 0 &&
@@ -216,8 +220,8 @@ export function rebaseSyncedDraft(d: Draft, result: Snapshot): Draft {
     )
       return d;
     return {
-      ...rebaseFields(d, source, entry),
-      mode: "current",
+      ...(d.mode === "new" ? d : rebaseFields(d, source, entry)),
+      mode: d.mode === "new" ? "new" : "current",
       entry: undefined,
       pending: undefined,
       snapshot: structuredClone(result),
@@ -235,7 +239,7 @@ export function rebaseSyncedDraft(d: Draft, result: Snapshot): Draft {
 export function afterOwnStop(draft: Draft, result: Snapshot): Draft {
   if (!contextMatches(draft.snapshot, result)) return draft;
   if (draft.mode === "new" && !result.state.tracking)
-    return { ...draft, snapshot: structuredClone(result) };
+    return { ...draft, pending: undefined, snapshot: structuredClone(result) };
   if (draft.mode !== "current") return draft;
   const original = draft.snapshot.state;
   const resolution = result.draft_resolution;
@@ -361,7 +365,9 @@ export function draftFor(
     stop: localTime(mode === "entry" ? (entry?.stop ?? null) : null),
     reviewed: false,
     pending:
-      mode === "current" && s.state.entry_id == null && s.current_pending
+      (mode === "current" || mode === "new") &&
+      s.state.entry_id == null &&
+      s.current_pending
         ? structuredClone(s.current_pending)
         : undefined,
   };
@@ -427,7 +433,9 @@ export function commandFor(d: Draft, asTask = false): Command {
     payload: {
       changes,
       context: s.project_context,
-      ...(d.mode === "current" && d.pending ? { draft_entry: d.pending } : {}),
+      ...((d.mode === "current" || d.mode === "new") && d.pending
+        ? { draft_entry: d.pending }
+        : {}),
       ...(d.mode === "entry" && d.entry?._needs_full_review
         ? { reviewed_interval: d.reviewed }
         : {}),

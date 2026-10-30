@@ -66,6 +66,13 @@ def _same_pending(source, selected):
             and all(selected.get(key) == source.get(key) for key in PENDING_FIELDS))
 
 
+def _update_resolution_entries(records, entry, context):
+    for record in records:
+        if (record['context'] == context and str(record['entry'].get('id')) == str(entry['id'])
+                and str(record['entry'].get('workspace_id')) == str(entry['workspace_id'])):
+            record['entry'] = entry
+
+
 def record_pending_resolution(app, queue, op, remote):
     """Keep the identity of a successfully synced interval for open UI drafts."""
     if not isinstance(remote, dict) or remote.get('id') is None:
@@ -89,6 +96,7 @@ def record_pending_resolution(app, queue, op, remote):
         if first.get('action') == 'start':
             sources += app._pending_entries_from_queue([first])
     records = getattr(app, '_pending_resolutions', [])
+    _update_resolution_entries(records, entry, context)
     app._pending_resolutions = (records + [dict(source=dict(source), entry=entry, context=context)
                                          for source in sources])[-1024:]
     if app._entry_local_date(entry) == app.datetime.now().date():
@@ -110,9 +118,12 @@ def _known_entry(app, selected):
     context = toggl_projects.context(app)
     cached = getattr(app, '_control_entries', [])
     resolved = [record['entry'] for record in getattr(app, '_pending_resolutions', []) if record['context'] == context]
-    return next((entry for entry in [*cached, *reversed(resolved)]
+    entry = next((entry for entry in [*cached, *reversed(resolved)]
                  if str(entry.get('id')) == str(selected.get('id'))
                  and str(entry.get('workspace_id')) == str(selected.get('workspace_id'))), None)
+    if entry and selected.get('stop') and not entry.get('stop'):
+        return None  # A completed form must never be applied to a stale running record.
+    return entry
 
 
 def _confirmed_current_draft(app, payload, expected, current):
@@ -415,7 +426,7 @@ def _dispatch(app, action, payload):
             if action == "resume":
                 fields += ("workspace_id",)
             if not isinstance(expected, dict) or any(expected.get(k) != before.get(k) for k in fields):
-                if action != 'edit-current' or not _confirmed_current_draft(app, payload, expected, before):
+                if action not in {'edit-current', 'switch'} or not _confirmed_current_draft(app, payload, expected, before):
                     raise ControlError("Timer changed; refresh before editing")
         if action == "resume":
             entry = _resume_entry(app, payload.get("entry"))
@@ -480,12 +491,15 @@ def record_stop(app, entry_id, start, description, workspace_id, project_id, tas
     if not entry_id or not start:
         return
     today = app.datetime.now().date().isoformat()
-    cache = getattr(app, "_control_entries", []) if getattr(app, "_control_entries_date", "") == today else []
     entry = {"id": entry_id, "workspace_id": workspace_id, "project_id": project_id,
              "task_id": task_id, "description": description, "start": start, "stop": stop,
              "duration": app._duration_seconds(start, stop)}
-    app._control_entries = [e for e in cache if e.get("id") != entry_id] + [entry]
-    app._control_entries_date = today
+    with app.pending_lock:
+        cache = getattr(app, "_control_entries", []) if getattr(app, "_control_entries_date", "") == today else []
+        context = toggl_projects.context(app)
+        _update_resolution_entries(getattr(app, '_pending_resolutions', []), entry, context)
+        app._control_entries = [e for e in cache if e.get("id") != entry_id] + [entry]
+        app._control_entries_date = today
 
 
 def _refresh_ui(app):

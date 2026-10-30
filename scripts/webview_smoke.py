@@ -273,12 +273,38 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
                 assert update.call_args.args[1] == 701
                 assert update.call_args.args[2] == {'description':'Draft survives completed-entry sync'}
             assert not app.state['tracking'] and not app._load_pending()
+            click('New timer')
+            until(lambda: js("!!document.getElementById('work-description')"))
+            text('Offline interval before a new-work draft')
+            with patch.object(app,'start_entry',side_effect=app.requests.ConnectionError('offline fixture')):
+                click('Start timer')
+                until(lambda: app.state['tracking'] and app.state['entry_id'] is None)
+            until(lambda: js("!document.getElementById('work-description')"))
+            click('New timer')
+            until(lambda: js("!!document.getElementById('work-description')"))
+            text('Next work survives current-timer sync')
+            current = dict(id=901,workspace_id=1,project_id=app.state['project_id'],task_id=None,
+                           description=app.state['description'],start=app.state['start_time'],stop=None,duration=-1)
+            with patch.object(app,'fetch_current_entry',return_value=None),patch.object(app,'start_entry',return_value=current):
+                assert app.sync_pending() == 0
+            until(lambda: js("document.body.textContent.includes('No pending sync')"))
+            assert js("document.getElementById('work-description').value === 'Next work survives current-timer sync'")
+            next_entry=dict(current,id=902,start=datetime.now(timezone.utc).isoformat(),description='Next work survives current-timer sync')
+            with patch.object(app,'stop_entry',return_value={}) as stop,patch.object(app,'start_entry',return_value=next_entry) as start:
+                click('Start timer')
+                until(lambda: app.state['entry_id'] == 902)
+                until(lambda: js("!document.getElementById('work-description')"))
+                assert stop.call_args.args[1] == 901 and start.call_count == 1
+            with patch.object(app,'stop_entry',return_value={}):
+                click('Stop')
+                until(lambda: not app.state['tracking'])
             print(json.dumps(dict(real_webkit=True, real_react=True, private_offline_start=True,
                                   same_interval_edit=True, project_move=True, hidden_draft=True,
                                   draft_after_stop=True, task_create_rename_archive_restore=True,
                                   pending_entry_edit=True, timer_conflict=True, account_conflict=True,
                                   full_interval_review=True, draft_after_sync=True,
-                                  pending_today_editor=True, stop_retained=True, **metrics)), flush=True)
+                                  pending_today_editor=True, new_draft_after_sync=True,
+                                  stop_retained=True, **metrics)), flush=True)
         except BaseException as error:
             errors.append(error)
             import traceback

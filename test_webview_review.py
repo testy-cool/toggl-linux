@@ -112,3 +112,15 @@ def test_javascript_readiness_acknowledges_the_private_pipe_without_fallback():
     assert view.ready_process is process
     process.terminate.assert_not_called()
     fallback.assert_not_called()
+
+
+def test_a_crash_after_readiness_waits_for_the_next_explicit_open_request():
+    view=launcher.Launcher(app)
+    process=MagicMock()
+    process.wait.return_value=1
+    view.process=process
+    view.ready_process=process
+    with patch.object(view,'_fallback') as fallback, \
+         patch.object(app.GLib,'idle_add',side_effect=lambda fn,*args: fn(*args)):
+        view._watch(process,'work',dict(x=0,y=0,width=600,height=780))
+    fallback.assert_not_called()

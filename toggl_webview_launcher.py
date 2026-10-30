@@ -93,6 +93,10 @@ class Launcher:
 
     def _watch(self, process, mode, geometry):
         code = process.wait()
+        if self.ready_process is process:
+            if not self.stopping and self.process is process:
+                toggl_debug.LOGGER.error('Work window exited with status %s; reopen it from the tray', code)
+            return
         self._recover(process, mode, geometry, f'exited with status {code}')
 
     def _wait_for_ready(self, process, fd, mode, geometry, timeout=35):
