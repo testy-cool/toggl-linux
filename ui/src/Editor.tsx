@@ -25,6 +25,7 @@ import {
 } from "@/components/reui/frame";
 import {
   contextMatches,
+  entryEnd,
   projectName,
   sameId,
   scope,
@@ -208,7 +209,7 @@ export function Editor({
                   />
                 </Field>
               )}
-              {d.mode === "entry" && d.entry?.stop && (
+              {d.mode === "entry" && entryEnd(d.entry) && (
                 <Field>
                   <FieldLabel htmlFor="work-stop">Stopped at</FieldLabel>
                   <Input

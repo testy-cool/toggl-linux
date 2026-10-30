@@ -10,6 +10,7 @@ import toggl_projects
 _cache_lock = threading.RLock()
 _refresh_lock = threading.Lock()
 MAX_ENTRIES = 1000
+REFRESH_WARNING = "Cloud refresh unavailable; showing cached and pending entries"
 
 
 def activity_key(project, description):
@@ -124,9 +125,9 @@ def forget(app, entry, scope=None):
 
 
 def refresh(app, force=False):
-    """One account-frozen read, throttled across window reopenings and callers."""
+    """Return True if loaded, False if unavailable, None if another read is busy."""
     if not _refresh_lock.acquire(blocking=False):
-        return False
+        return None
     try:
         with app.toggle_lock:
             scope, day = toggl_projects.context(app), window(app)[0]
@@ -189,6 +190,8 @@ def refresh(app, force=False):
                 app._control_entries = other + list(latest['entries'])
                 app._control_entries_date = day
                 app._control_entries_context = dict(scope, origin=base)
+                if getattr(app, '_control_warning', '') == REFRESH_WARNING:
+                    app._control_warning = ''
         return True
     finally:
         _refresh_lock.release()

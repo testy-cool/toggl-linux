@@ -439,6 +439,13 @@ export function workGroups(
     );
 }
 
+export function entryEnd(entry?: Entry): string | null {
+  if (!entry || entry.stop) return entry?.stop ?? null;
+  if (!Number.isFinite(entry.duration) || entry.duration < 0) return null;
+  const end = new Date(Date.parse(entry.start) + entry.duration * 1000);
+  return Number.isFinite(end.getTime()) ? end.toISOString() : null;
+}
+
 export function draftFor(
   s: Snapshot,
   mode: Mode,
@@ -460,7 +467,7 @@ export function draftFor(
     start: localTime(
       mode === "entry" ? (entry?.start ?? null) : s.state.start_time,
     ),
-    stop: localTime(mode === "entry" ? (entry?.stop ?? null) : null),
+    stop: localTime(mode === "entry" ? entryEnd(entry) : null),
     reviewed: false,
     pending:
       (mode === "current" || mode === "new") &&
@@ -517,7 +524,7 @@ export function commandFor(d: Draft, asTask = false): Command {
     if (d.mode === "entry") {
       if (d.start !== localTime(d.entry!.start))
         changes.start = new Date(d.start).toISOString();
-      if (d.stop !== localTime(d.entry!.stop))
+      if (d.stop !== localTime(entryEnd(d.entry)))
         changes.stop = new Date(d.stop).toISOString();
     }
   }

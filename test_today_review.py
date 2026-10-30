@@ -127,3 +127,51 @@ def test_gtk_current_interval_corrections_update_the_live_timer_without_restarti
     assert app.state['description']=='Corrected current'
     control.record_delete(app,row)
     assert not app.state['tracking'] and not control.snapshot(app)['entries']
+
+
+def test_concurrent_refresh_does_not_report_a_failed_cloud_read():
+    entered, release = threading.Event(), threading.Event()
+    def fetch(*args, **kwargs):
+        entered.set(); assert release.wait(3); return []
+    with patch.object(app, 'api_get', side_effect=fetch), \
+         patch.object(app, '_refresh_projects'), patch.object(app, '_refresh_tasks'):
+        worker = threading.Thread(target=today.refresh, args=(app,))
+        worker.start()
+        try:
+            assert entered.wait(1)
+            result = control.dispatch(app, 'refresh', {})
+            assert not result['warning']
+        finally:
+            release.set(); worker.join(4)
+    assert not control.snapshot(app)['warning']
+
+
+def test_a_successful_daily_read_clears_its_old_cloud_warning():
+    app._control_warning = 'Cloud refresh unavailable; showing cached and pending entries'
+    with patch.object(app, 'api_get', return_value=[]):
+        control.dispatch(app, 'refresh-today', {})
+    assert not control.snapshot(app)['warning']
+
+
+def test_a_duration_only_closed_interval_can_change_its_start_without_becoming_running():
+    row = interval(); row.update(stop=None, duration=3600)
+    today.remember(app, row)
+    original_start = app._parse_iso(row['start'])
+    with patch.object(app, 'update_entry', return_value={}) as update:
+        control.dispatch(app, 'edit-entry', {'entry':row, 'changes':{'start':(original_start+timedelta(minutes=5)).isoformat()}})
+    assert update.call_args.args[2]['duration'] == 3300
+    assert not app.state['tracking']
+
+
+def test_offline_stop_corrected_out_of_today_hides_its_original_cloud_interval():
+    row = interval()
+    with patch.object(app, 'api_get', return_value=[row]): assert today.refresh(app)
+    app.state.update(tracking=True, entry_id=row['id'], start_time=row['start'])
+    with patch.object(app, 'stop_entry', side_effect=app.requests.ConnectionError('offline')):
+        app.toggle_tracking()
+    selected = app._pending_as_entries()[0]
+    _, midnight, _ = today.window(app)
+    control.dispatch(app, 'edit-entry', {'entry':selected, 'changes':{
+        'start':(midnight-timedelta(hours=2)).isoformat(), 'stop':(midnight-timedelta(hours=1)).isoformat()}})
+    assert not control.snapshot(app)['entries']
+    assert app._pending_as_entries()[0]['stop'] < midnight.isoformat()

@@ -40,14 +40,16 @@ def snapshot(app):
             current = dict(app.state)
     today = app.datetime.now().date()
     context = toggl_projects.context(app)
-    pending = [entry for entry in all_pending if (entry.get('_task_context') is None
-               or isinstance(entry['_task_context'], dict) and entry['_task_context'].get('account') == context['account'])
-               and toggl_today.overlaps(app, entry, current)]
+    scoped_pending = [entry for entry in all_pending if (entry.get('_task_context') is None
+               or isinstance(entry['_task_context'], dict) and entry['_task_context'].get('account') == context['account'])]
+    pending = [entry for entry in scoped_pending if toggl_today.overlaps(app, entry, current)]
     current_pending = [entry for entry in all_pending if current.get('tracking') and current.get('entry_id') is None
                        and entry.get('_pending_kind') == 'open' and entry.get('start') == current.get('start_time')
                        and str(entry.get('workspace_id')) == str(current.get('workspace_id'))]
     cached = _cached_entries(app, context)
-    entries = app._merge_entries_with_pending(cached, pending)
+    hidden = {(str(e.get('workspace_id')), str(e['_remote_entry_id']))
+              for e in scoped_pending if e.get('_remote_entry_id')}
+    entries = [e for e in cached if (str(e.get('workspace_id')), str(e.get('id'))) not in hidden] + pending
     stale = [e for e in entries if not e.get("_offline") and e.get("duration", 0) < 0
              and (not current.get("tracking") or e.get("id") != current.get("entry_id"))]
     entries = [e for e in entries if e not in stale]
@@ -289,6 +291,8 @@ def _entry_changes(app, values, entry):
     try:
         start = app._parse_iso(values.get('start', entry.get('start')))
         stop = app.datetime.now(app.timezone.utc) if running else app._parse_iso(values.get('stop', entry.get('stop')))
+        if not running and stop is None and 'stop' not in values and entry.get('duration', -1) >= 0:
+            stop = app._parse_iso(entry.get('start')) + app.timedelta(seconds=entry['duration'])
         now = app.datetime.now(app.timezone.utc)
         if not start or not stop or not start.tzinfo or not stop.tzinfo or start > stop or stop > now:
             raise ValueError()
@@ -431,11 +435,11 @@ def _dispatch(app, action, payload):
             try:
                 if not app.api_token or app._rate_limit_active() or app._request_budget_remaining() <= app.REQUEST_BUDGET_BACKGROUND_RESERVE:
                     raise ControlError("Cloud refresh unavailable; showing cached and pending entries")
-                if not toggl_today.refresh(app, force=force):
+                if toggl_today.refresh(app, force=force) is False:
                     raise ControlError('Today refresh unavailable')
                 app._control_warning = ""
             except Exception:
-                app._control_warning = "Cloud refresh unavailable; showing cached and pending entries"
+                app._control_warning = toggl_today.REFRESH_WARNING
         return snapshot(app)
     if action not in {"start", "switch", "resume", "stop", "edit-current", "edit-entry"}:
         raise ControlError("Unknown action")
