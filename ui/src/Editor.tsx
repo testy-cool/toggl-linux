@@ -29,6 +29,7 @@ import {
   sameId,
   scope,
   timerMatches,
+  timerTitle,
 } from "./model";
 import type { Draft, Snapshot } from "./model";
 
@@ -124,7 +125,9 @@ export function Editor({
       : d.mode === "current"
         ? "Save keeps the same time interval."
         : d.mode === "new"
-          ? "Start a new interval with these details."
+          ? d.snapshot.state.tracking
+            ? `Stops “${timerTitle(d.snapshot)}” and starts a new interval with these details.`
+            : "Start a new interval with these details."
           : d.mode === "entry"
             ? "Corrects this entry without starting another timer."
             : d.mode === "task"

@@ -12,18 +12,28 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { TimeEntryRow } from "./TimeEntryRow";
+import { Item, ItemDescription } from "@/components/ui/item";
+import { clockRange, timeKeyForWork, todayLabel } from "./today";
+import type { Today, TodayRow } from "./today";
 import { workGroups, running } from "./model";
-import type { Command, Snapshot, Work, WorkGroup } from "./model";
+import type { Command, Snapshot, Work, WorkGroup, Entry } from "./model";
 
 type Node = {
   name: string;
   children?: string[];
   group?: WorkGroup;
   work?: Work;
+  row?: TodayRow;
+  hint?: string;
 };
 
 export function WorkTree({
   data,
+  today,
+  openEntry,
+  prepare,
+  saveTask,
   query,
   project,
   tasksOnly,
@@ -34,6 +44,10 @@ export function WorkTree({
   act,
 }: {
   data: Snapshot;
+  today: Today;
+  openEntry: (entry: Entry) => void;
+  prepare: (work: Work) => void;
+  saveTask: (work: Work) => void;
   query: string;
   project: string;
   tasksOnly: boolean;
@@ -59,18 +73,47 @@ export function WorkTree({
         group,
         children: group.works.map((w) => w.key),
       };
-      for (const work of group.works)
-        result[work.key] = { name: work.label, work };
+      for (const work of group.works) {
+        const rows = today.groups.get(timeKeyForWork(data, work))?.rows ?? [];
+        const children = rows.map((row) => `interval:${work.key}:${row.key}`);
+        result[work.key] = { name: work.label, work, children };
+        for (const row of rows)
+          result[`interval:${work.key}:${row.key}`] = {
+            name: `${clockRange(row)} · ${row.entry.description || work.label}`,
+            row,
+          };
+        if (!children.length) {
+          const id = `empty:${work.key}`;
+          children.push(id);
+          result[id] = {
+            name: "Today",
+            hint:
+              today.loaded && !today.incomplete
+                ? "No time today"
+                : "Today’s entries are not fully loaded. Use Refresh to load them.",
+          };
+        }
+      }
     }
     return result;
-  }, [groups]);
+  }, [groups, today, data]);
   // Keep browsing choices when searching, polling, or returning from the editor.
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const searchScope = query.trim().toLocaleLowerCase();
   const roots = nodes.root.children!;
+  const folders = useMemo(
+    () =>
+      Object.keys(nodes).filter((id) => id !== "root" && !!nodes[id].children),
+    [nodes],
+  );
   const expanded = useMemo(
-    () => roots.filter((id) => !collapsed[`${searchScope}:${id}`]),
-    [roots, collapsed, searchScope],
+    () =>
+      folders.filter((id) =>
+        nodes[id].group
+          ? !collapsed[`${searchScope}:${id}`]
+          : collapsed[`${searchScope}:${id}`] === false,
+      ),
+    [folders, nodes, collapsed, searchScope],
   );
   const tree = useTree<Node>({
     rootItemId: "root",
@@ -80,16 +123,12 @@ export function WorkTree({
       setCollapsed((previous) => ({
         ...previous,
         ...Object.fromEntries(
-          roots.map((id) => [`${searchScope}:${id}`, !next.includes(id)]),
+          folders.map((id) => [`${searchScope}:${id}`, !next.includes(id)]),
         ),
       }));
     },
     getItemName: (item) => item.getItemData()?.name ?? "",
-    isItemFolder: (item) => !!item.getItemData()?.group,
-    onPrimaryAction: (item) => {
-      const work = item.getItemData()?.work;
-      if (work && !busy) edit(work);
-    },
+    isItemFolder: (item) => !!item.getItemData()?.children,
     dataLoader: {
       getItem: (id) => nodes[id],
       getChildren: (id) => nodes[id]?.children ?? [],
@@ -98,7 +137,7 @@ export function WorkTree({
   });
   const structure = JSON.stringify([
     roots,
-    groups.map((g) => g.works.map((w) => w.key)),
+    Object.entries(nodes).map(([id, node]) => [id, node.children]),
     expanded,
   ]);
   useEffect(() => {
@@ -117,7 +156,7 @@ export function WorkTree({
       {tree.getItems().map((item) => {
         const node = nodes[item.getId()];
         if (!node) return null;
-        const { group, work } = node;
+        const { group, work, row, hint } = node;
         const active = !!work && running(data, work);
         return (
           <TreeItem key={item.getId()} item={item} asChild>
@@ -134,7 +173,13 @@ export function WorkTree({
                 }
               }}
             >
-              {group ? (
+              {row ? (
+                <TimeEntryRow row={row} busy={busy} edit={openEntry} />
+              ) : hint ? (
+                <Item size="xs">
+                  <ItemDescription>{hint}</ItemDescription>
+                </Item>
+              ) : group ? (
                 <>
                   <TreeItemLabel asChild>
                     <Button
@@ -176,10 +221,6 @@ export function WorkTree({
                         className="work-name"
                         disabled={busy}
                         aria-label={work.label}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          edit(work);
-                        }}
                       >
                         <span className="work-label">{work.label}</span>
                       </Button>
@@ -191,18 +232,21 @@ export function WorkTree({
                     ) : (
                       !work.task && <span className="work-kind">Recent</span>
                     )}
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      disabled={busy}
-                      aria-label={`Edit ${work.label}`}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        edit(work);
-                      }}
-                    >
-                      <Pencil />
-                    </Button>
+                    {(work.task || active) && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        disabled={busy}
+                        aria-label={`Edit ${work.label}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (work.task) rename(work);
+                          else edit(work);
+                        }}
+                      >
+                        <Pencil />
+                      </Button>
+                    )}
                     {work.task?.active === false ? (
                       <Button
                         variant="ghost"
@@ -251,7 +295,7 @@ export function WorkTree({
                         <Play />
                       </Button>
                     )}
-                    {work.task && (
+                    {
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button
@@ -269,30 +313,76 @@ export function WorkTree({
                           onClick={(event) => event.stopPropagation()}
                         >
                           <DropdownMenuGroup>
-                            <DropdownMenuItem onSelect={() => rename(work)}>
-                              Rename task
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onSelect={() =>
-                                act({
-                                  action: "task-update",
-                                  payload: {
-                                    context: data.project_context,
-                                    task: work.task,
-                                    name: work.task!.name,
-                                    active: work.task!.active === false,
-                                  },
-                                })
-                              }
-                            >
-                              {work.task.active === false
-                                ? "Restore task"
-                                : "Archive task"}
-                            </DropdownMenuItem>
+                            {!work.task && (
+                              <DropdownMenuItem onSelect={() => prepare(work)}>
+                                New timer with these details
+                              </DropdownMenuItem>
+                            )}
+                            {!work.task && (
+                              <DropdownMenuItem
+                                disabled={
+                                  data.task_capability === "unavailable" ||
+                                  work.project_id == null
+                                }
+                                onSelect={() => saveTask(work)}
+                              >
+                                Save as task
+                              </DropdownMenuItem>
+                            )}
+                            {!work.task && (
+                              <DropdownMenuItem
+                                onSelect={() =>
+                                  act({
+                                    action: "hide-activity",
+                                    payload: {
+                                      project_id: work.project_id,
+                                      description: work.description,
+                                      context: data.project_context,
+                                    },
+                                  })
+                                }
+                              >
+                                Hide suggestion
+                              </DropdownMenuItem>
+                            )}
+                            {work.task && (
+                              <DropdownMenuItem onSelect={() => rename(work)}>
+                                Rename task
+                              </DropdownMenuItem>
+                            )}
+                            {work.task && (
+                              <DropdownMenuItem
+                                onSelect={() =>
+                                  act({
+                                    action: "task-update",
+                                    payload: {
+                                      context: data.project_context,
+                                      task: work.task,
+                                      name: work.task!.name,
+                                      active: work.task!.active === false,
+                                    },
+                                  })
+                                }
+                              >
+                                {work.task.active === false
+                                  ? "Restore task"
+                                  : "Archive task"}
+                              </DropdownMenuItem>
+                            )}
                           </DropdownMenuGroup>
                         </DropdownMenuContent>
                       </DropdownMenu>
-                    )}
+                    }
+                    <span
+                      className="work-time"
+                      aria-label={`Today for ${work.label}`}
+                    >
+                      {todayLabel(
+                        today,
+                        today.groups.get(timeKeyForWork(data, work))?.seconds ??
+                          0,
+                      )}
+                    </span>
                   </>
                 )
               )}

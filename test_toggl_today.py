@@ -144,3 +144,44 @@ def test_deleted_entries_and_foreign_workspaces_do_not_enter_the_daily_cache():
                                                   interval(3,workspace_id='other')]):
         assert today.refresh(app)
     assert [entry['id'] for entry in today.cached(app)] == [1]
+
+
+def test_large_daily_entries_cannot_poison_polling_or_timer_commands():
+    rows = [interval(i, description=f'{i}'+'🧪'*9990) for i in range(80)]
+    with patch.object(app, 'api_get', return_value=rows):
+        assert today.refresh(app)
+    server = control.start_server(app)
+    try:
+        result = control.request(app.STATE_DIR, 'work-snapshot', {})
+        assert 0 < len(result['entries']) < len(rows)
+        assert result['today_incomplete']
+        assert len(control._json_bytes({'ok':True,'result':result})) < control.MAX_MESSAGE
+        assert len(today.cached(app)) == len(rows)
+        changed = control.request(app.STATE_DIR, 'edit-current', {'changes':{'description':'Still responsive'}})
+        assert changed['state']['description'] == 'Still responsive'
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_activity_identity_matches_across_case_and_whitespace_without_repeating_text():
+    row = interval(description=' BUILD  it ',task_id=None)
+    today.remember(app,row)
+    groups = [dict(id=None,name='No project',last_used=1,activities=[dict(description='Build it',last_used=1,count=1)])]
+    with patch.object(control.toggl_task_tree,'tree',return_value=groups):
+        value=control.dispatch(app,'work-snapshot',{})
+    key=value['activities'][0]['activities'][0]['key']
+    assert key==value['entries'][0]['_activity_key']
+    assert len(key)==64
+
+
+def test_next_day_fetches_again_instead_of_reusing_yesterdays_complete_flag():
+    date,start,end=today.window(app)
+    active=[date,start,end]
+    with patch.object(today,'window',side_effect=lambda _:tuple(active)), \
+         patch.object(app,'api_get',return_value=[]) as api:
+        assert today.refresh(app)
+        active[:]=[(start+timedelta(days=1)).date().isoformat(),start+timedelta(days=1),end+timedelta(days=1)]
+        assert today.status(app)['today_fetched_at'] is None
+        assert today.refresh(app)
+    assert api.call_count==2

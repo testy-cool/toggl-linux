@@ -65,13 +65,28 @@ def snapshot(app):
     warning = " · ".join(dict.fromkeys(message for message in warnings if message))
     freshness = toggl_today.status(app)
     freshness['today_incomplete'] = freshness['today_incomplete'] or bool(stale)
-    return {"state": current, "projects": app._cached_projects(), "tasks": app._cached_tasks(),
+    result = {"state": current, "projects": app._cached_projects(), "tasks": app._cached_tasks(),
             "task_capability": toggl_tasks.capability(app), "entries": entries,
             "pending_count": len(app._load_pending()), "warning": warning,
             "project_context": toggl_projects.context(app), "projects_url": toggl_projects.projects_url(app),
             "current_pending": current_pending[0] if len(current_pending) == 1 else None,
             "current_activity_key": toggl_today.activity_key(current.get('project_id'), current.get('description')),
             **freshness}
+    # Keep whole immutable entry selectors; a truncated description could target
+    # or overwrite a different interval. The cache still retains every record.
+    result['entries'] = []
+    budget = MAX_MESSAGE - len(_json_bytes({'ok': True, 'result': result})) - 65536
+    for entry in entries:
+        size = len(_json_bytes(entry)) + 2
+        if size <= budget:
+            result['entries'].append(entry)
+            budget -= size
+    omitted = len(entries) - len(result['entries'])
+    if omitted:
+        result['today_incomplete'] = True
+        result['warning'] = ' · '.join(filter(None, [result['warning'],
+            f"{omitted} daily entries exceed the response limit; today's totals are partial"]))
+    return result
 
 
 def _same_pending(source, selected):

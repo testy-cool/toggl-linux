@@ -36,13 +36,21 @@ export type Entry = {
   _pending_ids?: string[];
   _pending_kind?: string;
   _remote_entry_id?: Id | null;
+  _activity_key?: string;
+  _pending_missing?: string[];
 };
 export type Activity = {
+  key?: string;
   description: string;
   last_used: number;
   count: number;
 };
 export type Snapshot = {
+  today_date?: string;
+  today_fetched_at?: number | null;
+  today_incomplete?: boolean;
+  today_error?: string;
+  current_activity_key?: string;
   state: Timer;
   projects: Project[];
   tasks: Task[];
@@ -66,6 +74,7 @@ export type Snapshot = {
   warning: string;
 };
 export type Work = {
+  activity_key?: string;
   key: string;
   project_id: Id | null;
   description: string;
@@ -302,6 +311,7 @@ export function workItems(s: Snapshot, includeArchived = false): Work[] {
   const recent: Work[] = (s.activities ?? []).flatMap((p) =>
     p.activities.map((a) => ({
       key: `activity:${p.id}:${a.description}`,
+      activity_key: a.key,
       project_id: p.id,
       task_id: null,
       description: a.description,
@@ -359,6 +369,7 @@ export function workGroups(
   if (!tasksOnly && s.state.tracking && !all.some((w) => running(s, w))) {
     all.unshift({
       key: "current",
+      activity_key: s.current_activity_key,
       project_id: s.state.project_id,
       task_id: s.state.task_id,
       description: s.state.description ?? "",

@@ -1,18 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "cn";
-import { Clock3, Pencil, Play, Plus, RefreshCw, Square, X } from "lucide-react";
+import { Clock3, Plus, RefreshCw, Square, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Item,
-  ItemActions,
-  ItemContent,
-  ItemDescription,
-  ItemGroup,
-  ItemTitle,
-} from "@/components/ui/item";
+import { ItemGroup, ItemTitle } from "@/components/ui/item";
+import { TimeEntryRow } from "./TimeEntryRow";
+import { localDay, todayTotals, todayLabel, todayGroupLabel } from "./today";
 import {
   Empty,
   EmptyDescription,
@@ -33,7 +28,6 @@ import {
   projectName,
   running,
   sameId,
-  taskName,
   timerTitle,
   workGroups,
   pendingSource,
@@ -55,7 +49,9 @@ export default function WorkApp() {
   const writing = useRef(false);
   const reading = useRef(false);
   const mounted = useRef(true);
-  const todayLoaded = useRef(false);
+  const dailyAttempt = useRef("");
+  const todayReading = useRef(false);
+  const [loadingToday, setLoadingToday] = useState(false);
   const draftRef = useRef<Draft | null>(null);
   useEffect(() => {
     draftRef.current = draft;
@@ -138,16 +134,40 @@ export default function WorkApp() {
     },
     [poll],
   );
-  const changeTab = useCallback(
-    (value: string) => {
-      setTab(value);
-      if (value === "today" && !todayLoaded.current && !writing.current) {
-        todayLoaded.current = true;
-        void act({ action: "refresh", payload: {} });
+  const loadToday = useCallback(
+    async (manual = false) => {
+      if (todayReading.current) return;
+      todayReading.current = true;
+      setLoadingToday(true);
+      try {
+        await request(
+          manual ? "refresh" : "refresh-today",
+          manual ? { force: true } : {},
+        );
+      } catch (failure) {
+        if (mounted.current)
+          setError(
+            String(failure instanceof Error ? failure.message : failure),
+          );
+      } finally {
+        todayReading.current = false;
+        if (mounted.current) {
+          setLoadingToday(false);
+          void poll();
+        }
       }
     },
-    [act],
+    [poll],
   );
+  const changeTab = useCallback((value: string) => setTab(value), []);
+  const day = localDay(now);
+  useEffect(() => {
+    if (!data || draft || todayReading.current) return;
+    const key = JSON.stringify([data.project_context, day]);
+    if (dailyAttempt.current === key) return;
+    dailyAttempt.current = key;
+    if (data.today_date !== day || !data.today_fetched_at) void loadToday();
+  }, [data, draft, day, loadingToday, loadToday]);
   useEffect(() => {
     mounted.current = true;
     let stopped = false;
@@ -211,20 +231,10 @@ export default function WorkApp() {
       window.removeEventListener("keydown", key);
     };
   }, [data, draft, changeTab]);
-  useEffect(() => {
-    if (tab === "today" && !busy && !todayLoaded.current) changeTab("today");
-  }, [tab, busy, changeTab]);
-
   function openWork(work: Work) {
-    if (!data || busy) return;
+    if (!data || busy || !running(data, work)) return;
     setError("");
-    setDraft(
-      draftFor(
-        data,
-        running(data, work) ? "current" : work.task ? "task" : "new",
-        work,
-      ),
-    );
+    setDraft(draftFor(data, "current", work));
   }
   function openEntry(entry: Entry) {
     if (!data || busy) return;
@@ -252,14 +262,16 @@ export default function WorkApp() {
     ) ?? [];
   const needle = query.trim().toLocaleLowerCase();
   const groups = data ? workGroups(data, tab === "tasks", query, project) : [];
-  const entries =
-    data?.entries.filter(
-      (e) =>
-        (project === "all" || sameId(e.project_id, project)) &&
-        `${e.description} ${projectName(data, e.project_id)}`
-          .toLocaleLowerCase()
-          .includes(needle),
-    ) ?? [];
+  const totals = data ? todayTotals(data, now) : null;
+  const todayGroups = totals
+    ? [...totals.groups.values()].filter(
+        (group) =>
+          (project === "all" || sameId(group.project_id, project)) &&
+          `${todayGroupLabel(data!, group)} ${group.rows.map((row) => row.entry.description ?? "").join(" ")}`
+            .toLocaleLowerCase()
+            .includes(needle),
+      )
+    : [];
 
   return (
     <TooltipProvider>
@@ -462,8 +474,15 @@ export default function WorkApp() {
                 data-testid="work-list"
               >
                 <div hidden={!!draft || tab === "today"}>
+                  <div className="tree-column-heading">Today</div>
                   <WorkTree
                     data={data}
+                    today={totals!}
+                    openEntry={openEntry}
+                    prepare={(work) => setDraft(draftFor(data, "new", work))}
+                    saveTask={(work) =>
+                      setDraft(draftFor(data, "new-task", work))
+                    }
                     query={query}
                     project={project}
                     tasksOnly={tab === "tasks"}
@@ -480,61 +499,43 @@ export default function WorkApp() {
                   />
                 </div>
                 {tab === "today" && !draft && (
-                  <ItemGroup className="gap-1" aria-label="Today’s entries">
-                    {entries.map((entry) => (
-                      <Item key={String(entry.id)} size="sm">
-                        <ItemContent className="min-w-0">
-                          <ItemTitle>
-                            {entry.description ||
-                              taskName(data, entry.task_id) ||
-                              "No description"}
-                          </ItemTitle>
-                          <ItemDescription>
-                            {projectName(data, entry.project_id)} ·{" "}
-                            {new Date(entry.start).toLocaleTimeString([], {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
-                            {entry._offline ? " · Pending sync" : ""}
-                          </ItemDescription>
-                        </ItemContent>
-                        <ItemActions>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            aria-label={`Edit entry ${entry.description || "No description"}`}
-                            disabled={busy || !!draft}
-                            onClick={() => openEntry(entry)}
-                          >
-                            <Pencil />
-                          </Button>
-                          {entry.stop && (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              aria-label={`Resume ${entry.description || "No description"}`}
-                              disabled={busy || !!draft}
-                              onClick={() =>
-                                void act({
-                                  action: "resume",
-                                  payload: {
-                                    entry,
-                                    expected: data.state,
-                                    context: data.project_context,
-                                  },
-                                })
-                              }
-                            >
-                              <Play />
-                            </Button>
-                          )}
-                        </ItemActions>
-                      </Item>
+                  <ItemGroup className="gap-3" aria-label="Today’s entries">
+                    {todayGroups.map((group) => (
+                      <ItemGroup
+                        key={group.key}
+                        className="gap-1"
+                        aria-label={group.label}
+                      >
+                        <ItemTitle className="today-group-title">
+                          {todayGroupLabel(data, group)}
+                          <span className="work-time">
+                            {todayLabel(totals!, group.seconds)}
+                          </span>
+                        </ItemTitle>
+                        {group.rows.map((row) => (
+                          <TimeEntryRow
+                            key={row.key}
+                            row={row}
+                            busy={busy || !!draft}
+                            edit={openEntry}
+                            resume={(entry) =>
+                              void act({
+                                action: "resume",
+                                payload: {
+                                  entry,
+                                  expected: data.state,
+                                  context: data.project_context,
+                                },
+                              })
+                            }
+                          />
+                        ))}
+                      </ItemGroup>
                     ))}
                   </ItemGroup>
                 )}
                 {!draft &&
-                  (tab !== "today" ? groups : entries).length === 0 && (
+                  (tab !== "today" ? groups : todayGroups).length === 0 && (
                     <Empty>
                       <EmptyHeader>
                         <EmptyTitle>
@@ -549,7 +550,9 @@ export default function WorkApp() {
                             ? "Try another name or project."
                             : tab === "work"
                               ? "Start a timer to make it easy to return to your work."
-                              : "Refresh to load today’s entries."}
+                              : totals!.loaded
+                                ? "No time tracked today."
+                                : "Refresh to load today’s entries."}
                         </EmptyDescription>
                       </EmptyHeader>
                     </Empty>
@@ -557,17 +560,21 @@ export default function WorkApp() {
               </ScrollArea>
               <footer className="flex items-center justify-between gap-3">
                 <span className="text-xs text-muted-foreground">
+                  {loadingToday
+                    ? "Loading today’s time…"
+                    : data.today_error ||
+                      (!totals!.loaded
+                        ? "Today’s totals not loaded"
+                        : `${totals!.incomplete ? "Today incomplete" : `Today ${todayLabel(totals!, totals!.seconds)}`} · updated ${new Date(data.today_fetched_at! * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`)}
                   {data.pending_count
-                    ? `${data.pending_count} pending sync`
-                    : "No pending sync"}
+                    ? ` · ${data.pending_count} pending sync`
+                    : ""}
                 </span>
                 <Button
                   variant="ghost"
                   size="default"
-                  disabled={busy}
-                  onClick={() =>
-                    void act({ action: "refresh", payload: { force: true } })
-                  }
+                  disabled={loadingToday}
+                  onClick={() => void loadToday(true)}
                 >
                   <RefreshCw data-icon="inline-start" />
                   Refresh
