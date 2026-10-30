@@ -17,8 +17,8 @@ def test_native_tray_menu_opens_from_right_click_and_refreshes():
 
 
 def test_left_click_opens_the_project_task_popup_at_the_icon():
-    import toggl_tray_popup
+    import toggl_webview_launcher
     with patch.object(app.GLib, 'idle_add') as idle:
         app._on_native_status_icon_press(None, 2002, 40, 1, 0, 0)
         app._on_native_status_icon_press(None, 2002, 40, 3, 0, 0)
-    assert idle.call_args_list == [((toggl_tray_popup.toggle, app, 2002, 40),)]
+    assert idle.call_args_list == [((toggl_webview_launcher.show, app, 2002, 40, 'work', True),)]

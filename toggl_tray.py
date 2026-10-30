@@ -733,6 +733,7 @@ def _restored_stop_changes(op):
             or str(remote.get('id')) != str(op['entry_id'])
             or str(remote.get('workspace_id')) != str(op.get('workspace_id') or state.get('workspace_id'))):
         raise RestoredStopReviewError('Target or account changed; review the local changes')
+    op['_confirmed_entry'] = remote
     original = snapshot.get('fields') or {}
     review_all = snapshot.get('review_all_fields') is True
     data = {key: op[key] for key in ('description', 'project_id', 'task_id')
@@ -875,6 +876,15 @@ def _report_open_start_conflict(current, op):
     )
 
 
+def _remember_synced_interval(queue, op, remote):
+    # UI bookkeeping cannot turn a successful paid write into a duplicate retry.
+    try:
+        import toggl_control
+        toggl_control.record_pending_resolution(sys.modules[__name__], queue, op, remote)
+    except Exception:
+        toggl_debug.LOGGER.warning('Could not retain a synced interval for an open draft', exc_info=True)
+
+
 def sync_pending(retry_review=False):
     """Try to sync all pending actions. Returns number of remaining."""
     global rate_limited_until
@@ -911,6 +921,7 @@ def sync_pending(retry_review=False):
                                 state["workspace_id"] = current.get("workspace_id") or state.get("workspace_id")
                                 save_state()
                             synced_indexes.update(op["indexes"])
+                            _remember_synced_interval(queue, op, current)
                         else:
                             _report_open_start_conflict(current, op)
                     else:
@@ -929,6 +940,7 @@ def sync_pending(retry_review=False):
                             state["task_id"] = op.get("task_id")
                             save_state()
                         synced_indexes.update(op["indexes"])
+                        _remember_synced_interval(queue, op, entry)
                 except RateLimitedError as e:
                     rate_limited_until = time.monotonic() + e.retry_after
                     break
@@ -948,7 +960,8 @@ def sync_pending(retry_review=False):
 
                 if op["kind"] == "create":
                     payload = _completed_entry_payload(op, workspace_id)
-                    api_post(f"/workspaces/{workspace_id}/time_entries", payload)
+                    remote = api_post(f"/workspaces/{workspace_id}/time_entries", payload)
+                    _remember_synced_interval(queue, op, remote)
                 elif op["kind"] == "update_stop":
                     data = {"stop": op["stop_time"]}
                     if op.get("start_time"):
@@ -967,9 +980,13 @@ def sync_pending(retry_review=False):
                         if not data:
                             _append_event('restored_stop_already_ended', entry_id=op['entry_id'])
                             synced_indexes.update(op['indexes'])
+                            _remember_synced_interval(queue, op, op.get('_confirmed_entry'))
                             continue
                     try:
-                        update_entry(workspace_id, op["entry_id"], data, **auth)
+                        remote = update_entry(workspace_id, op["entry_id"], data, **auth)
+                        if not isinstance(remote, dict) or remote.get('id') is None:
+                            remote = dict(op.get('_confirmed_entry') or {}, id=op['entry_id'], workspace_id=workspace_id, **data)
+                        _remember_synced_interval(queue, op, remote)
                     except requests.exceptions.HTTPError as e:
                         status = e.response.status_code if e.response is not None else 0
                         if op.get('verify_running'):
@@ -978,7 +995,8 @@ def sync_pending(retry_review=False):
                             raise  # Missing/unsupported targets remain editable, never recreated.
                         if status in (404, 410) and op.get("start_time") and op.get("stop_time"):
                             payload = _completed_entry_payload(op, workspace_id)
-                            api_post(f"/workspaces/{workspace_id}/time_entries", payload)
+                            remote = api_post(f"/workspaces/{workspace_id}/time_entries", payload)
+                            _remember_synced_interval(queue, op, remote)
                         else:
                             raise
                 elif op["kind"] == "delete":
@@ -1530,8 +1548,8 @@ def _set_tray_menu(menu):
 
 def _on_native_status_icon_press(_icon, x, y, button, _time, _position):
     if button == 1:
-        import toggl_tray_popup
-        GLib.idle_add(toggl_tray_popup.toggle, sys.modules[__name__], x, y)
+        import toggl_webview_launcher
+        GLib.idle_add(toggl_webview_launcher.show, sys.modules[__name__], x, y, 'work', True)
 
 
 def _init_native_status_icon():
@@ -1896,8 +1914,8 @@ def on_toggle_panel_description(icon, item):
 
 
 def on_open_timer(icon, item):
-    import toggl_timer_window
-    GLib.idle_add(toggl_timer_window.show, sys.modules[__name__])
+    import toggl_webview_launcher
+    GLib.idle_add(toggl_webview_launcher.show, sys.modules[__name__], None, None, 'timer')
 
 
 def on_toggle(icon, item):
@@ -2227,8 +2245,13 @@ def on_manage_projects(_icon, _item):
 
 
 def on_open_task_popup(_icon, _item):
-    import toggl_tray_popup
-    GLib.idle_add(toggl_tray_popup.toggle_at_pointer, sys.modules[__name__])
+    import toggl_webview_launcher
+    GLib.idle_add(toggl_webview_launcher.show, sys.modules[__name__])
+
+
+def on_open_today(_icon, _item):
+    import toggl_webview_launcher
+    GLib.idle_add(toggl_webview_launcher.show, sys.modules[__name__], None, None, 'today')
 
 
 def _tray_project_items():
@@ -2282,9 +2305,9 @@ def build_menu():
             checked=lambda _item: get_panel_description_enabled(),
         ),
         pystray.MenuItem(toggle_label, on_toggle),
-        pystray.MenuItem("Edit description...", on_set_description),
+        pystray.MenuItem("Edit description...", on_open_timer),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Today's entries", on_view_today),
+        pystray.MenuItem("Today's entries", on_open_today),
         pystray.MenuItem("Doctor", on_doctor),
         pystray.MenuItem("Audit today", on_audit_today),
         pystray.Menu.SEPARATOR,
@@ -2606,6 +2629,8 @@ def main():
     finally:
         stop_event.set()
         _sync_wakeup.set()
+        import toggl_webview_launcher
+        toggl_webview_launcher.stop()
         watchdog.stop()
         control_server.shutdown()
         control_server.server_close()

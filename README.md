@@ -41,7 +41,7 @@ The tray icon shows the Toggl logo in the **running project's colour** while tra
 On Debian/Ubuntu/Linux Mint:
 
 ```bash
-sudo apt install libgirepository-2.0-dev gir1.2-ayatanaappindicator3-0.1 gir1.2-xapp-1.0 libsecret-tools
+sudo apt install libgirepository-2.0-dev gir1.2-ayatanaappindicator3-0.1 gir1.2-xapp-1.0 libsecret-tools gir1.2-webkit2-4.1
 ```
 
 On Fedora:
@@ -316,7 +316,41 @@ Choose **Open Timer** in the tray to edit the project, real task, description, a
 
 Use **Resume Recent Activity** in the timer window, or **Start Again** on a completed Today entry in Vicinae, to return to earlier work. The previous description, project, task, and workspace are copied into a new interval when the saved task is still active; a running timer is stopped first. Today's cached and pending entries are supported, including offline. Resume never changes the earlier interval.
 
-### Quick project and task selection from the tray
+### Work window
+
+Left-click opens an offline HTML/CSS work window built with React, ReUI and shadcn.
+The timer, queue, API credentials and sync remain in the Python tray process. A
+separate pywebview process talks only to its private control socket. Closing the
+window hides it, so reopening preserves search, scroll and any unfinished draft.
+The current timer stays visible while browsing; editing happens in the same window.
+**Open timer** and **Edit description** open this window's editor directly.
+**Today's entries** opens its Today tab. Stop keeps an unfinished description
+attached to the completed interval so it can still be saved without restarting.
+Drafts keep their edits when offline sync assigns a cloud ID. Escape hides the
+window and preserves the draft, just like its close button.
+Entry edits include start and stop times. Older pending intervals without a cloud
+baseline require explicit approval of every displayed field before saving.
+
+The prebuilt interface in `toggl_web_assets/` ships with the Python source. Node
+is needed only to develop or rebuild it:
+
+```bash
+npm ci --prefix ui
+npm test --prefix ui
+npm run build --prefix ui
+```
+
+The web engine is WebKit2GTK 4.1 on Linux. If the engine or bundle cannot start,
+the tray keeps working and opens its GTK compatibility interface; details go to
+the private `~/.local/share/toggl-tray/work-ui.log` and normal debug log. No API
+token is passed to the UI process. The asset server serves only the compiled UI
+directory; the window uses no CDN, remote scripts or remote fonts.
+
+CI builds and checks the shipped bundle, then exercises real React/WebKit against
+private offline state under Xvfb using `scripts/webview_smoke.py`. It covers starting,
+editing the same interval, stopping, and computed font sizes and overflow.
+
+### GTK compatibility panel
 
 Left-click the tray icon to open a small window under it. Projects contain real
 OpenTickly tasks; choosing one starts it with a blank description. Historical

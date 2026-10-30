@@ -37,7 +37,8 @@ def _private_paths(tmp_path):
 @pytest.fixture(autouse=True)
 def reset_state(tmp_path):
     """Reset global state before each test, with private files and no network."""
-    patches = _private_paths(tmp_path)+[patch.object(socket.socket, "connect", _local_only_connect)]
+    patches = _private_paths(tmp_path)+[patch.object(socket.socket, "connect", _local_only_connect),
+                                      patch.object(toggl_tray, "_play_sound")]
     for p in patches:
         p.start()
     try:
@@ -63,6 +64,7 @@ def reset_state(tmp_path):
         toggl_tray._control_entries = []
         toggl_tray._control_entries_date = ""
         toggl_tray._control_warning = ""
+        toggl_tray._pending_resolutions = []
         toggl_tray._control_refreshed_at = None
         toggl_tray._control_forced_at = None
         toggl_tray._last_cloud_poll_at = 0.0
