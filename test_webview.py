@@ -225,6 +225,7 @@ def test_cloud_time_corrections_send_consistent_duration_and_keep_timer_state(ru
     app._control_entries_date = now.astimezone().date().isoformat()
     app.state.update(tracking=running, entry_id=99 if running else None,
                      workspace_id=1, start_time=original_start if running else None)
+    app._control_entries_context = dict(control.toggl_projects.context(app), origin=app.get_api_base())
     changes = {'start': start}
     with patch.object(app, 'update_entry') as update:
         control.dispatch(app, 'edit-entry', {'entry': dict(entry), 'changes': changes})

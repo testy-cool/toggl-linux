@@ -203,3 +203,12 @@ def test_returning_to_an_account_during_a_read_cannot_overwrite_new_local_work()
         today.refresh(app)
     assert today.cached(app)[0]['stop'] is not None
     assert today.cached(app)[0]['description']=='New stop after returning'
+
+
+def test_overnight_duration_only_cloud_entries_are_included_with_their_original_selector():
+    _,midnight,_=today.window(app)
+    row=interval(start=midnight-timedelta(minutes=30))
+    row.update(stop=None,duration=3600)
+    with patch.object(app,'api_get',return_value=[row]):assert today.refresh(app)
+    assert today.cached(app)[0]['stop'] is None
+    assert control.snapshot(app)['entries'][0]['duration']==3600

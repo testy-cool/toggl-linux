@@ -581,6 +581,7 @@ def _clear_remote_ids():
 def switch_api_base(value):
     """Change provider without carrying credentials, ids, or project metadata across origins."""
     global api_token, _project_cache, _task_cache, _task_capability, _last_project_refresh_attempt, _last_tray_icon_path
+    global _today_cache, _today_attempt, _control_entries, _control_entries_date, _control_entries_context
     if os.environ.get(API_BASE_ENV):
         raise ValueError(f"Unset {API_BASE_ENV} before saving a different API base")
     api_base = set_api_base(value)
@@ -591,6 +592,11 @@ def switch_api_base(value):
     _task_capability = "unknown"
     _last_project_refresh_attempt = None
     _last_tray_icon_path = None
+    _today_cache = None
+    _today_attempt = None
+    _control_entries = []
+    _control_entries_date = ''
+    _control_entries_context = None
     return api_base, pending_ids
 
 
@@ -798,6 +804,7 @@ def _pending_operations(queue):
                     "verify_running": item.get('_verify_running', False),
                     "verify_snapshot": item.get('_verify_snapshot'),
                     "review_error": item.get('_review_error'),
+                    "_task_id_known": item.get('_task_id_known', False),
                     "start_time": item.get("start_time"),
                     "stop_time": stop_time,
                     "duration": _duration_seconds(item.get("start_time"), stop_time),
@@ -1193,7 +1200,8 @@ def _pending_entries_from_queue(queue, date_obj=None):
             "_pending_ids": pending_ids,
             "_task_context": queue[op["indexes"][0]].get("_task_context"),
             "_pending_kind": op["kind"],
-            "_pending_missing": [key for key in ('project_id', 'task_id') if key not in op]
+            "_pending_missing": [key for key in ('project_id', 'task_id') if key not in op
+                and not (key == 'task_id' and op.get('_task_id_known'))]
                 if op['kind'] == 'update_stop' else [],
             "_remote_entry_id": op.get("entry_id"),
             "_review_error": op.get('review_error'),
@@ -1669,7 +1677,7 @@ def toggle_tracking(*_args, prompt_for_description=True):
                     print("Stop rate limited, queuing locally", file=sys.stderr)
                     _notify(_local_save_reason("stop"))
                     queued = dict(entry_id=entry_id, start_time=start_time, stop_time=now,
-                                  description=description, project_id=project_id, workspace_id=workspace_id)
+                                  description=description, project_id=project_id, workspace_id=workspace_id, _task_id_known=True)
                     if task_id is not None:
                         queued["task_id"] = task_id
                     queue_action("stop", **queued)
@@ -1677,14 +1685,14 @@ def toggle_tracking(*_args, prompt_for_description=True):
                     print(f"Stop failed, queuing offline: {e}", file=sys.stderr)
                     _notify(_local_save_reason("stop"))
                     queued = dict(entry_id=entry_id, start_time=start_time, stop_time=now,
-                                  description=description, project_id=project_id, workspace_id=workspace_id)
+                                  description=description, project_id=project_id, workspace_id=workspace_id, _task_id_known=True)
                     if task_id is not None:
                         queued["task_id"] = task_id
                     queue_action("stop", **queued)
             else:
                 _notify(_local_save_reason("stop"))
                 queued = dict(entry_id=entry_id, start_time=start_time, stop_time=now,
-                              description=description, project_id=project_id, workspace_id=workspace_id)
+                              description=description, project_id=project_id, workspace_id=workspace_id, _task_id_known=True)
                 if task_id is not None:
                     queued["task_id"] = task_id
                 queue_action("stop", **queued)

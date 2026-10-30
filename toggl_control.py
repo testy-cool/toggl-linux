@@ -28,10 +28,7 @@ class ControlError(Exception):
 
 
 def _cached_entries(app, context):
-    tag = getattr(app, '_control_entries_context', None)
-    legacy = (getattr(app, '_control_entries', [])
-              if getattr(app, '_control_entries_date', '') == app.datetime.now().date().isoformat()
-              and (tag is None or tag.get('account') == context['account']) else [])
+    legacy = toggl_today.legacy_entries(app, context)
     scoped = toggl_today.cached(app) or []
     return list({(str(e.get('workspace_id')), str(e.get('id'))): e for e in [*legacy, *scoped]}.values())
 
@@ -133,12 +130,7 @@ def record_pending_resolution(app, queue, op, remote):
     _update_resolution_entries(records, entry, context)
     app._pending_resolutions = (records + [dict(source=dict(source), entry=entry, context=context)
                                          for source in sources])[-1024:]
-    if app._entry_local_date(entry) == app.datetime.now().date():
-        today = app.datetime.now().date().isoformat()
-        cached = getattr(app, '_control_entries', []) if getattr(app, '_control_entries_date', '') == today else []
-        app._control_entries = [item for item in cached if item.get('id') != entry['id']] + [entry]
-        app._control_entries_date = today
-        toggl_today.remember(app, entry)
+    toggl_today.remember(app, entry, scope=context)
 
 
 def _pending_resolution(app, selected):
@@ -334,15 +326,7 @@ def _edit_entry(app, selected, changes, reviewed_interval=False):
             raise ControlError("Cloud entry cannot be edited right now; retry when connected")
         app.update_entry(entry.get("workspace_id") or app.state["workspace_id"], entry["id"], changes)
         toggl_task_tree.correct(app, dict(entry), changes)
-        entry.update(changes)
-        with app.pending_lock:
-            _update_resolution_entries(getattr(app, '_pending_resolutions', []), entry, toggl_projects.context(app))
-        toggl_today.remember(app, entry)
-        if app.state.get("entry_id") == entry["id"]:
-            with app.state_lock:
-                app.state.update({('start_time' if k == 'start' else k): v for k, v in changes.items()
-                                  if k in {'description', 'project_id', 'task_id', 'start'}})
-                app.save_state()
+        record_edit(app, entry, changes)
 
 
 def _resume_entry(app, selected):
@@ -517,9 +501,6 @@ def _dispatch(app, action, payload):
                  "task_id": current.get("task_id"),
                  "start": current["start_time"], "stop": None,
                  "duration": -int(app._coerce_datetime(current["start_time"]).timestamp())}
-        cache = getattr(app, "_control_entries", [])
-        app._control_entries = [e for e in cache if e.get("id") != entry["id"]] + [entry]
-        app._control_entries_date = app.datetime.now().date().isoformat()
         toggl_today.remember(app, entry)
     if app.icon_ref:
         app.GLib.idle_add(_refresh_ui, app)
@@ -533,17 +514,44 @@ def record_stop(app, entry_id, start, description, workspace_id, project_id, tas
     """Keep cached durations correct when stopping through any tray path."""
     if not entry_id or not start:
         return
-    today = app.datetime.now().date().isoformat()
     entry = {"id": entry_id, "workspace_id": workspace_id, "project_id": project_id,
              "task_id": task_id, "description": description, "start": start, "stop": stop,
              "duration": app._duration_seconds(start, stop)}
     with app.pending_lock:
-        cache = getattr(app, "_control_entries", []) if getattr(app, "_control_entries_date", "") == today else []
         context = toggl_projects.context(app)
         _update_resolution_entries(getattr(app, '_pending_resolutions', []), entry, context)
-        app._control_entries = [e for e in cache if e.get("id") != entry_id] + [entry]
-        app._control_entries_date = today
-        toggl_today.remember(app, entry)
+        toggl_today.remember(app, entry, scope=context)
+
+
+def record_edit(app, original, changes, scope=None):
+    with app.toggle_lock:
+        scope = scope or toggl_projects.context(app)
+        if scope != toggl_projects.context(app):
+            return
+        updated = dict(original, **changes)
+        with app.pending_lock:
+            _update_resolution_entries(getattr(app, '_pending_resolutions', []), updated, scope)
+            toggl_today.remember(app, updated, scope=scope)
+            with app.state_lock:
+                if (str(app.state.get('entry_id')) == str(original.get('id'))
+                        and str(app.state.get('workspace_id')) == str(original.get('workspace_id'))):
+                    app.state.update({('start_time' if k == 'start' else k): v for k,v in changes.items()
+                                      if k in {'description','project_id','task_id','start'}})
+                    app.save_state()
+
+
+def record_delete(app, entry, scope=None):
+    with app.toggle_lock:
+        scope = scope or toggl_projects.context(app)
+        if scope != toggl_projects.context(app):
+            return
+        with app.pending_lock:
+            toggl_today.forget(app, entry, scope=scope)
+            with app.state_lock:
+                if (str(app.state.get('entry_id')) == str(entry.get('id'))
+                        and str(app.state.get('workspace_id')) == str(entry.get('workspace_id'))):
+                    app.state.update(tracking=False, entry_id=None, start_time=None)
+                    app.save_state()
 
 
 def _refresh_ui(app):
@@ -575,7 +583,10 @@ def start_server(app):
 
     previous_mask = os.umask(0o177)
     try:
-        server = socketserver.UnixStreamServer(str(path), Handler)
+        # Every mutation uses toggle_lock; reads can wait on HTTP independently.
+        class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+            pass
+        server = Server(str(path), Handler)
     finally:
         os.umask(previous_mask)
     os.chmod(path, 0o600)

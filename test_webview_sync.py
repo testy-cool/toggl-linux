@@ -128,7 +128,7 @@ def test_confirmed_yesterday_entry_stays_editable_after_it_leaves_the_queue():
     control.dispatch(app,'stop',{})
     selected=app._pending_as_entries()[0]
     confirm_completed()
-    assert control.snapshot(app)['entries'] == []
+    assert any(entry['id']==802 for entry in control.snapshot(app)['entries'])
     with patch.object(app,'update_entry') as update:
         control.dispatch(app,'edit-entry',{'entry':selected,'context':original['project_context'],
                                            'changes':{'description':'Yesterday draft preserved'}})

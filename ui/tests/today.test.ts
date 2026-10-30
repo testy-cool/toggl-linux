@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { todayTotals, localDay, todayLabel, timeKeyForWork } from '../src/today.ts';
+import { workItems } from '../src/model.ts';
 import type { Entry, Snapshot } from '../src/model.ts';
 
 const now = new Date(2026,9,30,14).getTime();
@@ -64,7 +65,7 @@ test('foreign workspaces and old days do not inflate today', () => {
   assert.equal(todayTotals(s,now).seconds,3600);
 });
 test('an unmatched open pending interval is incomplete, never an ever-growing total', () => {
-  const s=snapshot(entry('pending:old',stamp(9),null,{_offline:true}));
+  const s=snapshot(entry('pending:old',stamp(9),null,{_offline:true,duration:-1}));
   const totals=todayTotals(s,now);
   assert.equal(totals.seconds,0);assert.equal(totals.incomplete,true);
   assert.equal(todayLabel(totals,0),'—');
@@ -92,4 +93,17 @@ test('DST days use local midnights rather than a fixed 24-hour subtraction', () 
       assert.equal(todayTotals(s,end-1).seconds,hours*3600-1);
     }
   } finally { if(old===undefined)delete process.env.TZ;else process.env.TZ=old; }
+});
+test('canonical spelling variants occupy one work row and show the daily total once', () => {
+  const s=snapshot();
+  s.activities=[{id:6,name:'Studio',last_used:2,activities:[
+    {key:'canonical',description:'Build',last_used:1,count:1},
+    {key:'canonical',description:'BUILD',last_used:2,count:1},
+  ]}];
+  const recent=workItems(s).filter(w=>!w.task);
+  assert.equal(recent.length,1);assert.equal(recent[0].description,'BUILD');
+});
+test('legacy completed duration-only entries count without pretending to be running', () => {
+  const totals=todayTotals(snapshot(entry(1,stamp(9),null,{duration:3600})),now);
+  assert.equal(totals.seconds,3600);assert.equal(totals.incomplete,false);
 });

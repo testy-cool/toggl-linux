@@ -308,7 +308,7 @@ export function afterOwnStop(draft: Draft, result: Snapshot): Draft {
 }
 
 export function workItems(s: Snapshot, includeArchived = false): Work[] {
-  const recent: Work[] = (s.activities ?? []).flatMap((p) =>
+  const candidates: Work[] = (s.activities ?? []).flatMap((p) =>
     p.activities.map((a) => ({
       key: `activity:${p.id}:${a.description}`,
       activity_key: a.key,
@@ -319,6 +319,29 @@ export function workItems(s: Snapshot, includeArchived = false): Work[] {
       recent: a.last_used,
     })),
   );
+  const unique = new Map<string, Work>();
+  for (let work of candidates) {
+    if (
+      s.state.tracking &&
+      s.state.task_id == null &&
+      work.activity_key &&
+      work.activity_key === s.current_activity_key &&
+      sameId(work.project_id, s.state.project_id)
+    ) {
+      work = {
+        ...work,
+        description: s.state.description ?? "",
+        label: s.state.description || "No description",
+      };
+    }
+    const key = work.activity_key
+      ? `activity:${work.project_id}:${work.activity_key}`
+      : work.key;
+    const previous = unique.get(key);
+    if (!previous || work.recent > previous.recent || running(s, work))
+      unique.set(key, { ...work, key });
+  }
+  const recent = [...unique.values()];
   const tasks: Work[] = s.tasks
     .filter(
       (t) =>

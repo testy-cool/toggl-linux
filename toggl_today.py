@@ -1,6 +1,7 @@
 """Scoped daily entry cache; cloud reads never hold the timer mutation lock."""
 from datetime import datetime, timedelta
 import hashlib
+import math
 import threading
 import time
 
@@ -32,6 +33,10 @@ def overlaps(app, entry, current=None):
         stopped = app._parse_iso(entry.get('stop'))
         if began is None or began.tzinfo is None:
             return False
+        duration = entry.get('duration')
+        if (stopped is None and isinstance(duration, (int, float))
+                and math.isfinite(duration) and duration >= 0):
+            stopped = began + timedelta(seconds=duration)
         if stopped is None:
             return began < end and (began >= start or (current and current.get('tracking')
                 and began == app._parse_iso(current.get('start_time'))
@@ -49,11 +54,12 @@ def _cache(app):
     value = getattr(app, '_today_cache', None)
     day, _, _ = window(app)
     context = toggl_projects.context(app)
-    return value if value and value['date'] == day and value['context'] == context else None
+    return value if (value and value['date'] == day and value['context'] == context
+                     and value.get('origin') == app.get_api_base()) else None
 
 
 def _empty(app):
-    return dict(date=window(app)[0], context=toggl_projects.context(app), entries=[],
+    return dict(date=window(app)[0], context=toggl_projects.context(app), origin=app.get_api_base(), entries=[],
                 fetched_at=None, incomplete=False, error='', version=0, changes={})
 
 
@@ -70,14 +76,27 @@ def status(app):
                     today_incomplete=value['incomplete'], today_error=value['error'])
 
 
-def remember(app, entry):
+def legacy_entries(app, scope=None):
+    scope = scope or toggl_projects.context(app)
+    tag = getattr(app, '_control_entries_context', None)
+    if (not isinstance(tag, dict) or tag.get('origin') != app.get_api_base()
+            or getattr(app, '_control_entries_date', '') != window(app)[0]
+            or scope['account'] is not None and tag.get('account') != scope['account']):
+        return []
+    return list(getattr(app, '_control_entries', []))
+
+
+def remember(app, entry, deleted=False, scope=None):
     """Retain local stops and corrections across a concurrent read response."""
     if not entry.get('id'):
         return
     with _cache_lock:
+        if scope is not None and scope != toggl_projects.context(app):
+            return
+        scope = toggl_projects.context(app)
         value = _cache(app) or _empty(app)
         entries = [e for e in value['entries'] if _key(e) != _key(entry)]
-        included = overlaps(app, entry, app.state)
+        included = not deleted and overlaps(app, entry, app.state)
         if included:
             entries.append(dict(entry))
         value['version'] += 1
@@ -85,6 +104,23 @@ def remember(app, entry):
             dict(entry) if included else None)
         value['entries'] = entries
         app._today_cache = value
+        legacy = [e for e in legacy_entries(app, scope) if _key(e) != _key(entry)]
+        if included:
+            legacy.append(dict(entry))
+        app._control_entries = legacy
+        app._control_entries_date = value['date']
+        app._control_entries_context = dict(scope, origin=app.get_api_base())
+
+
+def forget(app, entry, scope=None):
+    selected = dict(entry, id=entry.get('_remote_entry_id') or entry.get('id'))
+    remember(app, selected, deleted=True, scope=scope)
+    if entry.get('_offline') and entry.get('_remote_entry_id'):
+        with _cache_lock:
+            value = _cache(app)
+            if value:
+                value.update(fetched_at=None, incomplete=True,
+                             error="Refresh today's totals after discarding local changes")
 
 
 def refresh(app, force=False):
@@ -148,13 +184,11 @@ def refresh(app, force=False):
                 latest.update(entries=list(incoming.values()), fetched_at=time.time(),
                               incomplete=len(response) >= MAX_ENTRIES, error='', changes={})
                 app._today_cache = latest
-                other = [e for e in getattr(app, '_control_entries', [])
-                         if getattr(app, '_control_entries_date', '') == day
-                         and getattr(app, '_control_entries_context', None) in (None, scope)
-                         and str(e.get('workspace_id')) != str(scope['workspace_id'])]
+                other = [e for e in legacy_entries(app, scope)
+                         if str(e.get('workspace_id')) != str(scope['workspace_id'])]
                 app._control_entries = other + list(latest['entries'])
                 app._control_entries_date = day
-                app._control_entries_context = scope
+                app._control_entries_context = dict(scope, origin=base)
         return True
     finally:
         _refresh_lock.release()

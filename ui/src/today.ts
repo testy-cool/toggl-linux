@@ -69,7 +69,7 @@ export const clockRange = (row: TodayRow) => {
     hour: "2-digit",
     minute: "2-digit",
   };
-  return `${new Date(row.from).toLocaleTimeString([], options)}–${row.entry.stop ? new Date(row.to).toLocaleTimeString([], options) : "now"}`;
+  return `${new Date(row.from).toLocaleTimeString([], options)}–${row.entry.stop || row.entry.duration >= 0 ? new Date(row.to).toLocaleTimeString([], options) : "now"}`;
 };
 
 export function todayTotals(s: Snapshot, now: number): Today {
@@ -158,12 +158,22 @@ export function todayTotals(s: Snapshot, now: number): Today {
       continue;
     }
     const from = Math.max(midnight, Date.parse(entry.start));
-    const to = Math.min(end, now, entry.stop ? Date.parse(entry.stop) : now);
+    const durationOnly =
+      !entry.stop && Number.isFinite(entry.duration) && entry.duration >= 0;
+    const to = Math.min(
+      end,
+      now,
+      entry.stop
+        ? Date.parse(entry.stop)
+        : durationOnly
+          ? Date.parse(entry.start) + entry.duration * 1000
+          : now,
+    );
     if (!Number.isFinite(from) || !Number.isFinite(to)) {
       result.incomplete = true;
       continue;
     }
-    if (!entry.stop && key !== "current") {
+    if (!entry.stop && !durationOnly && key !== "current") {
       result.incomplete = true;
       continue;
     }
