@@ -323,6 +323,12 @@ The timer, queue, API credentials and sync remain in the Python tray process. A
 separate pywebview process talks only to its private control socket. Closing the
 window hides it, so reopening preserves search, scroll and any unfinished draft.
 The current timer stays visible while browsing; editing happens in the same window.
+Work and Tasks show an expanded project tree, with 16px project and task names.
+Click a name or its pencil to edit, or the play button to start. Recent activities
+are labeled **Recent**; the current row is labeled **Running**. Collapse a project
+with its arrow; search reveals matches without losing your browsing choices.
+The plus beside a project creates a task in that project. A running timer uses a
+compact row; when stopped, the tree begins directly below search and navigation.
 **Open timer** and **Edit description** open this window's editor directly.
 **Today's entries** opens its Today tab. Stop keeps an unfinished description
 attached to the completed interval so it can still be saved without restarting.
@@ -345,6 +351,10 @@ the tray keeps working and opens its GTK compatibility interface; details go to
 the private `~/.local/share/toggl-tray/work-ui.log` and normal debug log. No API
 token is passed to the UI process. The asset server serves only the compiled UI
 directory; the window uses no CDN, remote scripts or remote fonts.
+
+The project tree, status badges, editor frames and alerts use ReUI. Controls,
+menus, tabs, scrolling and Today's entry list use shadcn components. Application
+code supplies layout, grouping and the Python bridge.
 
 CI builds and checks the shipped bundle, then exercises real React/WebKit against
 private offline state under Xvfb using `scripts/webview_smoke.py`. It covers starting,

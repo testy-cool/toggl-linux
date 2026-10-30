@@ -119,10 +119,13 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             assert bridge._ready.wait(20), 'JavaScript bridge never became ready'
             until(lambda: window.native.get_mapped())
             until(lambda: js("document.body.textContent.includes('Improve navigation')"))
+            click('Studio')
+            until(lambda: js("!Array.from(document.querySelectorAll('button')).some(b=>b.getAttribute('aria-label')==='Start Improve navigation')"))
+            click('Studio')
             click('Start Improve navigation')
             until(lambda: app.state['tracking'] and app.state['task_id'] == 31)
             started = app.state['start_time']
-            until(lambda: js("document.body.textContent.includes('Running now')"))
+            until(lambda: js("!!document.querySelector('[data-testid=current-timer]')"))
             picture('work-panel.png')
             click('Edit running timer')
             until(lambda: js("!!document.getElementById('work-description')"))
@@ -137,6 +140,8 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             if isinstance(metrics, str):
                 metrics = json.loads(metrics)
             assert metrics['minFont'] >= 12 and not metrics['overflow'], metrics
+            assert js("parseFloat(getComputedStyle(document.querySelector('.work-name')).fontSize)") >= 16
+            assert js("document.querySelector('[data-testid=current-timer]').getBoundingClientRect().height") <= 64
             click('Edit running timer')
             until(lambda: js("!!document.getElementById('work-description')"))
             choose('Project', 'Research')
