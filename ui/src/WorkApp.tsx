@@ -185,11 +185,13 @@ export default function WorkApp() {
     const key = (event: KeyboardEvent) => {
       if (
         event.key === "Escape" &&
+        !event.isComposing &&
+        !event.defaultPrevented &&
         !writing.current &&
         !document.querySelector('[role="listbox"], [role="menu"]')
       ) {
-        if (draft) setDraft(null);
-        else void host().then((bridge) => bridge.close());
+        event.preventDefault();
+        void host().then((bridge) => bridge.close());
       }
     };
     window.addEventListener("keydown", key);

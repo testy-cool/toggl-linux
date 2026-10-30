@@ -15,6 +15,11 @@ MAX_MESSAGE = 2 * 1024 * 1024
 MAX_COMMAND = 256 * 1024  # A 10,000-character Unicode description plus its guarded original.
 
 
+def _json_bytes(value):
+    # Keep ordinary Unicode compact while escaping legacy unpaired surrogates.
+    return json.dumps(value, ensure_ascii=False).encode('utf-8', errors='backslashreplace')
+
+
 class ControlError(Exception):
     pass
 
@@ -50,11 +55,11 @@ def _work_snapshot(app):
     for group in groups:
         group['activities'] = []
     result.update(activities=groups, activities_omitted=0)
-    budget = MAX_MESSAGE - len(json.dumps({'ok': True, 'result': result}, ensure_ascii=False).encode()) - 1024
+    budget = MAX_MESSAGE - len(_json_bytes({'ok': True, 'result': result})) - 1024
     candidates = sorted(((activity, index) for index, group in enumerate(history)
                          for activity in group['activities']), key=lambda item: -item[0]['last_used'])
     for activity, index in candidates:
-        size = len(json.dumps(activity, ensure_ascii=False).encode()) + 2
+        size = len(_json_bytes(activity)) + 2
         if size <= budget:
             groups[index]['activities'].append(activity)
             budget -= size
@@ -237,8 +242,7 @@ def _dispatch(app, action, payload):
     if action == "snapshot":
         return snapshot(app)
     if action == 'work-snapshot':
-        with app.toggle_lock:
-            return _work_snapshot(app)
+        return _work_snapshot(app)
     if action == 'hide-activity':
         with app.toggle_lock:
             if payload.get('context') != toggl_projects.context(app):
@@ -412,7 +416,7 @@ def start_server(app):
                 response = {"ok": True, "result": result}
             except Exception as error:
                 response = {"ok": False, "error": str(error)[:500]}
-            self.wfile.write(json.dumps(response, ensure_ascii=False).encode() + b"\n")
+            self.wfile.write(_json_bytes(response) + b"\n")
 
     previous_mask = os.umask(0o177)
     try:

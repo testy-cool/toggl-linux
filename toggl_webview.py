@@ -1,6 +1,7 @@
 """Isolated HTML work window. All timer/account writes go through the tray socket."""
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 import threading
@@ -14,7 +15,7 @@ ACTIONS = frozenset({'work-snapshot', 'refresh', 'sync', 'start', 'switch', 'res
 
 
 class Bridge:
-    def __init__(self, state_dir, managed=False, mode='work'):
+    def __init__(self, state_dir, managed=False, mode='work', ready_fd=None):
         self._state_dir = Path(state_dir)
         self._window = None
         self._managed = managed
@@ -22,6 +23,7 @@ class Bridge:
         self._ready = threading.Event()
         self._quitting = False
         self._visible = False
+        self._ready_fd = ready_fd
 
     def command(self, action, payload=None):
         """One bounded, allowlisted bridge; JavaScript cannot select a socket or file."""
@@ -34,6 +36,14 @@ class Bridge:
 
     def ready(self):
         self._ready.set()
+        fd, self._ready_fd = self._ready_fd, None
+        if fd is not None:
+            try:
+                os.write(fd, b'ready\n')
+            except OSError:
+                pass
+            finally:
+                os.close(fd)
         return {'mode': self._mode}
 
     def close(self):
@@ -62,7 +72,7 @@ class Bridge:
                     if message.get('toggle') and self._visible:
                         self.close()
                         continue
-                    self._window.move(int(message['x']), int(message['y']))
+                    move_window(self._window, int(message['x']), int(message['y']))
                     self._window.show()
                     self._visible = True
                     if message.get('mode') == 'timer':
@@ -76,6 +86,12 @@ class Bridge:
             self._window.destroy()
 
 
+def move_window(window, x, y):
+    from gi.repository import GLib
+    # pywebview's GTK move() adds monitor 0's origin; tray coordinates are absolute.
+    GLib.idle_add(window.native.move, x, y)
+
+
 def create_window(bridge, *, x=None, y=None, width=600, height=780):
     import webview
     index = ASSETS / 'index.html'
@@ -84,13 +100,15 @@ def create_window(bridge, *, x=None, y=None, width=600, height=780):
     # Relative local content starts pywebview's static server at this asset directory,
     # never at the repository or the user-data folder.
     window = webview.create_window('Toggl Work', str(index), js_api=bridge,
-                                    width=width, height=height, x=x, y=y,
+                                    width=width, height=height,
                                     min_size=(360, 480), resizable=True,
                                     frameless=True, easy_drag=False, hidden=False,
                                     background_color='#17191d', text_select=True)
     bridge._window = window
     bridge._visible = True
     window.events.closing += bridge._closing
+    if x is not None and y is not None:
+        window.events.shown += lambda: move_window(window, x, y)
     return window
 
 
@@ -103,8 +121,9 @@ def main():
     parser.add_argument('--y', type=int)
     parser.add_argument('--width', type=int, default=600)
     parser.add_argument('--height', type=int, default=780)
+    parser.add_argument('--ready-fd', type=int)
     args = parser.parse_args()
-    bridge = Bridge(args.state_dir, args.managed, args.mode)
+    bridge = Bridge(args.state_dir, args.managed, args.mode, args.ready_fd)
     create_window(bridge, x=args.x, y=args.y, width=args.width, height=args.height)
     import webview
     webview.settings['ALLOW_DOWNLOADS'] = False

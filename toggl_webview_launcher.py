@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import select
 from pathlib import Path
 import subprocess
 import sys
@@ -44,6 +45,9 @@ class Launcher:
         self.process = None
         self.lock = threading.Lock()
         self.stopping = False
+        self.failed_process = None
+        self.ready_process = None
+        self.requested = None
 
     def show(self, mode, toggle, geometry):
         root = Path(__file__).resolve().parent
@@ -51,6 +55,7 @@ class Launcher:
             self._fallback(mode, geometry)
             return
         with self.lock:
+            self.requested = (mode, geometry)
             if self.process is not None and self.process.poll() is None:
                 try:
                     self.process.stdin.write(json.dumps(dict(action='show', mode=mode, toggle=toggle, **geometry))+'\n')
@@ -68,17 +73,56 @@ class Launcher:
             fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
             os.fchmod(fd, 0o600)
             with os.fdopen(fd, 'a') as output:
-                self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=output, stderr=subprocess.STDOUT,
-                                                cwd=root, env=environment, text=True, start_new_session=True)
+                read_fd, write_fd = os.pipe()
+                try:
+                    self.process = subprocess.Popen(command+['--ready-fd', str(write_fd)],
+                                                    stdin=subprocess.PIPE, stdout=output, stderr=subprocess.STDOUT,
+                                                    pass_fds=(write_fd,), cwd=root, env=environment,
+                                                    text=True, start_new_session=True)
+                except OSError as error:
+                    os.close(read_fd)
+                    toggl_debug.LOGGER.error('Work window could not start: %s', error)
+                    self.app.GLib.idle_add(self._fallback_current, self.process, mode, geometry)
+                    return
+                finally:
+                    os.close(write_fd)
             self.stopping = False
             process = self.process
             threading.Thread(target=self._watch, args=(process, mode, geometry), daemon=True).start()
+            threading.Thread(target=self._wait_for_ready, args=(process, read_fd, mode, geometry), daemon=True).start()
 
     def _watch(self, process, mode, geometry):
         code = process.wait()
-        if code and not self.stopping and self.process is process:
-            toggl_debug.LOGGER.error('Work window exited with status %s; see work-ui.log', code)
-            self.app.GLib.idle_add(self._fallback, mode, geometry)
+        self._recover(process, mode, geometry, f'exited with status {code}')
+
+    def _wait_for_ready(self, process, fd, mode, geometry, timeout=35):
+        try:
+            if select.select([fd], [], [], timeout)[0] and os.read(fd, 32) == b'ready\n':
+                with self.lock:
+                    self.ready_process = process
+                return
+            with self.lock:
+                if self.stopping or self.process is not process:
+                    return
+                if process.poll() is None:
+                    process.terminate()
+            self._recover(process, mode, geometry, 'did not become ready')
+        finally:
+            os.close(fd)
+
+    def _recover(self, process, mode, geometry, reason):
+        with self.lock:
+            if self.stopping or self.process is not process or self.failed_process is process:
+                return
+            self.failed_process = process
+        toggl_debug.LOGGER.error('Work window %s; see work-ui.log', reason)
+        self.app.GLib.idle_add(self._fallback_current, process, mode, geometry)
+
+    def _fallback_current(self, process, mode, geometry):
+        if not self.stopping and self.process is process:
+            mode, geometry = self.requested or (mode, geometry)
+            return self._fallback(mode, geometry)
+        return False
 
     def _fallback(self, mode, geometry):
         toggl_debug.LOGGER.warning('Web interface unavailable; using the GTK compatibility window')
@@ -100,6 +144,8 @@ class Launcher:
                     self.process.stdin.close()
                 except OSError:
                     pass
+                if self.ready_process is not self.process and self.process.poll() is None:
+                    self.process.terminate()
 
 
 def show(app, x=None, y=None, mode='work', toggle=False):
