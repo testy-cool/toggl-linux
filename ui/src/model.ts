@@ -341,6 +341,70 @@ export const running = (s: Snapshot, w: Work) =>
   sameId(s.state.task_id, w.task_id) &&
   (w.task != null ||
     (s.state.description ?? "").trim() === w.description.trim());
+
+export type WorkGroup = {
+  id: Id | null;
+  name: string;
+  color?: string;
+  works: Work[];
+};
+
+export function workGroups(
+  s: Snapshot,
+  tasksOnly = false,
+  query = "",
+  project = "all",
+): WorkGroup[] {
+  const all = workItems(s, tasksOnly).filter((w) => !tasksOnly || !!w.task);
+  if (!tasksOnly && s.state.tracking && !all.some((w) => running(s, w))) {
+    all.unshift({
+      key: "current",
+      project_id: s.state.project_id,
+      task_id: s.state.task_id,
+      description: s.state.description ?? "",
+      label: timerTitle(s),
+      recent: Infinity,
+    });
+  }
+  const groups = new Map<string, WorkGroup>();
+  for (const p of s.projects) {
+    if (sameId(p.workspace_id, s.state.workspace_id) && p.active !== false)
+      groups.set(String(p.id), {
+        id: p.id,
+        name: p.name,
+        color: p.color,
+        works: [],
+      });
+  }
+  for (const work of all) {
+    const key = String(work.project_id ?? "none");
+    if (!groups.has(key))
+      groups.set(key, {
+        id: work.project_id,
+        name:
+          s.activities?.find((p) => sameId(p.id, work.project_id))?.name ??
+          projectName(s, work.project_id),
+        works: [],
+      });
+    groups.get(key)!.works.push(work);
+  }
+  const needle = query.trim().toLocaleLowerCase();
+  return [...groups.values()]
+    .filter((g) => project === "all" || sameId(g.id, project))
+    .map((g) => ({
+      ...g,
+      works: g.works.filter((w) =>
+        `${g.name} ${w.label}`.toLocaleLowerCase().includes(needle),
+      ),
+    }))
+    .filter(
+      (g) =>
+        !needle ||
+        !!g.works.length ||
+        g.name.toLocaleLowerCase().includes(needle),
+    );
+}
+
 export function draftFor(
   s: Snapshot,
   mode: Mode,

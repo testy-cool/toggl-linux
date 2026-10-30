@@ -71,6 +71,10 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
         js(f"const input = document.getElementById('work-description'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,{json.dumps(value)}); input.dispatchEvent(new Event('input',{{bubbles:true}}));")
         until(lambda: js(f"document.getElementById('work-description')?.value === {json.dumps(value)}"))
 
+    def search(value):
+        js(f"const input=document.querySelector('input[aria-label=\"Search work\"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,{json.dumps(value)}); input.dispatchEvent(new Event('input',{{bubbles:true}}));")
+        until(lambda: js(f"document.querySelector('input[aria-label=\"Search work\"]').value === {json.dumps(value)}"))
+
     def choose(label, value):
         js(f"document.querySelector('button[role=combobox][aria-label={label}]').dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',bubbles:true}}))")
         until(lambda: js("!!document.querySelector('[role=option]')"))
@@ -119,10 +123,38 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             assert bridge._ready.wait(20), 'JavaScript bridge never became ready'
             until(lambda: window.native.get_mapped())
             until(lambda: js("document.body.textContent.includes('Improve navigation')"))
+            click('Studio')
+            until(lambda: js("!Array.from(document.querySelectorAll('button')).some(b=>b.getAttribute('aria-label')==='Start Improve navigation')"))
+            search('Research')
+            until(lambda: js("document.querySelector('[role=treeitem][tabindex=\"0\"]')?.getAttribute('aria-label') === 'Research'"))
+            js("window.treeErrors=[];window.addEventListener('error',e=>window.treeErrors.push(e.message));document.querySelector('[role=treeitem][aria-label=Research]').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',code:'ArrowRight',bubbles:true}))")
+            assert js('window.treeErrors.length') == 0
+            search('Improve')
+            until(lambda: js("!!Array.from(document.querySelectorAll('button')).find(b=>b.getAttribute('aria-label')==='Start Improve navigation')"))
+            search('')
+            until(lambda: js("!Array.from(document.querySelectorAll('button')).some(b=>b.getAttribute('aria-label')==='Start Improve navigation')"))
+            click('Studio')
+            click('New task in Research')
+            until(lambda: js("document.querySelector('button[aria-label=Project]')?.textContent.trim()==='Research'"))
+            click('Cancel')
+            until(lambda: js("!!document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]')"))
+            js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))")
+            until(lambda: js("!!document.getElementById('work-description')"))
+            click('Cancel')
+            code="Array.from(document.querySelectorAll('button')).find(b=>b.getAttribute('aria-label')==='More actions for Improve navigation')"
+            until(lambda: js(f'Boolean({code})'))
+            js(f"({code}).dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',bubbles:true}}))")
+            until(lambda: js("!!document.querySelector('[role=menu]')"))
+            js("document.querySelector('[role=menu]').click()")
+            assert not js("!!document.getElementById('work-description')")
+            js("document.querySelector('[role=menu]').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))")
+            until(lambda: js("!document.querySelector('[role=menu]')"))
             click('Start Improve navigation')
             until(lambda: app.state['tracking'] and app.state['task_id'] == 31)
             started = app.state['start_time']
-            until(lambda: js("document.body.textContent.includes('Running now')"))
+            until(lambda: js("!!document.querySelector('[data-testid=current-timer]')"))
+            js("const b=Array.from(document.querySelectorAll('button')).find(b=>b.getAttribute('aria-label')==='Improve navigation is running');const r=b.getBoundingClientRect();document.elementFromPoint(r.x+r.width/2,r.y+r.height/2).click()")
+            assert not js("!!document.getElementById('work-description')")
             picture('work-panel.png')
             click('Edit running timer')
             until(lambda: js("!!document.getElementById('work-description')"))
@@ -137,6 +169,8 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             if isinstance(metrics, str):
                 metrics = json.loads(metrics)
             assert metrics['minFont'] >= 12 and not metrics['overflow'], metrics
+            assert js("parseFloat(getComputedStyle(document.querySelector('.work-name')).fontSize)") >= 16
+            assert js("document.querySelector('[data-testid=current-timer]').getBoundingClientRect().height") <= 64
             click('Edit running timer')
             until(lambda: js("!!document.getElementById('work-description')"))
             choose('Project', 'Research')

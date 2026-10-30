@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { afterOwnStop, commandFor, contextMatches, draftFor, localTime, running, workItems, isCurrentEntry, rebaseSyncedDraft, samePending } from '../src/model.ts'
+import { afterOwnStop, commandFor, contextMatches, draftFor, localTime, running, workItems, workGroups, isCurrentEntry, rebaseSyncedDraft, samePending } from '../src/model.ts'
 import type { Snapshot } from '../src/model.ts'
 
 const sample = (): Snapshot => ({
@@ -8,6 +8,32 @@ const sample = (): Snapshot => ({
   projects: [{id: 6, workspace_id: 1, name: 'Studio', active: true}, {id: 7, workspace_id: 1, name: 'Research', active: true}],
   tasks: [{id: 31, workspace_id: 1, project_id: 6, name: 'Saved task', active: true}],
   entries: [], activities: [], project_context: {account: 'fixture', workspace_id: 1}, task_capability: 'supported', pending_count: 0, warning: '',
+})
+test('the tree groups by project ID and keeps empty projects available', () => {
+  const data = sample()
+  data.projects[1].name = 'Studio'
+  data.tasks.push({...data.tasks[0],id:32,project_id:7})
+  data.projects.push({id:8,workspace_id:1,name:'Empty project'})
+  data.activities = [{id:null,name:'No project',last_used:1,activities:[{description:'Admin',last_used:1,count:1}]}]
+  const groups = workGroups(data)
+  assert.deepEqual(groups.map(g=>[g.id,g.works.map(w=>w.key)]), [
+    [6,['task:31']], [7,['task:32']], [8,[]], [null,['activity:null:Admin']],
+  ])
+})
+test('tree search keeps the parent and reveals matches without mixing projects', () => {
+  const groups = workGroups(sample(),false,'saved','6')
+  assert.equal(groups.length,1)
+  assert.equal(groups[0].name,'Studio')
+  assert.deepEqual(groups[0].works.map(w=>w.key),['task:31'])
+  assert.equal(workGroups(sample(),false,'saved','7').length,0)
+})
+test('the running interval appears even before its activity is cached', () => {
+  const data=sample()
+  data.state.task_id=null
+  const work=workGroups(data)[0].works.find(w=>w.key==='current')!
+  assert.ok(running(data,work))
+  assert.equal(draftFor(data,'current',work).snapshot.state.entry_id,11)
+  assert.ok(workGroups(data,true).every(g=>g.works.every(w=>!!w.task)))
 })
 test('description edits keep the exact interval, task and start seconds', () => {
   const data = sample()

@@ -1,16 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "cn";
-import {
-  Check,
-  Clock3,
-  MoreHorizontal,
-  Pencil,
-  Play,
-  Plus,
-  RefreshCw,
-  Square,
-  X,
-} from "lucide-react";
+import { Clock3, Pencil, Play, Plus, RefreshCw, Square, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -24,13 +14,6 @@ import {
   ItemTitle,
 } from "@/components/ui/item";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
   Empty,
   EmptyDescription,
   EmptyHeader,
@@ -38,13 +21,8 @@ import {
 } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/reui/alert";
-import {
-  Frame,
-  FrameHeader,
-  FrameTitle,
-  FramePanel,
-} from "@/components/reui/frame";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { WorkTree } from "./WorkTree";
 import { Editor, Choice } from "./Editor";
 import { host, request } from "./api";
 import {
@@ -57,7 +35,7 @@ import {
   sameId,
   taskName,
   timerTitle,
-  workItems,
+  workGroups,
   pendingSource,
   rebaseSyncedDraft,
   isCurrentEntry,
@@ -273,16 +251,7 @@ export default function WorkApp() {
         sameId(p.workspace_id, data.state.workspace_id) && p.active !== false,
     ) ?? [];
   const needle = query.trim().toLocaleLowerCase();
-  const works = data
-    ? workItems(data, tab === "tasks").filter(
-        (w) =>
-          (tab !== "tasks" || !!w.task) &&
-          (project === "all" || sameId(w.project_id, project)) &&
-          `${w.label} ${projectName(data, w.project_id)}`
-            .toLocaleLowerCase()
-            .includes(needle),
-      )
-    : [];
+  const groups = data ? workGroups(data, tab === "tasks", query, project) : [];
   const entries =
     data?.entries.filter(
       (e) =>
@@ -299,11 +268,11 @@ export default function WorkApp() {
           <div className="pywebview-drag-region flex min-w-0 flex-1 items-center gap-3">
             <Clock3 aria-hidden="true" className="app-mark" />
             <span className="font-semibold">Toggl</span>
-            <span className="min-w-0 truncate text-sm text-muted-foreground">
-              {draft && data?.state.tracking
-                ? `${projectName(data, data.state.project_id)} · ${elapsed(data.state, now)}`
-                : "Work timer"}
-            </span>
+            {draft && data?.state.tracking && (
+              <span className="current-project truncate">
+                {elapsed(data.state, now)} · {timerTitle(data)}
+              </span>
+            )}
           </div>
           {draft && data?.state.tracking && (
             <Button
@@ -364,78 +333,41 @@ export default function WorkApp() {
                   <AlertDescription>{data.warning}</AlertDescription>
                 </Alert>
               )}
-              {!draft && (
-                <Frame variant="ghost" dense>
-                  <FrameHeader>
-                    <FrameTitle>
-                      <span className="text-muted-foreground">
-                        {data.state.tracking
-                          ? "Running now"
-                          : "Ready when you are"}
-                      </span>
-                    </FrameTitle>
-                  </FrameHeader>
-                  <FramePanel>
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="min-w-0">
-                        <div className="elapsed" aria-label="Elapsed time">
-                          {elapsed(data.state, now)}
-                        </div>
-                        <h1 className="work-title">
-                          {data.state.tracking
-                            ? timerTitle(data)
-                            : "What’s next?"}
-                        </h1>
-                        <p className="text-sm text-muted-foreground">
-                          {data.state.tracking
-                            ? `${projectName(data, data.state.project_id)}${data.state.task_id != null && data.state.description ? ` · ${taskName(data, data.state.task_id)}` : ""}`
-                            : "Choose recent work or start a new timer."}
-                        </p>
-                      </div>
-                      <div className="flex shrink-0 gap-2">
-                        {data.state.tracking ? (
-                          <>
-                            <Button
-                              variant="secondary"
-                              size="icon"
-                              disabled={busy || !!draft}
-                              aria-label="Edit running timer"
-                              onClick={() =>
-                                setDraft(draftFor(data, "current"))
-                              }
-                            >
-                              <Pencil />
-                            </Button>
-                            <Button
-                              variant="destructive"
-                              disabled={busy || !!draft}
-                              onClick={() =>
-                                void act({
-                                  action: "stop",
-                                  payload: {
-                                    expected: data.state,
-                                    context: data.project_context,
-                                  },
-                                })
-                              }
-                            >
-                              <Square data-icon="inline-start" />
-                              Stop
-                            </Button>
-                          </>
-                        ) : (
-                          <Button
-                            disabled={busy || !!draft}
-                            onClick={() => setDraft(draftFor(data, "new"))}
-                          >
-                            <Plus data-icon="inline-start" />
-                            New timer
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-                  </FramePanel>
-                </Frame>
+              {!draft && data.state.tracking && (
+                <div className="current-timer" data-testid="current-timer">
+                  <Button
+                    variant="ghost"
+                    className="current-work"
+                    disabled={busy}
+                    aria-label="Edit running timer"
+                    onClick={() => setDraft(draftFor(data, "current"))}
+                  >
+                    <span className="current-description">
+                      {timerTitle(data)}
+                    </span>
+                    <span className="current-project">
+                      {projectName(data, data.state.project_id)}
+                    </span>
+                  </Button>
+                  <span className="elapsed" aria-label="Elapsed time">
+                    {elapsed(data.state, now)}
+                  </span>
+                  <Button
+                    variant="destructive"
+                    disabled={busy}
+                    onClick={() =>
+                      void act({
+                        action: "stop",
+                        payload: {
+                          expected: data.state,
+                          context: data.project_context,
+                        },
+                      })
+                    }
+                  >
+                    <Square data-icon="inline-start" /> Stop
+                  </Button>
+                </div>
               )}
               {draft && (
                 <Editor
@@ -465,7 +397,7 @@ export default function WorkApp() {
               )}
               {!draft && (
                 <>
-                  <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="work-toolbar flex flex-wrap items-center justify-between gap-2">
                     <Tabs value={tab} onValueChange={changeTab}>
                       <TabsList>
                         <TabsTrigger value="work">Work</TabsTrigger>
@@ -500,7 +432,7 @@ export default function WorkApp() {
                   <div className="search-row">
                     <Input
                       aria-label="Search work"
-                      placeholder="Search your work…"
+                      placeholder="Search projects, tasks, and recent work…"
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
                     />
@@ -525,211 +457,103 @@ export default function WorkApp() {
               <ScrollArea
                 className={cn(
                   "work-list flex-1",
-                  draft ? "min-h-0" : "min-h-24",
+                  draft ? "hidden" : "min-h-24",
                 )}
                 data-testid="work-list"
               >
-                <ItemGroup
-                  className="gap-1"
-                  aria-label={
-                    tab !== "today" ? "Available work" : "Today’s entries"
-                  }
-                >
-                  {tab !== "today"
-                    ? works.map((work) => (
-                        <Item
-                          key={work.key}
-                          size="sm"
-                          variant={running(data, work) ? "muted" : "default"}
-                        >
-                          <ItemContent className="min-w-0">
-                            <ItemTitle className="max-w-full">
-                              {work.label}
-                            </ItemTitle>
-                            <ItemDescription>
-                              {projectName(data, work.project_id)}
-                              {work.task
-                                ? work.task.active === false
-                                  ? " · Archived task"
-                                  : " · Saved task"
-                                : ""}
-                            </ItemDescription>
-                          </ItemContent>
-                          <ItemActions>
+                <div hidden={!!draft || tab === "today"}>
+                  <WorkTree
+                    data={data}
+                    query={query}
+                    project={project}
+                    tasksOnly={tab === "tasks"}
+                    busy={busy || !!draft}
+                    edit={openWork}
+                    rename={(work) => setDraft(draftFor(data, "task", work))}
+                    createTask={(group) =>
+                      setDraft({
+                        ...draftFor(data, "new-task"),
+                        project: String(group.id),
+                      })
+                    }
+                    act={(command) => void act(command)}
+                  />
+                </div>
+                {tab === "today" && !draft && (
+                  <ItemGroup className="gap-1" aria-label="Today’s entries">
+                    {entries.map((entry) => (
+                      <Item key={String(entry.id)} size="sm">
+                        <ItemContent className="min-w-0">
+                          <ItemTitle>
+                            {entry.description ||
+                              taskName(data, entry.task_id) ||
+                              "No description"}
+                          </ItemTitle>
+                          <ItemDescription>
+                            {projectName(data, entry.project_id)} ·{" "}
+                            {new Date(entry.start).toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                            {entry._offline ? " · Pending sync" : ""}
+                          </ItemDescription>
+                        </ItemContent>
+                        <ItemActions>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label={`Edit entry ${entry.description || "No description"}`}
+                            disabled={busy || !!draft}
+                            onClick={() => openEntry(entry)}
+                          >
+                            <Pencil />
+                          </Button>
+                          {entry.stop && (
                             <Button
                               variant="ghost"
                               size="icon"
-                              aria-label={`Edit ${work.label}`}
+                              aria-label={`Resume ${entry.description || "No description"}`}
                               disabled={busy || !!draft}
-                              onClick={() => openWork(work)}
+                              onClick={() =>
+                                void act({
+                                  action: "resume",
+                                  payload: {
+                                    entry,
+                                    expected: data.state,
+                                    context: data.project_context,
+                                  },
+                                })
+                              }
                             >
-                              <Pencil />
+                              <Play />
                             </Button>
-                            {work.task?.active === false ? (
-                              <Button
-                                variant="ghost"
-                                size="default"
-                                disabled={busy || !!draft}
-                                onClick={() =>
-                                  void act({
-                                    action: "task-update",
-                                    payload: {
-                                      context: data.project_context,
-                                      task: work.task,
-                                      name: work.task!.name,
-                                      active: true,
-                                    },
-                                  })
-                                }
-                              >
-                                Restore
-                              </Button>
-                            ) : (
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                aria-label={
-                                  running(data, work)
-                                    ? `${work.label} is running`
-                                    : `Start ${work.label}`
-                                }
-                                disabled={
-                                  busy || !!draft || running(data, work)
-                                }
-                                onClick={() =>
-                                  void act({
-                                    action: "switch",
-                                    payload: {
-                                      changes: {
-                                        project_id: work.project_id,
-                                        task_id: work.task_id,
-                                        description: work.description,
-                                      },
-                                      expected: data.state,
-                                      context: data.project_context,
-                                    },
-                                  })
-                                }
-                              >
-                                {running(data, work) ? <Check /> : <Play />}
-                              </Button>
-                            )}
-                            {work.task && (
-                              <DropdownMenu>
-                                <DropdownMenuTrigger asChild>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    aria-label={`More actions for ${work.label}`}
-                                    disabled={busy || !!draft}
-                                  >
-                                    <MoreHorizontal />
-                                  </Button>
-                                </DropdownMenuTrigger>
-                                <DropdownMenuContent align="end">
-                                  <DropdownMenuGroup>
-                                    <DropdownMenuItem
-                                      onSelect={() =>
-                                        setDraft(draftFor(data, "task", work))
-                                      }
-                                    >
-                                      Rename task
-                                    </DropdownMenuItem>
-                                    <DropdownMenuItem
-                                      onSelect={() =>
-                                        void act({
-                                          action: "task-update",
-                                          payload: {
-                                            context: data.project_context,
-                                            task: work.task,
-                                            name: work.task!.name,
-                                            active: work.task!.active === false,
-                                          },
-                                        })
-                                      }
-                                    >
-                                      {work.task!.active === false
-                                        ? "Restore task"
-                                        : "Archive task"}
-                                    </DropdownMenuItem>
-                                  </DropdownMenuGroup>
-                                </DropdownMenuContent>
-                              </DropdownMenu>
-                            )}
-                          </ItemActions>
-                        </Item>
-                      ))
-                    : entries.map((entry) => (
-                        <Item key={String(entry.id)} size="sm">
-                          <ItemContent className="min-w-0">
-                            <ItemTitle>
-                              {entry.description ||
-                                taskName(data, entry.task_id) ||
-                                "No description"}
-                            </ItemTitle>
-                            <ItemDescription>
-                              {projectName(data, entry.project_id)} ·{" "}
-                              {new Date(entry.start).toLocaleTimeString([], {
-                                hour: "2-digit",
-                                minute: "2-digit",
-                              })}
-                              {entry._offline ? " · Pending sync" : ""}
-                            </ItemDescription>
-                          </ItemContent>
-                          <ItemActions>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              aria-label={`Edit entry ${entry.description || "No description"}`}
-                              disabled={busy || !!draft}
-                              onClick={() => openEntry(entry)}
-                            >
-                              <Pencil />
-                            </Button>
-                            {entry.stop && (
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                aria-label={`Resume ${entry.description || "No description"}`}
-                                disabled={busy || !!draft}
-                                onClick={() =>
-                                  void act({
-                                    action: "resume",
-                                    payload: {
-                                      entry,
-                                      expected: data.state,
-                                      context: data.project_context,
-                                    },
-                                  })
-                                }
-                              >
-                                <Play />
-                              </Button>
-                            )}
-                          </ItemActions>
-                        </Item>
-                      ))}
-                </ItemGroup>
-                {(tab !== "today" ? works : entries).length === 0 && (
-                  <Empty>
-                    <EmptyHeader>
-                      <EmptyTitle>
-                        {query
-                          ? "No matching work"
-                          : tab === "work"
-                            ? "A fresh start"
-                            : "No entries to show"}
-                      </EmptyTitle>
-                      <EmptyDescription>
-                        {query
-                          ? "Try another name or project."
-                          : tab === "work"
-                            ? "Start a timer to make it easy to return to your work."
-                            : "Refresh to load today’s entries."}
-                      </EmptyDescription>
-                    </EmptyHeader>
-                  </Empty>
+                          )}
+                        </ItemActions>
+                      </Item>
+                    ))}
+                  </ItemGroup>
                 )}
+                {!draft &&
+                  (tab !== "today" ? groups : entries).length === 0 && (
+                    <Empty>
+                      <EmptyHeader>
+                        <EmptyTitle>
+                          {query
+                            ? "No matching work"
+                            : tab === "work"
+                              ? "A fresh start"
+                              : "No entries to show"}
+                        </EmptyTitle>
+                        <EmptyDescription>
+                          {query
+                            ? "Try another name or project."
+                            : tab === "work"
+                              ? "Start a timer to make it easy to return to your work."
+                              : "Refresh to load today’s entries."}
+                        </EmptyDescription>
+                      </EmptyHeader>
+                    </Empty>
+                  )}
               </ScrollArea>
               <footer className="flex items-center justify-between gap-3">
                 <span className="text-xs text-muted-foreground">
