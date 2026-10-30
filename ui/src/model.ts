@@ -36,13 +36,21 @@ export type Entry = {
   _pending_ids?: string[];
   _pending_kind?: string;
   _remote_entry_id?: Id | null;
+  _activity_key?: string;
+  _pending_missing?: string[];
 };
 export type Activity = {
+  key?: string;
   description: string;
   last_used: number;
   count: number;
 };
 export type Snapshot = {
+  today_date?: string;
+  today_fetched_at?: number | null;
+  today_incomplete?: boolean;
+  today_error?: string;
+  current_activity_key?: string;
   state: Timer;
   projects: Project[];
   tasks: Task[];
@@ -66,6 +74,7 @@ export type Snapshot = {
   warning: string;
 };
 export type Work = {
+  activity_key?: string;
   key: string;
   project_id: Id | null;
   description: string;
@@ -299,9 +308,10 @@ export function afterOwnStop(draft: Draft, result: Snapshot): Draft {
 }
 
 export function workItems(s: Snapshot, includeArchived = false): Work[] {
-  const recent: Work[] = (s.activities ?? []).flatMap((p) =>
+  const candidates: Work[] = (s.activities ?? []).flatMap((p) =>
     p.activities.map((a) => ({
       key: `activity:${p.id}:${a.description}`,
+      activity_key: a.key,
       project_id: p.id,
       task_id: null,
       description: a.description,
@@ -309,6 +319,29 @@ export function workItems(s: Snapshot, includeArchived = false): Work[] {
       recent: a.last_used,
     })),
   );
+  const unique = new Map<string, Work>();
+  for (let work of candidates) {
+    if (
+      s.state.tracking &&
+      s.state.task_id == null &&
+      work.activity_key &&
+      work.activity_key === s.current_activity_key &&
+      sameId(work.project_id, s.state.project_id)
+    ) {
+      work = {
+        ...work,
+        description: s.state.description ?? "",
+        label: s.state.description || "No description",
+      };
+    }
+    const key = work.activity_key
+      ? `activity:${work.project_id}:${work.activity_key}`
+      : work.key;
+    const previous = unique.get(key);
+    if (!previous || work.recent > previous.recent || running(s, work))
+      unique.set(key, { ...work, key });
+  }
+  const recent = [...unique.values()];
   const tasks: Work[] = s.tasks
     .filter(
       (t) =>
@@ -359,6 +392,7 @@ export function workGroups(
   if (!tasksOnly && s.state.tracking && !all.some((w) => running(s, w))) {
     all.unshift({
       key: "current",
+      activity_key: s.current_activity_key,
       project_id: s.state.project_id,
       task_id: s.state.task_id,
       description: s.state.description ?? "",
@@ -405,6 +439,13 @@ export function workGroups(
     );
 }
 
+export function entryEnd(entry?: Entry): string | null {
+  if (!entry || entry.stop) return entry?.stop ?? null;
+  if (!Number.isFinite(entry.duration) || entry.duration < 0) return null;
+  const end = new Date(Date.parse(entry.start) + entry.duration * 1000);
+  return Number.isFinite(end.getTime()) ? end.toISOString() : null;
+}
+
 export function draftFor(
   s: Snapshot,
   mode: Mode,
@@ -426,7 +467,7 @@ export function draftFor(
     start: localTime(
       mode === "entry" ? (entry?.start ?? null) : s.state.start_time,
     ),
-    stop: localTime(mode === "entry" ? (entry?.stop ?? null) : null),
+    stop: localTime(mode === "entry" ? entryEnd(entry) : null),
     reviewed: false,
     pending:
       (mode === "current" || mode === "new") &&
@@ -483,7 +524,7 @@ export function commandFor(d: Draft, asTask = false): Command {
     if (d.mode === "entry") {
       if (d.start !== localTime(d.entry!.start))
         changes.start = new Date(d.start).toISOString();
-      if (d.stop !== localTime(d.entry!.stop))
+      if (d.stop !== localTime(entryEnd(d.entry)))
         changes.stop = new Date(d.stop).toISOString();
     }
   }

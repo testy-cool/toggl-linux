@@ -26,6 +26,7 @@ from gi.repository import GLib, Gdk
 import toggl_tray as app
 import toggl_control as control
 import toggl_tasks
+import toggl_today
 from toggl_webview import Bridge, create_window
 import webview
 
@@ -54,6 +55,13 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
     app._task_cache = dict(context=control.snapshot(app)['project_context'], tasks=[
         dict(id=31, workspace_id=1, project_id=6, name='Improve navigation', active=True)])
     app._task_capability = 'supported'
+    now = datetime.now(timezone.utc)
+    midnight = now.astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+    prior = dict(id=991, workspace_id=1, project_id=6, task_id=31,
+                 description='Previous today session', start=midnight.isoformat(),
+                 stop=(midnight+(now-midnight)/2).isoformat(), duration=1)
+    toggl_today.remember(app, prior)
+    app._today_cache['fetched_at'] = time.time()  # A private, already-loaded cloud fixture.
     server = control.start_server(app)
     bridge = Bridge(root, managed=True)
     window = create_window(bridge, width=600, height=780)
@@ -139,14 +147,20 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             click('Cancel')
             until(lambda: js("!!document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]')"))
             js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))")
+            until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'"))
+            assert not js("!!document.getElementById('work-description')")
+            until(lambda: js("document.body.textContent.includes('Previous today session')"))
+            click('Edit entry Previous today session')
             until(lambda: js("!!document.getElementById('work-description')"))
             click('Cancel')
+            assert not app.state['tracking']
             code="Array.from(document.querySelectorAll('button')).find(b=>b.getAttribute('aria-label')==='More actions for Improve navigation')"
             until(lambda: js(f'Boolean({code})'))
             js(f"({code}).dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',bubbles:true}}))")
             until(lambda: js("!!document.querySelector('[role=menu]')"))
             js("document.querySelector('[role=menu]').click()")
             assert not js("!!document.getElementById('work-description')")
+            assert js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'")
             js("document.querySelector('[role=menu]').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))")
             until(lambda: js("!document.querySelector('[role=menu]')"))
             click('Start Improve navigation')
@@ -155,6 +169,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             until(lambda: js("!!document.querySelector('[data-testid=current-timer]')"))
             js("const b=Array.from(document.querySelectorAll('button')).find(b=>b.getAttribute('aria-label')==='Improve navigation is running');const r=b.getBoundingClientRect();document.elementFromPoint(r.x+r.width/2,r.y+r.height/2).click()")
             assert not js("!!document.getElementById('work-description')")
+            assert js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'")
             picture('work-panel.png')
             click('Edit running timer')
             until(lambda: js("!!document.getElementById('work-description')"))
@@ -281,7 +296,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
                          description=app.state['description'], start=app.state['start_time'], stop=None, duration=-1)
             with patch.object(app, 'fetch_current_entry', return_value=None), patch.object(app, 'start_entry', return_value=cloud):
                 assert app.sync_pending() == 0
-            until(lambda: js("document.body.textContent.includes('No pending sync')"))
+            until(lambda: js("!document.body.textContent.includes('1 pending sync')"))
             until(lambda: js("Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='Save changes'&&!b.disabled)"))
             assert js("document.getElementById('work-description').value === 'Draft survives receiving a cloud ID'")
             with patch.object(app, 'update_entry', return_value=cloud) as update:
@@ -321,7 +336,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
                            description=app.state['description'],start=app.state['start_time'],stop=None,duration=-1)
             with patch.object(app,'fetch_current_entry',return_value=None),patch.object(app,'start_entry',return_value=current):
                 assert app.sync_pending() == 0
-            until(lambda: js("document.body.textContent.includes('No pending sync')"))
+            until(lambda: js("!document.body.textContent.includes('1 pending sync')"))
             assert js("document.getElementById('work-description').value === 'Next work survives current-timer sync'")
             next_entry=dict(current,id=902,start=datetime.now(timezone.utc).isoformat(),description='Next work survives current-timer sync')
             with patch.object(app,'stop_entry',return_value={}) as stop,patch.object(app,'start_entry',return_value=next_entry) as start:
@@ -333,6 +348,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
                 click('Stop')
                 until(lambda: not app.state['tracking'])
             print(json.dumps(dict(real_webkit=True, real_react=True, private_offline_start=True,
+                                  row_click_expands_without_start=True, daily_intervals=True,
                                   same_interval_edit=True, project_move=True, hidden_draft=True,
                                   draft_after_stop=True, task_create_rename_archive_restore=True,
                                   pending_entry_edit=True, timer_conflict=True, account_conflict=True,
@@ -354,8 +370,15 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             bridge._quitting = True
             window.destroy()
 
+    original_read = app.api_get
+    def daily_read(path, **kwargs):
+        if path == '/me/time_entries':
+            return []  # Account-scoped read fixtures; never the user's service.
+        return original_read(path, **kwargs)
+
     try:
         with patch.object(app.requests, 'request', side_effect=AssertionError('Account network is forbidden')) as network, \
+             patch.object(app, 'api_get', side_effect=daily_read), \
              patch.object(app, '_play_sound'), patch.object(app, '_notify'), \
              patch.object(toggl_tasks, 'write', side_effect=metadata):
             webview.start(verify, gui='gtk', private_mode=True)

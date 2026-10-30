@@ -2,6 +2,9 @@
 from datetime import datetime, timedelta
 from gi.repository import Gtk, Pango
 import toggl_task_tree
+import toggl_today
+import toggl_control
+import toggl_projects
 import toggl_tray as app
 
 
@@ -11,7 +14,7 @@ def _show_entries_window():
     win.set_default_size(app.ENTRY_WINDOW_WIDTH, app.ENTRY_WINDOW_HEIGHT)
     win.set_keep_above(True)
 
-    ctx = {"date": datetime.now().date(), "entries": []}
+    ctx = {"date": datetime.now().date(), "entries": [], "context": toggl_projects.context(app)}
 
     vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
     vbox.set_margin_start(14)
@@ -67,10 +70,14 @@ def _show_entries_window():
         next_btn.set_sensitive(date_obj < datetime.now().date())
 
         def _fetch():
+            if ctx['context'] != toggl_projects.context(app):
+                return
             try:
                 entries = app.fetch_entries_for_date(date_obj)
             except Exception:
                 entries = []
+            if ctx['context'] != toggl_projects.context(app):
+                return
             entries = app._merge_entries_with_pending(entries, app._pending_as_entries(date_obj))
             sorted_entries = sorted(entries, key=lambda x: x.get("start", ""))
             ctx["entries"] = sorted_entries
@@ -191,9 +198,12 @@ def _build_entry_row(entry, win, entries, listbox, ctx):
 
 def _on_edit_entry(entry, parent_win, entries, listbox, ctx):
     """Open edit dialog for a time entry — description, start, stop times."""
+    scope = ctx.get('context', toggl_projects.context(app))
     def _do():
         result = _gtk_edit_entry_dialog(entry)
         if result is None:
+            return
+        if scope != toggl_projects.context(app):
             return
         if entry.get("_offline"):
             if result == "delete":
@@ -204,6 +214,7 @@ def _on_edit_entry(entry, parent_win, entries, listbox, ctx):
                 if app._gtk_confirm(title, question):
                     if app._delete_pending_entry(entry):
                         toggl_task_tree.forget(app, entry)
+                        toggl_today.forget(app, entry, scope=scope)
                         app._play_sound(app.SOUND_STOP)
                         _refresh_entries(ctx["date"], entries, listbox, parent_win, ctx)
                     else:
@@ -225,6 +236,7 @@ def _on_edit_entry(entry, parent_win, entries, listbox, ctx):
                 try:
                     app.delete_entry(wid, entry["id"])
                     toggl_task_tree.forget(app, entry)
+                    toggl_control.record_delete(app, entry, scope=scope)
                     app._play_sound(app.SOUND_STOP)
                     _refresh_entries(ctx["date"], entries, listbox, parent_win, ctx)
                 except Exception:
@@ -235,6 +247,7 @@ def _on_edit_entry(entry, parent_win, entries, listbox, ctx):
         try:
             app.update_entry(wid, entry["id"], result)
             toggl_task_tree.correct(app, entry, result)
+            toggl_control.record_edit(app, entry, result, scope=scope)
             app._play_sound(app.SOUND_STOP)
             _refresh_entries(ctx["date"], entries, listbox, parent_win, ctx)
         except Exception:
@@ -245,10 +258,15 @@ def _on_edit_entry(entry, parent_win, entries, listbox, ctx):
 
 def _refresh_entries(date_obj, old_entries, listbox, win, ctx):
     """Re-fetch entries for the given date and rebuild the listbox."""
+    scope = ctx.get('context', toggl_projects.context(app))
+    if scope != toggl_projects.context(app):
+        return
     try:
         new_entries = app.fetch_entries_for_date(date_obj)
     except Exception:
         new_entries = []
+    if scope != toggl_projects.context(app):
+        return
     new_entries = app._merge_entries_with_pending(new_entries, app._pending_as_entries(date_obj))
     sorted_entries = sorted(new_entries, key=lambda x: x.get("start", ""))
     old_entries.clear()

@@ -324,8 +324,13 @@ separate pywebview process talks only to its private control socket. Closing the
 window hides it, so reopening preserves search, scroll and any unfinished draft.
 The current timer stays visible while browsing; editing happens in the same window.
 Work and Tasks show an expanded project tree, with 16px project and task names.
-Click a name or its pencil to edit, or the play button to start. Recent activities
-are labeled **Recent**; the current row is labeled **Running**. Collapse a project
+Click a name or press Enter to expand today's intervals; this opens no form and
+never starts or switches a timer. Each row shows its **Today** total, including
+repeat sessions and the running interval. A saved task's pencil renames it; an
+interval's pencil edits that session's description, project and times. Play starts
+work explicitly. Recent activities are labeled **Recent** and their menu offers
+**New timer with these details**, **Save as task**, and **Hide suggestion**.
+The current row is labeled **Running**. Collapse a project
 with its arrow; search reveals matches without losing your browsing choices.
 The plus beside a project creates a task in that project. A running timer uses a
 compact row; when stopped, the tree begins directly below search and navigation.
@@ -334,6 +339,18 @@ compact row; when stopped, the tree begins directly below search and navigation.
 attached to the completed interval so it can still be saved without restarting.
 Drafts keep their edits when offline sync assigns a cloud ID. Escape hides the
 window and preserves the draft, just like its close button.
+The Today tab groups sessions by task or activity with durations and subtotals.
+Totals count only the selected workspace and the part of each interval within
+today's local midnight boundaries, including daylight-saving days and overnight
+pending entries. The current timer is added once. Unknown or incomplete totals
+show a dash or an approximation rather than a false zero.
+
+Daily entries load in the background once per account/workspace and local date;
+the timer controls remain available during the read. The footer shows when data
+was fetched. **Refresh** updates it, subject to the existing one-minute throttle
+and request budget. The compatible API's [modified-since entry filter](https://engineering.toggl.com/docs/api/time_entries/)
+also includes intervals that began earlier but were completed today. A failed or
+capped read is marked incomplete; local pending work remains editable.
 Entry edits include start and stop times. Older pending intervals without a cloud
 baseline require explicit approval of every displayed field before saving.
 

@@ -129,8 +129,8 @@ def test_history_response_stays_bounded_without_duplicate_or_partial_description
             result = control.request(app.STATE_DIR, 'work-snapshot', {})
         assert len(json.dumps({'ok': True, 'result': result}, ensure_ascii=False).encode()) < control.MAX_MESSAGE
         returned = result['activities'][0]['activities']
-        assert returned[0] == activities[-1]
-        assert all(row in activities for row in returned)
+        assert {k:v for k,v in returned[0].items() if k != 'key'} == activities[-1]
+        assert all({k:v for k,v in row.items() if k != 'key'} in activities for row in returned)
         assert len(returned) + result['activities_omitted'] == count
         assert 'tasks' not in result['activities'][0]
         assert bool(result['activities_omitted']) == (count == 100)
@@ -168,7 +168,7 @@ def test_stopping_yesterdays_offline_timer_returns_its_exact_editable_interval()
         control.dispatch(app, 'edit-current', {'changes': {'start': yesterday}})
         result = control.dispatch(app, 'stop', {'expected': dict(app.state)})
     assert not result['state']['tracking']
-    assert not result['entries']
+    assert any(entry['start'] == yesterday for entry in result['entries'])
     stopped = result['stopped_entry']
     assert stopped['start'] == yesterday and stopped['_offline']
     control.dispatch(app, 'edit-entry', {'entry': stopped, 'changes': {'description': 'Kept overnight'}})
@@ -225,6 +225,7 @@ def test_cloud_time_corrections_send_consistent_duration_and_keep_timer_state(ru
     app._control_entries_date = now.astimezone().date().isoformat()
     app.state.update(tracking=running, entry_id=99 if running else None,
                      workspace_id=1, start_time=original_start if running else None)
+    app._control_entries_context = dict(control.toggl_projects.context(app), origin=app.get_api_base())
     changes = {'start': start}
     with patch.object(app, 'update_entry') as update:
         control.dispatch(app, 'edit-entry', {'entry': dict(entry), 'changes': changes})

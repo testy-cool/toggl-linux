@@ -256,3 +256,12 @@ test('a New timer draft keeps its proposed work through current-timer sync', () 
   assert.equal((commandFor(resolved).payload.expected as Snapshot['state']).entry_id,11)
   assert.deepEqual(commandFor(resolved).payload.changes,{description:draft.description,project_id:7,task_id:null})
 })
+
+test('duration-only entry drafts show their derived end and preserve the original selector', () => {
+  const s=sample(); const entry={id:42,workspace_id:1,project_id:6,task_id:null,description:'Closed',start:'2026-10-29T09:00:00Z',stop:null,duration:3600};
+  const draft=draftFor(s,'entry',undefined,entry);
+  assert.equal(draft.stop,localTime('2026-10-29T10:00:00Z'));
+  draft.start=localTime('2026-10-29T09:05:00Z');
+  assert.deepEqual(commandFor(draft).payload.changes,{start:'2026-10-29T09:05:00.000Z'});
+  assert.deepEqual(commandFor(draft).payload.entry,entry);
+});

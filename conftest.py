@@ -12,6 +12,7 @@ for name in ("Xlib", "Xlib.X", "Xlib.XK", "Xlib.display", "Xlib.ext", "Xlib.ext.
 
 import toggl_tray  # noqa: E402
 import toggl_task_tree  # noqa: E402
+import toggl_projects  # noqa: E402
 
 _real_connect = socket.socket.connect
 
@@ -63,6 +64,9 @@ def reset_state(tmp_path):
         toggl_tray.status_message = ""
         toggl_tray._control_entries = []
         toggl_tray._control_entries_date = ""
+        toggl_tray._control_entries_context = {"account": toggl_projects.account(toggl_tray), "origin": toggl_tray.get_api_base()}
+        toggl_tray._today_cache = None
+        toggl_tray._today_attempt = None
         toggl_tray._control_warning = ""
         toggl_tray._pending_resolutions = []
         toggl_tray._control_refreshed_at = None
