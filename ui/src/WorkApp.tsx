@@ -550,7 +550,7 @@ export default function WorkApp() {
                             ? "Try another name or project."
                             : tab === "work"
                               ? "Start a timer to make it easy to return to your work."
-                              : totals!.loaded
+                              : totals!.loaded && !totals!.incomplete
                                 ? "No time tracked today."
                                 : "Refresh to load today’s entries."}
                         </EmptyDescription>
@@ -563,9 +563,9 @@ export default function WorkApp() {
                   {loadingToday
                     ? "Loading today’s time…"
                     : data.today_error ||
-                      (!totals!.loaded
+                      (!totals!.loaded && !totals!.incomplete
                         ? "Today’s totals not loaded"
-                        : `${totals!.incomplete ? "Today incomplete" : `Today ${todayLabel(totals!, totals!.seconds)}`} · updated ${new Date(data.today_fetched_at! * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`)}
+                        : `${totals!.incomplete ? "Today incomplete" : `Today ${todayLabel(totals!, totals!.seconds)}`}${totals!.loaded ? ` · updated ${new Date(data.today_fetched_at! * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}`)}
                   {data.pending_count
                     ? ` · ${data.pending_count} pending sync`
                     : ""}
