@@ -219,11 +219,15 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             if isinstance(metrics, str):
                 metrics = json.loads(metrics)
             assert metrics['minFont'] >= 12 and not metrics['overflow'], metrics
+            painted_background = js("(()=>{const c=document.createElement('canvas');c.width=c.height=1;const x=c.getContext('2d');x.fillStyle=getComputedStyle(document.body).backgroundColor;x.fillRect(0,0,1,1);return '#'+Array.from(x.getImageData(0,0,1,1).data).slice(0,3).map(v=>v.toString(16).padStart(2,'0')).join('')})()")
+            assert window.background_color.lower() == painted_background
             assert js("parseFloat(getComputedStyle(document.querySelector('.work-name')).fontSize)") == 14
             until(lambda: js("Array.from(document.fonts).some(f=>f.family.includes('Inter')&&f.status==='loaded')"))
             assert js("document.querySelector('[data-testid=current-timer]').getBoundingClientRect().height") <= 64
             click('Edit running timer')
             until(lambda: js("!!document.getElementById('work-description')"))
+            assert js("parseFloat(getComputedStyle(document.querySelector('.app-header .current-project')).fontSize)") == 12
+            assert js("getComputedStyle(document.querySelector('.app-header .current-project')).color===getComputedStyle(document.querySelector('.app-content > footer span')).color")
             choose('Project', 'Research')
             click('Save changes')
             until(lambda: app.state['project_id'] == 7)

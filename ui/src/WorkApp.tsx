@@ -281,7 +281,7 @@ export default function WorkApp() {
             <Clock3 aria-hidden="true" className="app-mark" />
             <span className="font-semibold">Toggl</span>
             {draft && data?.state.tracking && (
-              <span className="current-project truncate">
+              <span className="current-project truncate text-xs text-muted-foreground">
                 {elapsed(data.state, now)} · {timerTitle(data)}
               </span>
             )}
