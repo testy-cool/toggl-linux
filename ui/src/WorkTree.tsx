@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { hotkeysCoreFeature, syncDataLoaderFeature } from "@headless-tree/core";
 import { useTree } from "@headless-tree/react";
 import { Circle, MoreHorizontal, Pencil, Play, Plus } from "lucide-react";
@@ -13,7 +13,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { TimeEntryRow } from "./TimeEntryRow";
-import { Item, ItemDescription } from "@/components/ui/item";
 import { clockRange, timeKeyForWork, todayLabel } from "./today";
 import type { Today, TodayRow } from "./today";
 import { workGroups, running } from "./model";
@@ -25,8 +24,40 @@ type Node = {
   group?: WorkGroup;
   work?: Work;
   row?: TodayRow;
-  hint?: string;
 };
+
+function RowLabel({
+  expandable,
+  className,
+  label,
+  disabled,
+  children,
+}: {
+  expandable: boolean;
+  className: string;
+  label: string;
+  disabled?: boolean;
+  children: ReactNode;
+}) {
+  if (!expandable)
+    return <TreeItemLabel className={className}>{children}</TreeItemLabel>;
+  return (
+    <TreeItemLabel asChild>
+      <Button
+        variant="ghost"
+        className={className}
+        aria-label={label}
+        disabled={disabled}
+        tabIndex={-1}
+        onFocus={(event) =>
+          event.currentTarget.closest<HTMLElement>('[role="treeitem"]')?.focus()
+        }
+      >
+        {children}
+      </Button>
+    </TreeItemLabel>
+  );
+}
 
 export function WorkTree({
   data,
@@ -82,17 +113,6 @@ export function WorkTree({
             name: `${clockRange(row)} · ${row.entry.description || work.label}`,
             row,
           };
-        if (!children.length) {
-          const id = `empty:${work.key}`;
-          children.push(id);
-          result[id] = {
-            name: "Today",
-            hint:
-              today.loaded && !today.incomplete
-                ? "No time today"
-                : "Today’s entries are not fully loaded. Use Refresh to load them.",
-          };
-        }
       }
     }
     return result;
@@ -103,7 +123,9 @@ export function WorkTree({
   const roots = nodes.root.children!;
   const folders = useMemo(
     () =>
-      Object.keys(nodes).filter((id) => id !== "root" && !!nodes[id].children),
+      Object.keys(nodes).filter(
+        (id) => id !== "root" && !!nodes[id].children?.length,
+      ),
     [nodes],
   );
   const expanded = useMemo(
@@ -128,7 +150,7 @@ export function WorkTree({
       }));
     },
     getItemName: (item) => item.getItemData()?.name ?? "",
-    isItemFolder: (item) => !!item.getItemData()?.children,
+    isItemFolder: (item) => !!item.getItemData()?.children?.length,
     dataLoader: {
       getItem: (id) => nodes[id],
       getChildren: (id) => nodes[id]?.children ?? [],
@@ -149,20 +171,24 @@ export function WorkTree({
   return (
     <Tree
       tree={tree}
-      indent={20}
+      indent={16}
       aria-label="Projects and work"
       className="project-tree"
     >
       {tree.getItems().map((item) => {
         const node = nodes[item.getId()];
         if (!node) return null;
-        const { group, work, row, hint } = node;
+        const { group, work, row } = node;
         const active = !!work && running(data, work);
         return (
           <TreeItem key={item.getId()} item={item} asChild>
             <div
               className="tree-row"
+              data-project={!!group || undefined}
               data-running={active || undefined}
+              onFocus={(event) => {
+                if (event.target === event.currentTarget) item.setFocused();
+              }}
               onKeyDown={(event) => {
                 if (
                   event.target === event.currentTarget &&
@@ -175,27 +201,21 @@ export function WorkTree({
             >
               {row ? (
                 <TimeEntryRow row={row} busy={busy} edit={openEntry} />
-              ) : hint ? (
-                <Item size="xs">
-                  <ItemDescription>{hint}</ItemDescription>
-                </Item>
               ) : group ? (
                 <>
-                  <TreeItemLabel asChild>
-                    <Button
-                      variant="ghost"
-                      className="project-name"
-                      aria-label={group.name}
-                    >
-                      <Circle
-                        aria-hidden="true"
-                        className="project-color"
-                        fill="currentColor"
-                        style={{ color: group.color }}
-                      />
-                      <span className="truncate">{group.name}</span>
-                    </Button>
-                  </TreeItemLabel>
+                  <RowLabel
+                    expandable={item.isFolder()}
+                    className="project-name"
+                    label={group.name}
+                  >
+                    <Circle
+                      aria-hidden="true"
+                      className="project-color"
+                      fill="currentColor"
+                      style={{ color: group.color }}
+                    />
+                    <span className="truncate">{group.name}</span>
+                  </RowLabel>
                   {group.id != null &&
                     data.task_capability !== "unavailable" && (
                       <Button
@@ -215,16 +235,14 @@ export function WorkTree({
               ) : (
                 work && (
                   <>
-                    <TreeItemLabel asChild>
-                      <Button
-                        variant="ghost"
-                        className="work-name"
-                        disabled={busy}
-                        aria-label={work.label}
-                      >
-                        <span className="work-label">{work.label}</span>
-                      </Button>
-                    </TreeItemLabel>
+                    <RowLabel
+                      expandable={item.isFolder()}
+                      className="work-name"
+                      label={work.label}
+                      disabled={busy}
+                    >
+                      <span className="work-label">{work.label}</span>
+                    </RowLabel>
                     {active ? (
                       <Badge variant="secondary">Running</Badge>
                     ) : work.task?.active === false ? (

@@ -51,9 +51,11 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
                      project_id=None, task_id=None, description='')
     app._project_cache = dict(account=None, projects=[
         dict(id=6, workspace_id=1, name='Studio', color='#779bd8', active=True),
-        dict(id=7, workspace_id=1, name='Research', color='#7db8a0', active=True)])
+        dict(id=7, workspace_id=1, name='Research', color='#7db8a0', active=True),
+        dict(id=8, workspace_id=1, name='Empty project', active=True)])
     app._task_cache = dict(context=control.snapshot(app)['project_context'], tasks=[
-        dict(id=31, workspace_id=1, project_id=6, name='Improve navigation', active=True)])
+        dict(id=31, workspace_id=1, project_id=6, name='Improve navigation', active=True),
+        dict(id=32, workspace_id=1, project_id=6, name='Unused task', active=True)])
     app._task_capability = 'supported'
     now = datetime.now(timezone.utc)
     midnight = now.astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -131,6 +133,37 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             assert bridge._ready.wait(20), 'JavaScript bridge never became ready'
             until(lambda: window.native.get_mapped())
             until(lambda: js("document.body.textContent.includes('Improve navigation')"))
+            leaf = 'document.querySelector(\'[role=treeitem][aria-label="Unused task"]\')'
+            until(lambda: js(f"!!({leaf})"))
+            assert js(f"({leaf}).getAttribute('data-folder')") == 'false'
+            assert not js(f"({leaf}).hasAttribute('aria-expanded')")
+            assert not js(f"!!({leaf}).querySelector('.work-name svg,button[aria-label=\"Unused task\"]')")
+            assert js("!!document.querySelector('button[aria-label=\"Start Unused task\"]')")
+            assert js("!!document.querySelector('button[aria-label=\"Edit Unused task\"]')")
+            js(f"({leaf}).dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',code:'Enter',bubbles:true}}));({leaf}).dispatchEvent(new KeyboardEvent('keyup',{{key:'Enter',code:'Enter',bubbles:true}}));({leaf}).querySelector('.work-name').click()")
+            assert not js("!!document.getElementById('work-description')")
+            assert not app.state['tracking']
+            assert js("document.querySelector('[role=treeitem][aria-label=\"Empty project\"]').getAttribute('data-folder')") == 'false'
+            assert js("!!document.querySelector('button[aria-label=\"New task in Empty project\"]')")
+            assert not js("!!document.querySelector('[role=treeitem][aria-label=\"No project\"]')")
+            fetched = app._today_cache['fetched_at']
+            app._today_cache.update(fetched_at=None, incomplete=False)
+            until(lambda: js("document.querySelector('footer').textContent.includes('not loaded')"))
+            assert js(f"({leaf}).querySelector('.work-time').textContent") == '—'
+            app._today_cache['incomplete'] = True
+            until(lambda: js("document.querySelector('footer').textContent.includes('Today incomplete')"))
+            assert not js("document.querySelector('footer').textContent.includes('Invalid Date')")
+            assert js(f"({leaf}).getAttribute('data-folder')") == 'false'
+            app._today_cache.update(fetched_at=fetched, incomplete=False)
+            until(lambda: js(f"({leaf}).querySelector('.work-time').textContent==='0m'"))
+            js("document.querySelector('button[aria-label=\"Improve navigation\"]').focus()")
+            control.record_delete(app, prior)
+            until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('data-folder')==='false'"))
+            assert js("document.activeElement === document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]')")
+            js("document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',code:'ArrowDown',bubbles:true}));document.activeElement.dispatchEvent(new KeyboardEvent('keyup',{key:'ArrowDown',code:'ArrowDown',bubbles:true}))")
+            until(lambda: js("document.activeElement?.getAttribute('aria-label')==='Unused task'"))
+            toggl_today.remember(app, prior)
+            until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('data-folder')==='true'"))
             click('Studio')
             until(lambda: js("!Array.from(document.querySelectorAll('button')).some(b=>b.getAttribute('aria-label')==='Start Improve navigation')"))
             search('Research')
@@ -184,7 +217,8 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             if isinstance(metrics, str):
                 metrics = json.loads(metrics)
             assert metrics['minFont'] >= 12 and not metrics['overflow'], metrics
-            assert js("parseFloat(getComputedStyle(document.querySelector('.work-name')).fontSize)") >= 16
+            assert js("parseFloat(getComputedStyle(document.querySelector('.work-name')).fontSize)") == 14
+            until(lambda: js("Array.from(document.fonts).some(f=>f.family.includes('Inter')&&f.status==='loaded')"))
             assert js("document.querySelector('[data-testid=current-timer]').getBoundingClientRect().height") <= 64
             click('Edit running timer')
             until(lambda: js("!!document.getElementById('work-description')"))
@@ -348,6 +382,8 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
                 click('Stop')
                 until(lambda: not app.state['tracking'])
             print(json.dumps(dict(real_webkit=True, real_react=True, private_offline_start=True,
+                                  empty_work_leaf=True, empty_project_leaf=True, inert_leaf_keyboard=True,
+                                  daily_loading_states=True, folder_to_leaf_focus=True, bundled_inter=True, work_font_px=14,
                                   row_click_expands_without_start=True, daily_intervals=True,
                                   same_interval_edit=True, project_move=True, hidden_draft=True,
                                   draft_after_stop=True, task_create_rename_archive_restore=True,

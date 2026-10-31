@@ -154,11 +154,17 @@ def test_a_successful_daily_read_clears_its_old_cloud_warning():
 
 
 def test_a_duration_only_closed_interval_can_change_its_start_without_becoming_running():
-    row = interval(); row.update(stop=None, duration=3600)
-    today.remember(app, row)
-    original_start = app._parse_iso(row['start'])
-    with patch.object(app, 'update_entry', return_value={}) as update:
-        control.dispatch(app, 'edit-entry', {'entry':row, 'changes':{'start':(original_start+timedelta(minutes=5)).isoformat()}})
+    class Noon(app.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            local = cls(2026, 10, 31, 12).astimezone()
+            return local.astimezone(tz) if tz else local.replace(tzinfo=None)
+    with patch.object(app, 'datetime', Noon):
+        row = interval(); row.update(stop=None, duration=3600)
+        today.remember(app, row)
+        original_start = app._parse_iso(row['start'])
+        with patch.object(app, 'update_entry', return_value={}) as update:
+            control.dispatch(app, 'edit-entry', {'entry':row, 'changes':{'start':(original_start+timedelta(minutes=5)).isoformat()}})
     assert update.call_args.args[2]['duration'] == 3300
     assert not app.state['tracking']
 

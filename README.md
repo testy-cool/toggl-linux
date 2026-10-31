@@ -323,8 +323,11 @@ The timer, queue, API credentials and sync remain in the Python tray process. A
 separate pywebview process talks only to its private control socket. Closing the
 window hides it, so reopening preserves search, scroll and any unfinished draft.
 The current timer stays visible while browsing; editing happens in the same window.
-Work and Tasks show an expanded project tree, with 16px project and task names.
-Click a name or press Enter to expand today's intervals; this opens no form and
+Work and Tasks show an expanded project tree, with locally bundled Inter,
+14px project and task names, and supporting text at 12px or larger.
+Only projects with work and rows with today's intervals show an expansion arrow.
+Empty rows keep their Start and Edit actions; named empty projects keep New Task.
+Click an expandable name or press Enter to view today's intervals; this opens no form and
 never starts or switches a timer. Each row shows its **Today** total, including
 repeat sessions and the running interval. A saved task's pencil renames it; an
 interval's pencil edits that session's description, project and times. Play starts
