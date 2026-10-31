@@ -27,34 +27,20 @@ type Node = {
 };
 
 function RowLabel({
-  expandable,
   className,
-  label,
-  disabled,
   children,
 }: {
-  expandable: boolean;
   className: string;
-  label: string;
-  disabled?: boolean;
   children: ReactNode;
 }) {
-  if (!expandable)
-    return <TreeItemLabel className={className}>{children}</TreeItemLabel>;
   return (
-    <TreeItemLabel asChild>
-      <Button
-        variant="ghost"
-        className={className}
-        aria-label={label}
-        disabled={disabled}
-        tabIndex={-1}
-        onFocus={(event) =>
-          event.currentTarget.closest<HTMLElement>('[role="treeitem"]')?.focus()
-        }
-      >
-        {children}
-      </Button>
+    <TreeItemLabel
+      className={className}
+      onClick={(event) =>
+        event.currentTarget.closest<HTMLElement>('[role="treeitem"]')?.focus()
+      }
+    >
+      {children}
     </TreeItemLabel>
   );
 }
@@ -171,7 +157,6 @@ export function WorkTree({
   return (
     <Tree
       tree={tree}
-      indent={16}
       aria-label="Projects and work"
       className="project-tree"
     >
@@ -186,6 +171,7 @@ export function WorkTree({
               className="tree-row"
               data-project={!!group || undefined}
               data-running={active || undefined}
+              data-interval={!!row || undefined}
               onFocus={(event) => {
                 if (event.target === event.currentTarget) item.setFocused();
               }}
@@ -204,9 +190,7 @@ export function WorkTree({
               ) : group ? (
                 <>
                   <RowLabel
-                    expandable={item.isFolder()}
                     className="project-name"
-                    label={group.name}
                   >
                     <Circle
                       aria-hidden="true"
@@ -236,10 +220,7 @@ export function WorkTree({
                 work && (
                   <>
                     <RowLabel
-                      expandable={item.isFolder()}
                       className="work-name"
-                      label={work.label}
-                      disabled={busy}
                     >
                       <span className="work-label">{work.label}</span>
                     </RowLabel>

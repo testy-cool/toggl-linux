@@ -73,7 +73,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
         return window.evaluate_js(code)
 
     def click(label):
-        code = f"Array.from(document.querySelectorAll('button')).find(b => (b.getAttribute('aria-label') || b.textContent.trim()) === {json.dumps(label)})"
+        code = f"(Array.from(document.querySelectorAll('button')).find(b => (b.getAttribute('aria-label') || b.textContent.trim()) === {json.dumps(label)}) || Array.from(document.querySelectorAll('[role=treeitem]')).find(e=>e.getAttribute('aria-label')==={json.dumps(label)})?.querySelector('[data-slot=tree-item-label]'))"
         until(lambda: js(f'Boolean({code}) && !({code}).disabled'))
         js(f"const button={code}; if(button.getAttribute('role')==='tab') button.dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',bubbles:true}})); else button.click()")
 
@@ -156,7 +156,9 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             assert js(f"({leaf}).getAttribute('data-folder')") == 'false'
             app._today_cache.update(fetched_at=fetched, incomplete=False)
             until(lambda: js(f"({leaf}).querySelector('.work-time').textContent==='0m'"))
-            js("document.querySelector('button[aria-label=\"Improve navigation\"]').focus()")
+            assert js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"] .work-name').tagName") == 'SPAN'
+            js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').focus()")
+            assert js("document.activeElement === document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]')")
             control.record_delete(app, prior)
             until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('data-folder')==='false'"))
             assert js("document.activeElement === document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]')")
