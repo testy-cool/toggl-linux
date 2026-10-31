@@ -140,7 +140,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             assert not js(f"!!({leaf}).querySelector('.work-name svg,button[aria-label=\"Unused task\"]')")
             assert js("!!document.querySelector('button[aria-label=\"Start Unused task\"]')")
             assert js("!!document.querySelector('button[aria-label=\"Edit Unused task\"]')")
-            js(f"({leaf}).dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',bubbles:true}}));({leaf}).querySelector('.work-name').click()")
+            js(f"({leaf}).dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',code:'Enter',bubbles:true}}));({leaf}).dispatchEvent(new KeyboardEvent('keyup',{{key:'Enter',code:'Enter',bubbles:true}}));({leaf}).querySelector('.work-name').click()")
             assert not js("!!document.getElementById('work-description')")
             assert not app.state['tracking']
             assert js("document.querySelector('[role=treeitem][aria-label=\"Empty project\"]').getAttribute('data-folder')") == 'false'
@@ -156,6 +156,14 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             assert js(f"({leaf}).getAttribute('data-folder')") == 'false'
             app._today_cache.update(fetched_at=fetched, incomplete=False)
             until(lambda: js(f"({leaf}).querySelector('.work-time').textContent==='0m'"))
+            js("document.querySelector('button[aria-label=\"Improve navigation\"]').focus()")
+            control.record_delete(app, prior)
+            until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('data-folder')==='false'"))
+            assert js("document.activeElement === document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]')")
+            js("document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',code:'ArrowDown',bubbles:true}));document.activeElement.dispatchEvent(new KeyboardEvent('keyup',{key:'ArrowDown',code:'ArrowDown',bubbles:true}))")
+            until(lambda: js("document.activeElement?.getAttribute('aria-label')==='Unused task'"))
+            toggl_today.remember(app, prior)
+            until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('data-folder')==='true'"))
             click('Studio')
             until(lambda: js("!Array.from(document.querySelectorAll('button')).some(b=>b.getAttribute('aria-label')==='Start Improve navigation')"))
             search('Research')
@@ -375,7 +383,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
                 until(lambda: not app.state['tracking'])
             print(json.dumps(dict(real_webkit=True, real_react=True, private_offline_start=True,
                                   empty_work_leaf=True, empty_project_leaf=True, inert_leaf_keyboard=True,
-                                  daily_loading_states=True, bundled_inter=True, work_font_px=14,
+                                  daily_loading_states=True, folder_to_leaf_focus=True, bundled_inter=True, work_font_px=14,
                                   row_click_expands_without_start=True, daily_intervals=True,
                                   same_interval_edit=True, project_move=True, hidden_draft=True,
                                   draft_after_stop=True, task_create_rename_archive_restore=True,

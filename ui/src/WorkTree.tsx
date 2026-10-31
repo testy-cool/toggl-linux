@@ -48,6 +48,10 @@ function RowLabel({
         className={className}
         aria-label={label}
         disabled={disabled}
+        tabIndex={-1}
+        onFocus={(event) =>
+          event.currentTarget.closest<HTMLElement>('[role="treeitem"]')?.focus()
+        }
       >
         {children}
       </Button>
@@ -182,6 +186,9 @@ export function WorkTree({
               className="tree-row"
               data-project={!!group || undefined}
               data-running={active || undefined}
+              onFocus={(event) => {
+                if (event.target === event.currentTarget) item.setFocused();
+              }}
               onKeyDown={(event) => {
                 if (
                   event.target === event.currentTarget &&
