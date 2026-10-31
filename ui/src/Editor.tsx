@@ -251,7 +251,7 @@ export function Editor({
               )}
             </FieldGroup>
           </ScrollArea>
-          <FrameFooter className="flex shrink-0 flex-wrap justify-between gap-2">
+          <FrameFooter className="flex shrink-0 flex-row flex-wrap justify-between gap-2">
             <Button
               type="button"
               variant="ghost"

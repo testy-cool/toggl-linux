@@ -325,6 +325,8 @@ window hides it, so reopening preserves search, scroll and any unfinished draft.
 The current timer stays visible while browsing; editing happens in the same window.
 Work and Tasks show an expanded project tree, with locally bundled Inter,
 14px project and task names, and supporting text at 12px or larger.
+The window uses ReUI's standard tree labels, spacing and state styling with a
+neutral theme. Controls and entry rows retain their library styling.
 Only projects with work and rows with today's intervals show an expansion arrow.
 Empty rows keep their Start and Edit actions; named empty projects keep New Task.
 Click an expandable name or press Enter to view today's intervals; this opens no form and

@@ -103,7 +103,7 @@ def create_window(bridge, *, x=None, y=None, width=600, height=780):
                                     width=width, height=height,
                                     min_size=(360, 480), resizable=True,
                                     frameless=True, easy_drag=False, hidden=False,
-                                    background_color='#17191d', text_select=True)
+                                    background_color='#0a0a0a', text_select=True)
     bridge._window = window
     bridge._visible = True
     window.events.closing += bridge._closing

@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { ItemGroup, ItemTitle } from "@/components/ui/item";
+import { Item, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item";
 import { TimeEntryRow } from "./TimeEntryRow";
 import { localDay, todayTotals, todayLabel, todayGroupLabel } from "./today";
 import {
@@ -281,7 +281,7 @@ export default function WorkApp() {
             <Clock3 aria-hidden="true" className="app-mark" />
             <span className="font-semibold">Toggl</span>
             {draft && data?.state.tracking && (
-              <span className="current-project truncate">
+              <span className="current-project truncate text-xs text-muted-foreground">
                 {elapsed(data.state, now)} · {timerTitle(data)}
               </span>
             )}
@@ -346,7 +346,7 @@ export default function WorkApp() {
                 </Alert>
               )}
               {!draft && data.state.tracking && (
-                <div className="current-timer" data-testid="current-timer">
+                <Item size="xs" variant="muted" className="current-timer" data-testid="current-timer">
                   <Button
                     variant="ghost"
                     className="current-work"
@@ -354,12 +354,12 @@ export default function WorkApp() {
                     aria-label="Edit running timer"
                     onClick={() => setDraft(draftFor(data, "current"))}
                   >
-                    <span className="current-description">
-                      {timerTitle(data)}
-                    </span>
-                    <span className="current-project">
+                    <ItemTitle className="current-description">
+                      <span className="truncate">{timerTitle(data)}</span>
+                    </ItemTitle>
+                    <ItemDescription className="current-project">
                       {projectName(data, data.state.project_id)}
-                    </span>
+                    </ItemDescription>
                   </Button>
                   <span className="elapsed" aria-label="Elapsed time">
                     {elapsed(data.state, now)}
@@ -379,7 +379,7 @@ export default function WorkApp() {
                   >
                     <Square data-icon="inline-start" /> Stop
                   </Button>
-                </div>
+                </Item>
               )}
               {draft && (
                 <Editor

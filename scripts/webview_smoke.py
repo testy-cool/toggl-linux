@@ -73,7 +73,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
         return window.evaluate_js(code)
 
     def click(label):
-        code = f"Array.from(document.querySelectorAll('button')).find(b => (b.getAttribute('aria-label') || b.textContent.trim()) === {json.dumps(label)})"
+        code = f"(Array.from(document.querySelectorAll('button')).find(b => (b.getAttribute('aria-label') || b.textContent.trim()) === {json.dumps(label)}) || Array.from(document.querySelectorAll('[role=treeitem]')).find(e=>e.getAttribute('aria-label')==={json.dumps(label)})?.querySelector('[data-slot=tree-item-label]'))"
         until(lambda: js(f'Boolean({code}) && !({code}).disabled'))
         js(f"const button={code}; if(button.getAttribute('role')==='tab') button.dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',bubbles:true}})); else button.click()")
 
@@ -156,7 +156,9 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             assert js(f"({leaf}).getAttribute('data-folder')") == 'false'
             app._today_cache.update(fetched_at=fetched, incomplete=False)
             until(lambda: js(f"({leaf}).querySelector('.work-time').textContent==='0m'"))
-            js("document.querySelector('button[aria-label=\"Improve navigation\"]').focus()")
+            assert js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"] .work-name').tagName") == 'SPAN'
+            js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').focus()")
+            assert js("document.activeElement === document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]')")
             control.record_delete(app, prior)
             until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('data-folder')==='false'"))
             assert js("document.activeElement === document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]')")
@@ -217,11 +219,15 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             if isinstance(metrics, str):
                 metrics = json.loads(metrics)
             assert metrics['minFont'] >= 12 and not metrics['overflow'], metrics
+            painted_background = js("(()=>{const c=document.createElement('canvas');c.width=c.height=1;const x=c.getContext('2d');x.fillStyle=getComputedStyle(document.body).backgroundColor;x.fillRect(0,0,1,1);return '#'+Array.from(x.getImageData(0,0,1,1).data).slice(0,3).map(v=>v.toString(16).padStart(2,'0')).join('')})()")
+            assert window.background_color.lower() == painted_background
             assert js("parseFloat(getComputedStyle(document.querySelector('.work-name')).fontSize)") == 14
             until(lambda: js("Array.from(document.fonts).some(f=>f.family.includes('Inter')&&f.status==='loaded')"))
             assert js("document.querySelector('[data-testid=current-timer]').getBoundingClientRect().height") <= 64
             click('Edit running timer')
             until(lambda: js("!!document.getElementById('work-description')"))
+            assert js("parseFloat(getComputedStyle(document.querySelector('.app-header .current-project')).fontSize)") == 12
+            assert js("getComputedStyle(document.querySelector('.app-header .current-project')).color===getComputedStyle(document.querySelector('.app-content > footer span')).color")
             choose('Project', 'Research')
             click('Save changes')
             until(lambda: app.state['project_id'] == 7)
