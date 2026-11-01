@@ -215,6 +215,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             started = app.state['start_time']
             until(lambda: js("!!document.querySelector('[data-testid=current-timer]')"))
             assert not js("!!document.querySelector('button[aria-label=\"Start Improve navigation\"]')"), 'Running work must not keep a redundant start control'
+            assert js("document.querySelector('[data-running=true] .work-kind').textContent==='Task'"), 'Running work must retain the scope of its direct edit action'
             js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"] .work-name').click()")
             assert not js("!!document.getElementById('work-description')")
             assert js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='false'")
@@ -289,6 +290,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             until(lambda: any(t['id'] == 42 for t in app._cached_tasks()))
             until(lambda: js("!document.getElementById('work-description')"))
             click('Tasks')
+            assert not js("!!document.querySelector('.work-kind')"), 'The Tasks tab does not need repeated Task labels'
             menu('Created in the webview', 'Rename task')
             until(lambda: js("!!document.getElementById('work-description')"))
             text('Renamed in the webview')

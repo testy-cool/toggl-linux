@@ -213,7 +213,7 @@ export function WorkTree({
                       fill="currentColor"
                       style={{ color: group.color }}
                     />
-                    <span className="truncate">{group.name}</span>
+                    <span className="work-label">{group.name}</span>
                   </RowLabel>
                   {group.id != null &&
                     data.task_capability !== "unavailable" && (
@@ -239,7 +239,7 @@ export function WorkTree({
                     <RowLabel className="work-name">
                       <span className="work-title">
                         <span className="work-label">{work.label}</span>
-                        {!active && work.task?.active !== false && (
+                        {!tasksOnly && work.task?.active !== false && (
                           <span className="work-kind">
                             {work.task ? "Task" : "Recent"}
                           </span>

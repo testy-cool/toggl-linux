@@ -103,10 +103,7 @@ export function TimeEntryRow({
           </ActionHint>
         )}
       </ItemActions>
-      <span
-        className="work-time text-muted-foreground"
-        aria-label="Time today for this interval"
-      >
+      <span className="work-time text-muted-foreground">
         {shortTime(row.seconds)}
       </span>
     </Item>
