@@ -137,10 +137,13 @@ html, body, #root { height: 100%; overflow: hidden; }
 /* Rich interval rows have Item content instead of TreeItemLabel's focus ring. */
 .tree-row[data-interval=true]:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
 .tree-row button:disabled { pointer-events: auto; }
-.project-name, .work-name { flex: 1; min-width: 0; }
+.project-heading { display: flex; flex: 1; min-width: 0; align-items: center; gap: 4px; padding-inline-end: 60px; }
+.project-name { flex: 0 1 auto; min-width: 0; }
+.work-name { flex: 1; min-width: 0; }
 .project-color { width: 10px; height: 10px; color: var(--muted-foreground); }
-.work-label { min-width: 0; white-space: normal; overflow-wrap: break-word; }
-.work-kind { color: var(--muted-foreground); font-size: 12px; line-height: 16px; }
+.work-title { display: flex; flex: 1; min-width: 0; align-items: center; justify-content: space-between; gap: 4px; }
+.work-label { flex: 1; min-width: 0; white-space: normal; overflow-wrap: break-word; }
+.work-kind { min-width: 40px; flex-shrink: 0; text-align: end; color: var(--muted-foreground); font-size: 12px; line-height: 16px; }
 .work-time { min-width: 56px; flex-shrink: 0; text-align: end; font-size: 12px; line-height: 16px; font-variant-numeric: tabular-nums; }
 .tree-column-heading { text-align: end; padding-inline-end: 8px; color: var(--muted-foreground); font-size: 12px; line-height: 16px; }
 .interval-row { flex-wrap: nowrap; }
@@ -164,6 +167,8 @@ html, body, #root { height: 100%; overflow: hidden; }
 [data-slot=select-value] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 [data-slot=item-content] { min-width: 0; }
 @media (max-width: 460px) {
+  .work-title { align-items: start; flex-direction: column; gap: 0; }
+  .work-kind { text-align: start; }
   .tree-row[data-archived] { flex-wrap: wrap; justify-content: flex-end; }
   .tree-row[data-archived] .work-name { flex: 0 0 100%; }
   .current-timer { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
