@@ -133,7 +133,7 @@ html, body, #root { height: 100%; overflow: hidden; }
 .current-timer { min-width: 0; flex-shrink: 0; flex-wrap: nowrap; }
 .current-work { display: flex; flex: 1; min-width: 0; height: auto; align-items: start; flex-direction: column; gap: 0; text-align: start; }
 .current-description, .current-project { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-.tree-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.tree-row { display: flex; align-items: center; gap: 4px; min-width: 0; padding-inline-end: 8px; }
 /* Rich interval rows have Item content instead of TreeItemLabel's focus ring. */
 .tree-row[data-interval=true]:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
 .tree-row button:disabled { pointer-events: auto; }
@@ -142,7 +142,7 @@ html, body, #root { height: 100%; overflow: hidden; }
 .work-label { min-width: 0; white-space: normal; overflow-wrap: break-word; }
 .work-kind { color: var(--muted-foreground); font-size: 12px; line-height: 16px; }
 .work-time { min-width: 56px; flex-shrink: 0; text-align: end; font-size: 12px; line-height: 16px; font-variant-numeric: tabular-nums; }
-.tree-column-heading { text-align: end; color: var(--muted-foreground); font-size: 12px; line-height: 16px; }
+.tree-column-heading { text-align: end; padding-inline-end: 8px; color: var(--muted-foreground); font-size: 12px; line-height: 16px; }
 .interval-row { flex-wrap: nowrap; }
 .time-input { width: 68px; flex-shrink: 0; }
 .time-input [data-slot=input-group-addon] { display: none; }
