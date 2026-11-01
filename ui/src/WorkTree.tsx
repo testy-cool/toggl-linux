@@ -32,6 +32,7 @@ type Node = {
   group?: WorkGroup;
   work?: Work;
   row?: TodayRow;
+  shaded?: boolean;
 };
 
 function RowLabel({
@@ -100,14 +101,16 @@ export function WorkTree({
         group,
         children: group.works.map((w) => w.key),
       };
-      for (const work of group.works) {
+      for (const [index, work] of group.works.entries()) {
+        const shaded = index % 2 === 0;
         const rows = today.groups.get(timeKeyForWork(data, work))?.rows ?? [];
         const children = rows.map((row) => `interval:${work.key}:${row.key}`);
-        result[work.key] = { name: work.label, work, children };
+        result[work.key] = { name: work.label, work, children, shaded };
         for (const row of rows)
           result[`interval:${work.key}:${row.key}`] = {
             name: `${clockRange(row)} · ${row.entry.description || work.label}`,
             row,
+            shaded,
           };
       }
     }
@@ -172,7 +175,12 @@ export function WorkTree({
         const { group, work, row } = node;
         const active = !!work && running(data, work);
         return (
-          <TreeItem key={item.getId()} item={item} asChild>
+          <TreeItem
+            key={item.getId()}
+            item={item}
+            asChild
+            className={node.shaded ? "rounded-md bg-muted/50" : undefined}
+          >
             <div
               className="tree-row"
               data-project={!!group || undefined}
@@ -231,7 +239,7 @@ export function WorkTree({
               ) : (
                 work && (
                   <>
-                    <RowLabel className="work-name">
+                    <RowLabel className="work-name bg-transparent">
                       <span className="work-label">{work.label}</span>
                     </RowLabel>
                     {active ? (
