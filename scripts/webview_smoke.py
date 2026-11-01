@@ -73,9 +73,14 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
         return window.evaluate_js(code)
 
     def click(label):
+        if label in ('New task', 'New timer'):
+            click('New work')
+            until(lambda: js("!!document.querySelector('[role=menuitem]')"))
+            js(f"Array.from(document.querySelectorAll('[role=menuitem]')).find(e=>e.textContent.trim()==={json.dumps(label)}).click()")
+            return
         code = f"(Array.from(document.querySelectorAll('button')).find(b => (b.getAttribute('aria-label') || b.textContent.trim()) === {json.dumps(label)}) || Array.from(document.querySelectorAll('[role=treeitem]')).find(e=>e.getAttribute('aria-label')==={json.dumps(label)})?.querySelector('[data-slot=tree-item-label]'))"
         until(lambda: js(f'Boolean({code}) && !({code}).disabled'))
-        js(f"const button={code}; if(button.getAttribute('role')==='tab') button.dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',bubbles:true}})); else button.click()")
+        js(f"const button={code}; if(button.getAttribute('role')==='tab'||button.getAttribute('aria-haspopup')==='menu') button.dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',bubbles:true}})); else button.click()")
 
     def text(value):
         js(f"const input = document.getElementById('work-description'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,{json.dumps(value)}); input.dispatchEvent(new Event('input',{{bubbles:true}}));")
@@ -133,13 +138,14 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             assert bridge._ready.wait(20), 'JavaScript bridge never became ready'
             until(lambda: window.native.get_mapped())
             until(lambda: js("document.body.textContent.includes('Improve navigation')"))
+            assert js("(()=>{const active=document.querySelector('[role=tab][data-state=active]'),inactive=document.querySelector('[role=tab][data-state=inactive]');return getComputedStyle(active).backgroundColor!==getComputedStyle(inactive).backgroundColor})()"), 'Selected tab must stay visible without focus'
             leaf = 'document.querySelector(\'[role=treeitem][aria-label="Unused task"]\')'
             until(lambda: js(f"!!({leaf})"))
             assert js(f"({leaf}).getAttribute('data-folder')") == 'false'
             assert not js(f"({leaf}).hasAttribute('aria-expanded')")
             assert not js(f"!!({leaf}).querySelector('.work-name svg,button[aria-label=\"Unused task\"]')")
             assert js("!!document.querySelector('button[aria-label=\"Start Unused task\"]')")
-            assert js("!!document.querySelector('button[aria-label=\"Edit Unused task\"]')")
+            assert js("!!document.querySelector('button[aria-label=\"Rename task Unused task\"]')")
             js(f"({leaf}).dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',code:'Enter',bubbles:true}}));({leaf}).dispatchEvent(new KeyboardEvent('keyup',{{key:'Enter',code:'Enter',bubbles:true}}));({leaf}).querySelector('.work-name').click()")
             assert not js("!!document.getElementById('work-description')")
             assert not app.state['tracking']
@@ -148,10 +154,10 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             assert not js("!!document.querySelector('[role=treeitem][aria-label=\"No project\"]')")
             fetched = app._today_cache['fetched_at']
             app._today_cache.update(fetched_at=None, incomplete=False)
-            until(lambda: js("document.querySelector('footer').textContent.includes('not loaded')"))
+            until(lambda: js("document.querySelector('footer').textContent.includes('estimated')"))
             assert js(f"({leaf}).querySelector('.work-time').textContent") == '—'
             app._today_cache['incomplete'] = True
-            until(lambda: js("document.querySelector('footer').textContent.includes('Today incomplete')"))
+            until(lambda: js("document.querySelector('footer').textContent.includes('estimated')"))
             assert not js("document.querySelector('footer').textContent.includes('Invalid Date')")
             assert js(f"({leaf}).getAttribute('data-folder')") == 'false'
             app._today_cache.update(fetched_at=fetched, incomplete=False)
@@ -204,14 +210,32 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             until(lambda: app.state['tracking'] and app.state['task_id'] == 31)
             started = app.state['start_time']
             until(lambda: js("!!document.querySelector('[data-testid=current-timer]')"))
-            js("const b=Array.from(document.querySelectorAll('button')).find(b=>b.getAttribute('aria-label')==='Improve navigation is running');const r=b.getBoundingClientRect();document.elementFromPoint(r.x+r.width/2,r.y+r.height/2).click()")
+            assert not js("!!document.querySelector('button[aria-label=\"Start Improve navigation\"]')"), 'Running work must not keep a redundant start control'
+            js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"] .work-name').click()")
             assert not js("!!document.getElementById('work-description')")
+            assert js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='false'")
+            click('Improve navigation')
             assert js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'")
             picture('work-panel.png')
+            window.resize(375, 480)
+            until(lambda: js("innerWidth===375 && innerHeight===480"))
+            assert js("document.querySelector('.current-work').getBoundingClientRect().width>=160"), 'Running work must have readable space beside the typed time controls'
+            assert js("(()=>{const work=document.querySelector('.current-work').getBoundingClientRect(),start=document.querySelector('.current-start').getBoundingClientRect(),elapsed=document.querySelector('.current-timer .elapsed').getBoundingClientRect();return work.bottom<=start.top&&work.right<=elapsed.left})()"), 'Running work must not overlap its time controls'
+            assert js("document.querySelector('.current-work .current-project').textContent.includes('Improve navigation')")
+            picture('compact-work.png')
+            window.resize(600, 780)
+            until(lambda: js("innerWidth===600 && innerHeight===780"))
             click('Edit running timer')
             until(lambda: js("!!document.getElementById('work-description')"))
             text('Corrected inside the window')
             picture('edit-timer.png')
+            window.resize(375, 480)
+            until(lambda: js("innerWidth===375 && innerHeight===480"))
+            assert js("(()=>{const v=document.querySelector('[data-slot=scroll-area-viewport]').getBoundingClientRect(),task=document.querySelector('button[aria-label=Task]').getBoundingClientRect();return task.top>=v.top&&task.bottom<=v.bottom})()"), 'The compact editor must show Task without scrolling'
+            assert not js("!!document.querySelector('.app-content > footer')")
+            picture('compact-editor.png')
+            window.resize(600, 780)
+            until(lambda: js("innerWidth===600 && innerHeight===780"))
             click('Save changes')
             until(lambda: app.state['description'] == 'Corrected inside the window')
             assert app.state['start_time'] == started and app.state['task_id'] == 31
@@ -229,7 +253,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             click('Edit running timer')
             until(lambda: js("!!document.getElementById('work-description')"))
             assert js("parseFloat(getComputedStyle(document.querySelector('.app-header .current-project')).fontSize)") == 12
-            assert js("getComputedStyle(document.querySelector('.app-header .current-project')).color===getComputedStyle(document.querySelector('.app-content > footer span')).color")
+            assert not js("!!document.querySelector('.app-content > footer')"), 'Today controls must not take up editor space'
             choose('Project', 'Research')
             click('Save changes')
             until(lambda: app.state['project_id'] == 7)
@@ -270,8 +294,15 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             menu('Renamed in the webview', 'Archive task')
             until(lambda: next(t for t in app._cached_tasks() if t['id'] == 42)['active'] is False)
             until(lambda: js("document.body.textContent.includes('Restore')"))
+            for compact_width in (375, 360):
+                window.resize(compact_width, 480)
+                until(lambda: js(f"innerWidth==={compact_width} && innerHeight===480"))
+                assert js("(()=>{const row=document.querySelector('[data-archived]');return row.querySelector('.work-name').getBoundingClientRect().width>=240&&row.querySelector('.work-label').getBoundingClientRect().height<=40})()"), 'Archived task names must keep useful width beside Restore'
+                picture(f'archived-task-{compact_width}.png')
             click('Restore')
             until(lambda: next(t for t in app._cached_tasks() if t['id'] == 42)['active'] is True)
+            window.resize(600, 780)
+            until(lambda: js("innerWidth===600 && innerHeight===780"))
             assert not app.state['tracking']
             click('Today')
             until(lambda: js("document.body.textContent.includes('Draft survives closing and stopping')"))

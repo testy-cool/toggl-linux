@@ -8,6 +8,7 @@ import {
   ItemTitle,
 } from "@/components/ui/item";
 import { TimeInput } from "./TimeInput";
+import { ActionHint } from "./ActionHint";
 import { entryEnd, localTime } from "./model";
 import { shortTime } from "./today";
 import type { TodayRow } from "./today";
@@ -57,31 +58,35 @@ export function TimeEntryRow({
         </ItemDescription>
       </ItemContent>
       <ItemActions>
-        <Button
-          variant="ghost"
-          size="icon"
-          disabled={busy}
-          aria-label={`Edit entry ${entry.description || "No description"}`}
-          onClick={(event) => {
-            event.stopPropagation();
-            edit(entry);
-          }}
-        >
-          <Pencil />
-        </Button>
-        {resume && entry.stop && (
+        <ActionHint text="Edit this time entry">
           <Button
             variant="ghost"
             size="icon"
             disabled={busy}
-            aria-label={`Resume ${entry.description || "No description"}`}
+            aria-label={`Edit entry ${entry.description || "No description"}`}
             onClick={(event) => {
               event.stopPropagation();
-              resume(entry);
+              edit(entry);
             }}
           >
-            <Play />
+            <Pencil />
           </Button>
+        </ActionHint>
+        {resume && entry.stop && (
+          <ActionHint text="Resume this entry and stop any current timer">
+            <Button
+              variant="ghost"
+              size="icon"
+              disabled={busy}
+              aria-label={`Resume ${entry.description || "No description"}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                resume(entry);
+              }}
+            >
+              <Play />
+            </Button>
+          </ActionHint>
         )}
       </ItemActions>
     </Item>

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { todayTotals, localDay, todayLabel, timeKeyForWork } from '../src/today.ts';
+import { todayTotals, localDay, todayLabel, todaySummary, timeKeyForWork } from '../src/today.ts';
 import { workItems } from '../src/model.ts';
 import type { Entry, Snapshot } from '../src/model.ts';
 
@@ -106,4 +106,24 @@ test('canonical spelling variants occupy one work row and show the daily total o
 test('legacy completed duration-only entries count without pretending to be running', () => {
   const totals=todayTotals(snapshot(entry(1,stamp(9),null,{duration:3600})),now);
   assert.equal(totals.seconds,3600);assert.equal(totals.incomplete,false);
+});
+
+test('failed cloud refresh preserves the known total and labels it as an estimate', () => {
+  const s=snapshot(entry(1));s.today_error='Refresh unavailable';
+  const totals=todayTotals(s,now);
+  assert.equal(totals.seconds,3600);
+  assert.equal(todaySummary(s,totals),'Today ≈1h · estimated');
+});
+test('unloaded, incomplete, and loaded zero totals remain distinct', () => {
+  const s=snapshot();s.today_fetched_at=null;
+  assert.equal(todaySummary(s,todayTotals(s,now)),'Today’s totals not loaded');
+  s.today_incomplete=true;
+  assert.equal(todaySummary(s,todayTotals(s,now)),'Today incomplete');
+  s.today_incomplete=false;s.today_fetched_at=now/1000;
+  assert.match(todaySummary(s,todayTotals(s,now)),/^Today 0m · updated /);
+});
+test('a local-only current timer is a lower-bound estimate until daily history loads', () => {
+  const s=snapshot();s.today_fetched_at=null;
+  Object.assign(s.state,{tracking:true,start_time:stamp(13),project_id:6,task_id:31,description:'Live'});
+  assert.equal(todaySummary(s,todayTotals(s,now)),'Today ≈1h · estimated');
 });

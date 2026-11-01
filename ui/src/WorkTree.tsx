@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { hotkeysCoreFeature, syncDataLoaderFeature } from "@headless-tree/core";
 import { useTree } from "@headless-tree/react";
-import { Circle, MoreHorizontal, Pencil, Play, Plus } from "lucide-react";
+import {
+  Circle,
+  MoreHorizontal,
+  Pencil,
+  Play,
+  Plus,
+  TextCursorInput,
+} from "lucide-react";
 import { Tree, TreeItem, TreeItemLabel } from "@/components/reui/tree";
 import { Badge } from "@/components/reui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,6 +20,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { TimeEntryRow } from "./TimeEntryRow";
+import { ActionHint } from "./ActionHint";
 import { clockRange, timeKeyForWork, todayLabel } from "./today";
 import type { Today, TodayRow } from "./today";
 import { workGroups, running } from "./model";
@@ -157,11 +165,7 @@ export function WorkTree({
   }, [tree, structure]);
 
   return (
-    <Tree
-      tree={tree}
-      aria-label="Projects and work"
-      className="project-tree"
-    >
+    <Tree tree={tree} aria-label="Projects and work" className="project-tree">
       {tree.getItems().map((item) => {
         const node = nodes[item.getId()];
         if (!node) return null;
@@ -173,6 +177,7 @@ export function WorkTree({
               className="tree-row"
               data-project={!!group || undefined}
               data-running={active || undefined}
+              data-archived={work?.task?.active === false || undefined}
               data-interval={!!row || undefined}
               onFocus={(event) => {
                 if (event.target === event.currentTarget) item.setFocused();
@@ -188,12 +193,15 @@ export function WorkTree({
               }}
             >
               {row ? (
-                <TimeEntryRow row={row} busy={busy} edit={openEntry} retime={retime} />
+                <TimeEntryRow
+                  row={row}
+                  busy={busy}
+                  edit={openEntry}
+                  retime={retime}
+                />
               ) : group ? (
                 <>
-                  <RowLabel
-                    className="project-name"
-                  >
+                  <RowLabel className="project-name">
                     <Circle
                       aria-hidden="true"
                       className="project-color"
@@ -204,26 +212,26 @@ export function WorkTree({
                   </RowLabel>
                   {group.id != null &&
                     data.task_capability !== "unavailable" && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        disabled={busy}
-                        aria-label={`New task in ${group.name}`}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          createTask(group);
-                        }}
-                      >
-                        <Plus />
-                      </Button>
+                      <ActionHint text={`New task in ${group.name}`}>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          disabled={busy}
+                          aria-label={`New task in ${group.name}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            createTask(group);
+                          }}
+                        >
+                          <Plus />
+                        </Button>
+                      </ActionHint>
                     )}
                 </>
               ) : (
                 work && (
                   <>
-                    <RowLabel
-                      className="work-name"
-                    >
+                    <RowLabel className="work-name">
                       <span className="work-label">{work.label}</span>
                     </RowLabel>
                     {active ? (
@@ -234,19 +242,29 @@ export function WorkTree({
                       !work.task && <span className="work-kind">Recent</span>
                     )}
                     {(work.task || active) && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        disabled={busy}
-                        aria-label={`Edit ${work.label}`}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          if (work.task) rename(work);
-                          else edit(work);
-                        }}
+                      <ActionHint
+                        text={
+                          work.task ? "Rename saved task" : "Edit running timer"
+                        }
                       >
-                        <Pencil />
-                      </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          disabled={busy}
+                          aria-label={
+                            work.task
+                              ? `Rename task ${work.label}`
+                              : `Edit timer ${work.label}`
+                          }
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            if (work.task) rename(work);
+                            else edit(work);
+                          }}
+                        >
+                          {work.task ? <TextCursorInput /> : <Pencil />}
+                        </Button>
+                      </ActionHint>
                     )}
                     {work.task?.active === false ? (
                       <Button
@@ -268,40 +286,46 @@ export function WorkTree({
                         Restore
                       </Button>
                     ) : (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        disabled={busy || active}
-                        aria-label={
-                          active
-                            ? `${work.label} is running`
-                            : `Start ${work.label}`
-                        }
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          act({
-                            action: "switch",
-                            payload: {
-                              changes: {
-                                project_id: work.project_id,
-                                task_id: work.task_id,
-                                description: work.description,
-                              },
-                              expected: data.state,
-                              context: data.project_context,
-                            },
-                          });
-                        }}
-                      >
-                        <Play />
-                      </Button>
+                      !active && (
+                        <ActionHint
+                          text={
+                            data.state.tracking
+                              ? "Start this work and stop the current timer"
+                              : "Start this work"
+                          }
+                        >
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            disabled={busy}
+                            aria-label={`Start ${work.label}`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              act({
+                                action: "switch",
+                                payload: {
+                                  changes: {
+                                    project_id: work.project_id,
+                                    task_id: work.task_id,
+                                    description: work.description,
+                                  },
+                                  expected: data.state,
+                                  context: data.project_context,
+                                },
+                              });
+                            }}
+                          >
+                            <Play />
+                          </Button>
+                        </ActionHint>
+                      )
                     )}
                     {
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button
                             variant="ghost"
-                            size="icon"
+                            size="icon-sm"
                             disabled={busy}
                             aria-label={`More actions for ${work.label}`}
                             onClick={(event) => event.stopPropagation()}

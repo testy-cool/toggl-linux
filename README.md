@@ -328,17 +328,21 @@ Work and Tasks show an expanded project tree, with locally bundled Inter,
 The window uses ReUI's standard tree labels, spacing and state styling with a
 neutral theme. Controls and entry rows retain their library styling.
 Only projects with work and rows with today's intervals show an expansion arrow.
-Empty rows keep their Start and Edit actions; named empty projects keep New Task.
+Empty rows keep their Start and Rename actions; named empty projects keep New Task.
 Click an expandable name or press Enter to view today's intervals; this opens no form and
 never starts or switches a timer. Each row shows its **Today** total, including
-repeat sessions and the running interval. A saved task's pencil renames it; an
-interval's pencil edits that session's description, project and times. Play starts
+repeat sessions and the running interval. A saved task's text-cursor icon renames it;
+an interval's pencil edits that session's description, project and times. Hover an
+icon to see what it changes. Play starts
 work explicitly. Recent activities are labeled **Recent** and their menu offers
 **New timer with these details**, **Save as task**, and **Hide suggestion**.
 The current row is labeled **Running**. Collapse a project
 with its arrow; search reveals matches without losing your browsing choices.
-The plus beside a project creates a task in that project. A running timer uses a
-compact row; when stopped, the tree begins directly below search and navigation.
+The plus beside a project creates a task in that project. **New** beside the tabs
+offers **New task** and **New timer**. The running row shows its project and saved
+task; its Started field stays editable in compact windows. When stopped, the tree
+begins directly below search and navigation. Editors use the available window
+height, with scrolling for fields that do not fit and Save always visible.
 **Open timer** and **Edit description** open this window's editor directly.
 **Today's entries** opens its Today tab. Stop keeps an unfinished description
 attached to the completed interval so it can still be saved without restarting.
@@ -348,7 +352,9 @@ The Today tab groups sessions by task or activity with durations and subtotals.
 Totals count only the selected workspace and the part of each interval within
 today's local midnight boundaries, including daylight-saving days and overnight
 pending entries. The current timer is added once. Unknown or incomplete totals
-show a dash or an approximation rather than a false zero.
+show a dash or an approximation rather than a false zero. If a cloud refresh fails,
+the footer retains known time as an explicit estimate and the warning appears once
+above the work list.
 
 Daily entries load in the background once per account/workspace and local date;
 the timer controls remain available during the read. The footer shows when data

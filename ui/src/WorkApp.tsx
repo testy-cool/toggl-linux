@@ -1,14 +1,33 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "cn";
-import { Clock3, Plus, RefreshCw, Square, X } from "lucide-react";
+import { ChevronDown, Clock3, RefreshCw, Square, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Item, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item";
+import {
+  Item,
+  ItemDescription,
+  ItemGroup,
+  ItemTitle,
+} from "@/components/ui/item";
 import { TimeEntryRow } from "./TimeEntryRow";
 import { TimeInput } from "./TimeInput";
-import { localDay, todayTotals, todayLabel, todayGroupLabel } from "./today";
+import {
+  localDay,
+  todayTotals,
+  todayLabel,
+  todayGroupLabel,
+  todaySummary,
+} from "./today";
+import { ActionHint } from "./ActionHint";
 import {
   Empty,
   EmptyDescription,
@@ -30,6 +49,7 @@ import {
   running,
   sameId,
   timerTitle,
+  taskName,
   workGroups,
   pendingSource,
   rebaseSyncedDraft,
@@ -334,7 +354,7 @@ export default function WorkApp() {
     : [];
 
   return (
-    <TooltipProvider>
+    <TooltipProvider delayDuration={500}>
       <main className="app-shell" data-testid="work-app">
         <header className="app-header">
           <div className="pywebview-drag-region flex min-w-0 flex-1 items-center gap-3">
@@ -399,28 +419,41 @@ export default function WorkApp() {
           )}
           {data && (
             <>
-              {data.warning && (
+              {(data.warning || data.today_error) && (
                 <Alert variant="warning">
-                  <AlertTitle>Some work needs attention</AlertTitle>
-                  <AlertDescription>{data.warning}</AlertDescription>
+                  <AlertDescription>
+                    {data.warning || data.today_error}
+                  </AlertDescription>
                 </Alert>
               )}
               {!draft && data.state.tracking && (
-                <Item size="xs" variant="muted" className="current-timer" data-testid="current-timer">
-                  <Button
-                    variant="ghost"
-                    className="current-work"
-                    disabled={busy}
-                    aria-label="Edit running timer"
-                    onClick={() => setDraft(draftFor(data, "current"))}
-                  >
-                    <ItemTitle className="current-description">
-                      <span className="truncate">{timerTitle(data)}</span>
-                    </ItemTitle>
-                    <ItemDescription className="current-project">
-                      {projectName(data, data.state.project_id)}
-                    </ItemDescription>
-                  </Button>
+                <Item
+                  size="xs"
+                  variant="muted"
+                  className="current-timer"
+                  data-testid="current-timer"
+                >
+                  <ActionHint text="Edit running timer">
+                    <Button
+                      variant="ghost"
+                      className="current-work"
+                      disabled={busy}
+                      aria-label="Edit running timer"
+                      onClick={() => setDraft(draftFor(data, "current"))}
+                    >
+                      <ItemTitle className="current-description">
+                        <span className="truncate">{timerTitle(data)}</span>
+                      </ItemTitle>
+                      <ItemDescription className="current-project">
+                        {[
+                          projectName(data, data.state.project_id),
+                          taskName(data, data.state.task_id),
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </ItemDescription>
+                    </Button>
+                  </ActionHint>
                   <label className="current-start">
                     Started
                     <TimeInput
@@ -470,7 +503,7 @@ export default function WorkApp() {
               )}
               {!draft && (
                 <>
-                  <div className="work-toolbar flex flex-wrap items-center justify-between gap-2">
+                  <div className="work-toolbar flex items-center justify-between gap-2">
                     <Tabs value={tab} onValueChange={changeTab}>
                       <TabsList>
                         <TabsTrigger value="work">Work</TabsTrigger>
@@ -478,29 +511,34 @@ export default function WorkApp() {
                         <TabsTrigger value="today">Today</TabsTrigger>
                       </TabsList>
                     </Tabs>
-                    <div className="flex gap-1">
-                      <Button
-                        variant="ghost"
-                        size="default"
-                        disabled={
-                          busy ||
-                          !!draft ||
-                          data.task_capability === "unavailable"
-                        }
-                        onClick={() => setDraft(draftFor(data, "new-task"))}
-                      >
-                        New task
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="default"
-                        disabled={busy || !!draft}
-                        onClick={() => setDraft(draftFor(data, "new"))}
-                      >
-                        <Plus data-icon="inline-start" />
-                        New timer
-                      </Button>
-                    </div>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          disabled={busy}
+                          aria-label="New work"
+                        >
+                          New <ChevronDown data-icon="inline-end" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuGroup>
+                          <DropdownMenuItem
+                            disabled={data.task_capability === "unavailable"}
+                            onSelect={() =>
+                              setDraft(draftFor(data, "new-task"))
+                            }
+                          >
+                            New task
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onSelect={() => setDraft(draftFor(data, "new"))}
+                          >
+                            New timer
+                          </DropdownMenuItem>
+                        </DropdownMenuGroup>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                   <div className="search-row">
                     <Input
@@ -621,28 +659,27 @@ export default function WorkApp() {
                     </Empty>
                   )}
               </ScrollArea>
-              <footer className="flex items-center justify-between gap-3">
-                <span className="text-xs text-muted-foreground">
-                  {loadingToday
-                    ? "Loading today’s time…"
-                    : data.today_error ||
-                      (!totals!.loaded && !totals!.incomplete
-                        ? "Today’s totals not loaded"
-                        : `${totals!.incomplete ? "Today incomplete" : `Today ${todayLabel(totals!, totals!.seconds)}`}${totals!.loaded ? ` · updated ${new Date(data.today_fetched_at! * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}`)}
-                  {data.pending_count
-                    ? ` · ${data.pending_count} pending sync`
-                    : ""}
-                </span>
-                <Button
-                  variant="ghost"
-                  size="default"
-                  disabled={loadingToday}
-                  onClick={() => void loadToday(true)}
-                >
-                  <RefreshCw data-icon="inline-start" />
-                  Refresh
-                </Button>
-              </footer>
+              {!draft && (
+                <footer className="flex items-center justify-between gap-3">
+                  <span className="text-xs text-muted-foreground">
+                    {loadingToday
+                      ? "Loading today’s time…"
+                      : todaySummary(data, totals!)}
+                    {data.pending_count
+                      ? ` · ${data.pending_count} pending sync`
+                      : ""}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="default"
+                    disabled={loadingToday}
+                    onClick={() => void loadToday(true)}
+                  >
+                    <RefreshCw data-icon="inline-start" />
+                    Refresh
+                  </Button>
+                </footer>
+              )}
             </>
           )}
         </div>
