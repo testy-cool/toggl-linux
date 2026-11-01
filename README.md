@@ -327,13 +327,15 @@ Work and Tasks show an expanded project tree, with locally bundled Inter,
 14px project and task names, and supporting text at 12px or larger.
 The window uses ReUI's standard tree labels, spacing and state styling with a
 neutral theme. Controls and entry rows retain their library styling.
-Task and recent-work groups alternate subtle backgrounds within each project;
-expanded intervals keep their parent task's shade.
+Project headings stand out above plain rows labeled **Task** or **Recent**.
+Expanded sessions use compact editable time ranges, with durations in the Today
+column and their edit buttons alongside. Empty or repeated session descriptions
+are omitted when the parent already names the work; pending-sync status stays visible.
 Only projects with work and rows with today's intervals show an expansion arrow.
 Empty rows keep their Start and Rename actions; named empty projects keep New Task.
 Click an expandable name or press Enter to view today's intervals; this opens no form and
 never starts or switches a timer. Each row shows its **Today** total, including
-repeat sessions and the running interval. A saved task's text-cursor icon renames it;
+repeat sessions and the running interval. A saved task's pencil renames it;
 an interval's pencil edits that session's description, project and times. Hover an
 icon to see what it changes. Play starts
 work explicitly. Recent activities are labeled **Recent** and their menu offers

@@ -616,6 +616,7 @@ export default function WorkApp() {
                           <TimeEntryRow
                             key={row.key}
                             row={row}
+                            parentLabel={group.label}
                             busy={busy || !!draft}
                             edit={openEntry}
                             retime={retime}

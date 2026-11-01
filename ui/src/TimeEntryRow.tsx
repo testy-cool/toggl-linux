@@ -1,4 +1,5 @@
 import { Pencil, Play } from "lucide-react";
+import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import {
   Item,
@@ -16,12 +17,14 @@ import type { Entry } from "./model";
 
 export function TimeEntryRow({
   row,
+  parentLabel,
   busy,
   edit,
   retime,
   resume,
 }: {
   row: TodayRow;
+  parentLabel?: string;
   busy: boolean;
   edit: (entry: Entry) => void;
   retime: (entry: Entry, field: "start" | "stop", time: string) => void;
@@ -29,8 +32,18 @@ export function TimeEntryRow({
 }) {
   const entry = row.entry;
   const end = entryEnd(entry);
+  const nested = parentLabel !== undefined;
+  const description = nested
+    ? entry.description?.trim() &&
+      entry.description.trim() !== parentLabel.trim()
+      ? entry.description
+      : ""
+    : entry.description || "No description";
   return (
-    <Item size="xs" className="interval-row">
+    <Item
+      size="xs"
+      className={cn("interval-row px-0 py-1", nested && "ps-7 py-0.5 gap-1")}
+    >
       <ItemContent>
         <ItemTitle className="interval-times">
           <TimeInput
@@ -50,18 +63,19 @@ export function TimeEntryRow({
           ) : (
             "now"
           )}
-          <span className="tabular-nums">{shortTime(row.seconds)}</span>
         </ItemTitle>
-        <ItemDescription>
-          {entry.description || "No description"}
-          {entry._offline ? " · Pending sync" : ""}
-        </ItemDescription>
+        {(description || entry._offline) && (
+          <ItemDescription>
+            {description}
+            {entry._offline ? `${description ? " · " : ""}Pending sync` : ""}
+          </ItemDescription>
+        )}
       </ItemContent>
       <ItemActions>
         <ActionHint text="Edit this time entry">
           <Button
             variant="ghost"
-            size="icon"
+            size="icon-sm"
             disabled={busy}
             aria-label={`Edit entry ${entry.description || "No description"}`}
             onClick={(event) => {
@@ -76,7 +90,7 @@ export function TimeEntryRow({
           <ActionHint text="Resume this entry and stop any current timer">
             <Button
               variant="ghost"
-              size="icon"
+              size="icon-sm"
               disabled={busy}
               aria-label={`Resume ${entry.description || "No description"}`}
               onClick={(event) => {
@@ -89,6 +103,9 @@ export function TimeEntryRow({
           </ActionHint>
         )}
       </ItemActions>
+      <span className="work-time text-muted-foreground">
+        {shortTime(row.seconds)}
+      </span>
     </Item>
   );
 }

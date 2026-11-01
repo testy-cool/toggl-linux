@@ -151,6 +151,9 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             assert not app.state['tracking']
             assert js("document.querySelector('[role=treeitem][aria-label=\"Empty project\"]').getAttribute('data-folder')") == 'false'
             assert js("!!document.querySelector('button[aria-label=\"New task in Empty project\"]')")
+            assert js("parseInt(getComputedStyle(document.querySelector('.project-name')).fontWeight)>=600"), 'Project headings must stand out from work rows'
+            assert js("document.querySelector('[role=treeitem][aria-label=\"Unused task\"] .work-kind').textContent==='Task'")
+            assert js("(()=>{const plus=document.querySelector('button[aria-label=\"New task in Studio\"]').getBoundingClientRect(),total=document.querySelector('.work-time').getBoundingClientRect();return plus.right<total.left})()"), 'Project creation must sit beside the project name, outside Today'
             assert not js("!!document.querySelector('[role=treeitem][aria-label=\"No project\"]')")
             fetched = app._today_cache['fetched_at']
             app._today_cache.update(fetched_at=None, incomplete=False)
@@ -192,6 +195,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             assert not js("!!document.getElementById('work-description')")
             until(lambda: js("document.body.textContent.includes('Previous today session')"))
             assert js("!!document.querySelector('input[aria-label=\"Start of Previous today session\"]')")
+            assert js("(()=>{const interval=document.querySelector('[data-interval]'),duration=interval.querySelector('.work-time').getBoundingClientRect(),parent=document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"] .work-time').getBoundingClientRect(),edit=interval.querySelector('[data-slot=item-actions]').getBoundingClientRect();return Math.abs(duration.right-parent.right)<=2&&edit.right<duration.left})()"), 'Session durations must align below task totals, with editing in its own area'
             click('Edit entry Previous today session')
             until(lambda: js("!!document.getElementById('work-description')"))
             assert js("!!document.getElementById('work-start').value && !document.querySelector('input[type=datetime-local]')")
@@ -211,6 +215,12 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             started = app.state['start_time']
             until(lambda: js("!!document.querySelector('[data-testid=current-timer]')"))
             assert not js("!!document.querySelector('button[aria-label=\"Start Improve navigation\"]')"), 'Running work must not keep a redundant start control'
+            assert js("document.querySelector('[data-running=true] .work-kind').textContent==='Task'"), 'Running work must retain the scope of its direct edit action'
+            app._task_cache['tasks'][0]['active'] = False
+            until(lambda: js("!!document.querySelector('[data-running=true] button[aria-label^=\"Edit timer\"]')"))
+            assert not js("!!document.querySelector('[data-running=true] .work-kind')"), 'An archived current task must not be mislabeled Recent'
+            app._task_cache['tasks'][0]['active'] = True
+            until(lambda: js("document.querySelector('[data-running=true] .work-kind')?.textContent==='Task'"))
             js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"] .work-name').click()")
             assert not js("!!document.getElementById('work-description')")
             assert js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='false'")
@@ -285,6 +295,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             until(lambda: any(t['id'] == 42 for t in app._cached_tasks()))
             until(lambda: js("!document.getElementById('work-description')"))
             click('Tasks')
+            assert not js("!!document.querySelector('.work-kind')"), 'The Tasks tab does not need repeated Task labels'
             menu('Created in the webview', 'Rename task')
             until(lambda: js("!!document.getElementById('work-description')"))
             text('Renamed in the webview')

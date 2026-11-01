@@ -1,14 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { hotkeysCoreFeature, syncDataLoaderFeature } from "@headless-tree/core";
 import { useTree } from "@headless-tree/react";
-import {
-  Circle,
-  MoreHorizontal,
-  Pencil,
-  Play,
-  Plus,
-  TextCursorInput,
-} from "lucide-react";
+import { Circle, MoreHorizontal, Pencil, Play, Plus } from "lucide-react";
+import { cn } from "cn";
 import { Tree, TreeItem, TreeItemLabel } from "@/components/reui/tree";
 import { Badge } from "@/components/reui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,7 +26,7 @@ type Node = {
   group?: WorkGroup;
   work?: Work;
   row?: TodayRow;
-  shaded?: boolean;
+  parentLabel?: string;
 };
 
 function RowLabel({
@@ -101,16 +95,15 @@ export function WorkTree({
         group,
         children: group.works.map((w) => w.key),
       };
-      for (const [index, work] of group.works.entries()) {
-        const shaded = index % 2 === 0;
+      for (const work of group.works) {
         const rows = today.groups.get(timeKeyForWork(data, work))?.rows ?? [];
         const children = rows.map((row) => `interval:${work.key}:${row.key}`);
-        result[work.key] = { name: work.label, work, children, shaded };
+        result[work.key] = { name: work.label, work, children };
         for (const row of rows)
           result[`interval:${work.key}:${row.key}`] = {
             name: `${clockRange(row)} · ${row.entry.description || work.label}`,
             row,
-            shaded,
+            parentLabel: work.label,
           };
       }
     }
@@ -174,12 +167,15 @@ export function WorkTree({
         if (!node) return null;
         const { group, work, row } = node;
         const active = !!work && running(data, work);
+        const seconds = work
+          ? (today.groups.get(timeKeyForWork(data, work))?.seconds ?? 0)
+          : 0;
         return (
           <TreeItem
             key={item.getId()}
             item={item}
             asChild
-            className={node.shaded ? "rounded-md bg-muted/50" : undefined}
+            className={group ? "mt-2 first:mt-0" : undefined}
           >
             <div
               className="tree-row"
@@ -203,20 +199,21 @@ export function WorkTree({
               {row ? (
                 <TimeEntryRow
                   row={row}
+                  parentLabel={node.parentLabel}
                   busy={busy}
                   edit={openEntry}
                   retime={retime}
                 />
               ) : group ? (
-                <>
-                  <RowLabel className="project-name">
+                <div className="project-heading">
+                  <RowLabel className="project-name font-semibold">
                     <Circle
                       aria-hidden="true"
                       className="project-color"
                       fill="currentColor"
                       style={{ color: group.color }}
                     />
-                    <span className="truncate">{group.name}</span>
+                    <span className="work-label">{group.name}</span>
                   </RowLabel>
                   {group.id != null &&
                     data.task_capability !== "unavailable" && (
@@ -235,20 +232,27 @@ export function WorkTree({
                         </Button>
                       </ActionHint>
                     )}
-                </>
+                </div>
               ) : (
                 work && (
                   <>
-                    <RowLabel className="work-name bg-transparent">
-                      <span className="work-label">{work.label}</span>
+                    <RowLabel className="work-name">
+                      <span className="work-title">
+                        <span className="work-label">{work.label}</span>
+                        {!tasksOnly &&
+                          work.key !== "current" &&
+                          work.task?.active !== false && (
+                            <span className="work-kind">
+                              {work.task ? "Task" : "Recent"}
+                            </span>
+                          )}
+                      </span>
                     </RowLabel>
                     {active ? (
                       <Badge variant="secondary">Running</Badge>
                     ) : work.task?.active === false ? (
                       <Badge variant="secondary">Archived</Badge>
-                    ) : (
-                      !work.task && <span className="work-kind">Recent</span>
-                    )}
+                    ) : null}
                     {(work.task || active) && (
                       <ActionHint
                         text={
@@ -270,7 +274,7 @@ export function WorkTree({
                             else edit(work);
                           }}
                         >
-                          {work.task ? <TextCursorInput /> : <Pencil />}
+                          <Pencil />
                         </Button>
                       </ActionHint>
                     )}
@@ -407,14 +411,13 @@ export function WorkTree({
                       </DropdownMenu>
                     }
                     <span
-                      className="work-time"
+                      className={cn(
+                        "work-time",
+                        seconds === 0 && "text-muted-foreground",
+                      )}
                       aria-label={`Today for ${work.label}`}
                     >
-                      {todayLabel(
-                        today,
-                        today.groups.get(timeKeyForWork(data, work))?.seconds ??
-                          0,
-                      )}
+                      {todayLabel(today, seconds)}
                     </span>
                   </>
                 )
