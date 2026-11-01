@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Item, ItemContent, ItemTitle } from "@/components/ui/item";
 import {
   Field,
   FieldDescription,
@@ -87,6 +88,7 @@ export function Editor({
   hide(): void;
 }) {
   const metadata = d.mode === "task" || d.mode === "new-task";
+  const copyTask = d.mode === "new-task" && !!d.work?.task;
   const fullReview = d.mode === "entry" && d.entry?._needs_full_review;
   const staleContext = !contextMatches(d.snapshot, current);
   const staleTimer =
@@ -96,7 +98,8 @@ export function Editor({
     .filter(
       (p) =>
         sameId(p.workspace_id, scope(d)) &&
-        (p.active !== false || sameId(p.id, d.project)),
+        (p.active !== false || sameId(p.id, d.project)) &&
+        (!copyTask || !sameId(p.id, d.work!.project_id)),
     )
     .map((p) => ({ id: String(p.id), name: p.name }));
   if (d.project !== "none" && !projects.some((p) => p.id === d.project))
@@ -113,13 +116,15 @@ export function Editor({
     tasks.push({ id: d.task, name: "Current task" });
   const nameValid =
     !!d.description.trim() && d.description.trim().length <= 200;
-  const title = {
-    current: "Edit running timer",
-    new: "New timer",
-    task: "Edit saved task",
-    "new-task": "New saved task",
-    entry: "Edit time entry",
-  }[d.mode];
+  const title = copyTask
+    ? "Create task in another project"
+    : {
+        current: "Edit running timer",
+        new: "New timer",
+        task: "Edit saved task",
+        "new-task": "New saved task",
+        entry: "Edit time entry",
+      }[d.mode];
   const note = staleContext
     ? "Your account or workspace changed. Your draft is kept. Copy it or cancel to reload."
     : staleTimer
@@ -133,8 +138,10 @@ export function Editor({
           : d.mode === "entry"
             ? "Corrects this entry without starting another timer."
             : d.mode === "task"
-              ? `This saved task stays in ${projectName(d.snapshot, d.work!.project_id)}.`
-              : "Save a reusable task in this project.";
+              ? `Rename this task here, or create a separate task in another project. Its time entries stay in ${projectName(d.snapshot, d.work!.project_id)}.`
+              : copyTask
+                ? `Creates a separate task. “${d.work!.task!.name}” and its time entries stay in ${projectName(d.snapshot, d.work!.project_id)}.`
+                : "Save a reusable task in this project.";
   return (
     <Frame
       variant="ghost"
@@ -175,15 +182,50 @@ export function Editor({
                 />
               </Field>
               <FieldGroup className="grid gap-4 min-[480px]:grid-cols-2">
-                <Choice
-                  label="Project"
-                  value={d.project}
-                  options={[{ id: "none", name: "No project" }, ...projects]}
-                  disabled={busy || d.mode === "task"}
-                  onChange={(project) =>
-                    change({ ...d, project, task: "none" })
-                  }
-                />
+                {d.mode === "task" ? (
+                  <Field className="min-[480px]:col-span-2">
+                    <FieldLabel>Project</FieldLabel>
+                    <Item size="xs" variant="muted" className="task-project-item">
+                      <ItemContent>
+                        <ItemTitle>
+                          {projectName(d.snapshot, d.work!.project_id)}
+                        </ItemTitle>
+                      </ItemContent>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        disabled={busy}
+                        onClick={() =>
+                          change({
+                            ...d,
+                            mode: "new-task",
+                            project: "none",
+                            task: "none",
+                            reviewed: false,
+                          })
+                        }
+                      >
+                        Create in another project
+                      </Button>
+                    </Item>
+                  </Field>
+                ) : (
+                  <Choice
+                    label="Project"
+                    value={d.project}
+                    options={[
+                      {
+                        id: "none",
+                        name: metadata ? "Choose a project" : "No project",
+                      },
+                      ...projects,
+                    ]}
+                    disabled={busy}
+                    onChange={(project) =>
+                      change({ ...d, project, task: "none" })
+                    }
+                  />
+                )}
                 {!metadata && (
                   <Choice
                     label="Task"

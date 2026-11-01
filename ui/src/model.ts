@@ -540,7 +540,7 @@ export function commandFor(d: Draft, asTask = false): Command {
       action: d.mode === "task" ? "task-update" : "task-create",
       payload: {
         name: d.description.trim(),
-        project_id: project,
+        project_id: d.mode === "task" ? d.work!.project_id : project,
         context: s.project_context,
         ...(d.mode === "task" ? { task: d.work!.task } : {}),
       },

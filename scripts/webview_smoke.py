@@ -25,6 +25,7 @@ gi.require_version('Gdk', '3.0')
 from gi.repository import GLib, Gdk
 import toggl_tray as app
 import toggl_control as control
+import toggl_task_tree
 import toggl_tasks
 import toggl_today
 from toggl_webview import Bridge, create_window
@@ -62,7 +63,14 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
     prior = dict(id=991, workspace_id=1, project_id=6, task_id=31,
                  description='Previous today session', start=midnight.isoformat(),
                  stop=(midnight+(now-midnight)/2).isoformat(), duration=1)
+    recent = dict(id=992, workspace_id=1, project_id=6, task_id=None,
+                  description='Review recent notes', start=(midnight+timedelta(hours=1)).isoformat(),
+                  stop=(midnight+timedelta(hours=1, minutes=20)).isoformat(), duration=1200)
     toggl_today.remember(app, prior)
+    toggl_today.remember(app, recent)
+    toggl_task_tree._save(app, dict(context=control.snapshot(app)['project_context'],
+                                    fetched_at=time.time(), entries=[recent], local_entries=[],
+                                    hidden_activities=[]))
     app._today_cache['fetched_at'] = time.time()  # A private, already-loaded cloud fixture.
     server = control.start_server(app)
     bridge = Bridge(root, managed=True)
@@ -106,7 +114,8 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
         assert payload['context'] == control.snapshot(app)['project_context']
         tasks = app._task_cache['tasks']
         if action == 'task-create':
-            saved = dict(id=42, workspace_id=1, project_id=payload['project_id'], name=payload['name'], active=True)
+            saved = dict(id=max([t['id'] for t in tasks]+[41])+1, workspace_id=1,
+                         project_id=payload['project_id'], name=payload['name'], active=True)
             tasks.append(saved)
         else:
             saved = next(t for t in tasks if t['id'] == payload['task']['id'])
@@ -145,14 +154,20 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             assert not js(f"({leaf}).hasAttribute('aria-expanded')")
             assert not js(f"!!({leaf}).querySelector('.work-name svg,button[aria-label=\"Unused task\"]')")
             assert js("!!document.querySelector('button[aria-label=\"Start Unused task\"]')")
-            assert js("!!document.querySelector('button[aria-label=\"Rename task Unused task\"]')")
+            assert js("!!document.querySelector('button[aria-label=\"Edit task Unused task\"]')")
             js(f"({leaf}).dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',code:'Enter',bubbles:true}}));({leaf}).dispatchEvent(new KeyboardEvent('keyup',{{key:'Enter',code:'Enter',bubbles:true}}));({leaf}).querySelector('.work-name').click()")
             assert not js("!!document.getElementById('work-description')")
             assert not app.state['tracking']
             assert js("document.querySelector('[role=treeitem][aria-label=\"Empty project\"]').getAttribute('data-folder')") == 'false'
             assert js("!!document.querySelector('button[aria-label=\"New task in Empty project\"]')")
             assert js("parseInt(getComputedStyle(document.querySelector('.project-name')).fontWeight)>=600"), 'Project headings must stand out from work rows'
-            assert js("document.querySelector('[role=treeitem][aria-label=\"Unused task\"] .work-kind').textContent==='Task'")
+            assert js("document.querySelector('[role=treeitem][aria-label=\"Unused task\"]').getAttribute('data-work-kind')==='task'")
+            assert js("Array.from(document.querySelectorAll('.work-section-heading')).some(e=>e.textContent==='Saved tasks')")
+            assert js("Array.from(document.querySelectorAll('.work-section-heading')).some(e=>e.textContent==='Recent activity')")
+            assert js("document.querySelector('[role=treeitem][aria-label=\"Review recent notes\"]').getAttribute('data-work-kind')==='activity'")
+            assert js("!!document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"] button.edit-entries')")
+            assert js("!!document.querySelector('[role=treeitem][aria-label=\"Review recent notes\"] button.edit-entries')")
+            assert not js("!!document.querySelector('.work-kind')"), 'Saved and recent work must be grouped instead of labeled per row'
             assert js("(()=>{const plus=document.querySelector('button[aria-label=\"New task in Studio\"]').getBoundingClientRect(),total=document.querySelector('.work-time').getBoundingClientRect();return plus.right<total.left})()"), 'Project creation must sit beside the project name, outside Today'
             assert not js("!!document.querySelector('[role=treeitem][aria-label=\"No project\"]')")
             fetched = app._today_cache['fetched_at']
@@ -198,8 +213,13 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             assert js("document.querySelector('[role=treeitem][aria-label=Studio]')?.getAttribute('aria-expanded')==='true'")
             assert not js("!!document.getElementById('work-description')")
             until(lambda: js("document.body.textContent.includes('Previous today session')"))
-            assert js("!!document.querySelector('input[aria-label=\"Start of Previous today session\"]')")
+            assert not js("!!document.querySelector('input[aria-label=\"Start of Previous today session\"]')")
+            assert js("!!document.querySelector('button[aria-label=\"Correct times for Previous today session\"]')")
             assert js("(()=>{const interval=document.querySelector('[data-interval]'),duration=interval.querySelector('.work-time').getBoundingClientRect(),parent=document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"] .work-time').getBoundingClientRect(),edit=interval.querySelector('[data-slot=item-actions]').getBoundingClientRect();return Math.abs(duration.right-parent.right)<=2&&edit.right<duration.left})()"), 'Session durations must align below task totals, with editing in its own area'
+            click('Correct times for Previous today session')
+            until(lambda: js("!!document.querySelector('input[aria-label=\"Start of Previous today session\"]')"))
+            click('Done')
+            until(lambda: js("!document.querySelector('input[aria-label=\"Start of Previous today session\"]')"))
             click('Edit entry Previous today session')
             until(lambda: js("!!document.getElementById('work-description')"))
             assert js("!!document.getElementById('work-start').value && !document.querySelector('input[type=datetime-local]')")
@@ -219,17 +239,16 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             started = app.state['start_time']
             until(lambda: js("!!document.querySelector('[data-testid=current-timer]')"))
             assert not js("!!document.querySelector('button[aria-label=\"Start Improve navigation\"]')"), 'Running work must not keep a redundant start control'
-            assert js("document.querySelector('[data-running=true] .work-kind').textContent==='Task'"), 'Running work must retain the scope of its direct edit action'
+            assert js("document.querySelector('[data-running=true]').getAttribute('data-work-kind')==='task'"), 'Running work must retain its saved-task structure'
             app._task_cache['tasks'][0]['active'] = False
             until(lambda: js("!!document.querySelector('[data-running=true] button[aria-label^=\"Edit timer\"]')"))
-            assert not js("!!document.querySelector('[data-running=true] .work-kind')"), 'An archived current task must not be mislabeled Recent'
+            assert js("document.querySelector('[data-running=true]').getAttribute('data-work-kind')==='task'"), 'An archived current task must not be grouped as recent activity'
             app._task_cache['tasks'][0]['active'] = True
-            until(lambda: js("document.querySelector('[data-running=true] .work-kind')?.textContent==='Task'"))
-            js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"] .work-name').click()")
+            until(lambda: js("document.querySelector('[data-running=true]')?.getAttribute('data-work-kind')==='task'"))
             assert not js("!!document.getElementById('work-description')")
-            assert js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='false'")
-            click('Improve navigation')
-            assert js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'")
+            if not js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'"):
+                click('Improve navigation')
+                until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'"))
             picture('work-panel.png')
             window.resize(375, 480)
             until(lambda: js("innerWidth===375 && innerHeight===480"))
@@ -300,7 +319,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             until(lambda: js("!document.getElementById('work-description')"))
             click('Tasks')
             assert not js("!!document.querySelector('.work-kind')"), 'The Tasks tab does not need repeated Task labels'
-            menu('Created in the webview', 'Rename task')
+            menu('Created in the webview', 'Edit task')
             until(lambda: js("!!document.getElementById('work-description')"))
             text('Renamed in the webview')
             click('Save changes')
@@ -318,6 +337,18 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             until(lambda: next(t for t in app._cached_tasks() if t['id'] == 42)['active'] is True)
             window.resize(600, 780)
             until(lambda: js("innerWidth===600 && innerHeight===780"))
+            menu('Renamed in the webview', 'Edit task')
+            until(lambda: js("document.body.textContent.includes('Edit saved task')"))
+            click('Create in another project')
+            until(lambda: js("document.body.textContent.includes('Create task in another project')"))
+            text('Copied into Research')
+            choose('Project', 'Research')
+            click('Create task')
+            until(lambda: any(t['name'] == 'Copied into Research' and t['project_id'] == 7
+                              for t in app._cached_tasks()))
+            original = next(t for t in app._cached_tasks() if t['id'] == 42)
+            assert original['project_id'] == 6 and original['name'] == 'Renamed in the webview'
+            until(lambda: js("!document.getElementById('work-description')"))
             assert not app.state['tracking']
             click('Today')
             until(lambda: js("document.body.textContent.includes('Draft survives closing and stopping')"))
@@ -465,10 +496,12 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             print(json.dumps(dict(real_webkit=True, real_react=True, private_offline_start=True,
                                   empty_work_leaf=True, empty_project_leaf=True, inert_leaf_keyboard=True,
                                   daily_loading_states=True, folder_to_leaf_focus=True, bundled_inter=True, work_font_px=14,
-                                  row_click_expands_without_start=True, file_backed_expansion=True,
+                                  row_click_expands_without_start=True, grouped_saved_and_recent=True,
+                                  file_backed_expansion=True,
                                   private_webkit_local_storage=False, daily_intervals=True,
                                   same_interval_edit=True, project_move=True, hidden_draft=True,
                                   draft_after_stop=True, task_create_rename_archive_restore=True,
+                                  cross_project_task_copy=True,
                                   pending_entry_edit=True, timer_conflict=True, account_conflict=True,
                                   full_interval_review=True, draft_after_sync=True,
                                   pending_today_editor=True, new_draft_after_sync=True,

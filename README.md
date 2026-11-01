@@ -323,35 +323,44 @@ The timer, queue, API credentials and sync remain in the Python tray process. A
 separate pywebview process talks only to its private control socket. Closing the
 window hides it, so reopening preserves search, scroll and any unfinished draft.
 The current timer stays visible while browsing; editing happens in the same window.
-Work and Tasks show an expanded project tree, with locally bundled Inter,
-14px project and task names, and supporting text at 12px or larger.
-The window uses ReUI's standard tree labels, spacing and state styling with a
-neutral theme. Controls and entry rows retain their library styling.
-Project headings stand out above plain rows labeled **Task** or **Recent**.
-Expanded sessions use compact editable time ranges, with durations in the Today
-column and their edit buttons alongside. Empty or repeated session descriptions
-are omitted when the parent already names the work; pending-sync status stays visible.
-Only projects with work and rows with today's intervals show an expansion arrow.
-Empty rows keep their Start and Rename actions; named empty projects keep New Task.
-Click an expandable name or press Enter to view today's intervals; this opens no form and
-never starts or switches a timer. Each row shows its **Today** total, including
-repeat sessions and the running interval. A saved task's pencil renames it;
-an interval's pencil edits that session's description, project and times. Hover an
-icon to see what it changes. Play starts
-work explicitly. Recent activities are labeled **Recent** and their menu offers
-**New timer with these details**, **Save as task**, and **Hide suggestion**.
-The current row is labeled **Running**. Collapse a project
-with its arrow; search reveals matches without losing your browsing choices.
-The plus beside a project creates a task in that project. **New** beside the tabs
-offers **New task** and **New timer**. The running row shows its project and saved
-task; its Started field stays editable in compact windows. When stopped, the tree
-begins directly below search and navigation. Editors use the available window
-height, with scrolling for fields that do not fit and Save always visible.
-**Open timer** and **Edit description** open this window's editor directly.
-**Today's entries** opens its Today tab. Stop keeps an unfinished description
-attached to the completed interval so it can still be saved without restarting.
-Drafts keep their edits when offline sync assigns a cloud ID. Escape hides the
-window and preserves the draft, just like its close button.
+Projects and Tasks show a ReUI tree in locally bundled Inter. Names use 14px
+text, and supporting text stays at 12px or larger. Projects with both kinds of
+work group their rows under **Saved tasks** and **Recent activity** instead of
+repeating a type label on every row. Narrow work rows put the name and Today
+total first, then place status and actions on a second line. Focus highlights
+the complete row.
+
+Click an expandable name or press Enter to browse today's sessions without
+opening an editor or starting a timer. Sessions show a plain time range until
+you activate it, then use ReUI's typed time controls for direct corrections.
+The session pencil opens the full entry editor for its description, project,
+task, and times. Empty or repeated session descriptions stay hidden when the
+parent already names the work, while pending-sync status remains visible.
+
+Play is the only direct start or switch action. A saved task's pencil opens its
+metadata editor. The task API cannot move an existing task, so **Create in
+another project** makes a separate task and leaves the original task and its
+time entries intact. Saved tasks and recent activity with loaded sessions show
+**Edit entries**. A recent activity's menu still offers **New timer with these
+details**, **Save as task**, and **Hide suggestion**. Empty rows keep their start
+and task-editing actions, and empty projects keep **New task**.
+
+The running timer uses a compact status strip. Its title is plain text, while a
+visible pencil opens the editor. Started, elapsed time, and Stop remain available
+at narrow widths. **New** beside the tabs offers **New task** and **New timer**.
+The editors use the available height, scroll fields that do not fit, and keep
+Save visible. **Open timer** and **Edit description** open the same editor;
+**Today's entries** opens the Today tab. Stop keeps an unfinished description
+attached to the completed interval, and offline sync cannot replace a draft when
+it assigns a cloud ID.
+
+Closing the managed window hides the existing process, so its draft, search,
+and scroll position remain in memory. Project and saved-task expansion also
+survives a complete UI process restart in private
+`~/.local/share/toggl-tray/ui-preferences.json`. The file stores only allowlisted
+IDs for the current account and workspace; credentials and timer writes stay out
+of it. Search can reveal matches temporarily, then clearing search restores the
+saved tree.
 The Today tab groups sessions by task or activity with durations and subtotals.
 Totals count only the selected workspace and the part of each interval within
 today's local midnight boundaries, including daylight-saving days and overnight

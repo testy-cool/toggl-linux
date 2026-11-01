@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Pencil, Play } from "lucide-react";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
@@ -11,7 +12,7 @@ import {
 import { TimeInput } from "./TimeInput";
 import { ActionHint } from "./ActionHint";
 import { entryEnd, localTime } from "./model";
-import { shortTime } from "./today";
+import { clockRange, shortTime } from "./today";
 import type { TodayRow } from "./today";
 import type { Entry } from "./model";
 
@@ -32,6 +33,7 @@ export function TimeEntryRow({
 }) {
   const entry = row.entry;
   const end = entryEnd(entry);
+  const [editingTime, setEditingTime] = useState(false);
   const nested = parentLabel !== undefined;
   const description = nested
     ? entry.description?.trim() &&
@@ -42,26 +44,58 @@ export function TimeEntryRow({
   return (
     <Item
       size="xs"
+      data-editing-time={editingTime || undefined}
       className={cn("interval-row px-0 py-1", nested && "ps-7 py-0.5 gap-1")}
     >
       <ItemContent>
         <ItemTitle className="interval-times">
-          <TimeInput
-            key={`start:${entry.id}`}
-            label={`Start of ${entry.description || "entry"}`}
-            value={localTime(entry.start).slice(11, 16)}
-            onChange={(time) => retime(entry, "start", time)}
-          />
-          –
-          {end ? (
-            <TimeInput
-              key={`stop:${entry.id}`}
-              label={`End of ${entry.description || "entry"}`}
-              value={localTime(end).slice(11, 16)}
-              onChange={(time) => retime(entry, "stop", time)}
-            />
+          {editingTime ? (
+            <div className="interval-time-fields">
+              <TimeInput
+                key={`start:${entry.id}`}
+                label={`Start of ${entry.description || "entry"}`}
+                value={localTime(entry.start).slice(11, 16)}
+                disabled={busy}
+                onChange={(time) => retime(entry, "start", time)}
+              />
+              <span aria-hidden="true">–</span>
+              {end ? (
+                <TimeInput
+                  key={`stop:${entry.id}`}
+                  label={`End of ${entry.description || "entry"}`}
+                  value={localTime(end).slice(11, 16)}
+                  disabled={busy}
+                  onChange={(time) => retime(entry, "stop", time)}
+                />
+              ) : (
+                <span>now</span>
+              )}
+              <Button
+                variant="ghost"
+                size="xs"
+                disabled={busy}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setEditingTime(false);
+                }}
+              >
+                Done
+              </Button>
+            </div>
           ) : (
-            "now"
+            <Button
+              variant="ghost"
+              size="xs"
+              className="interval-range"
+              disabled={busy}
+              aria-label={`Correct times for ${entry.description || "entry"}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                setEditingTime(true);
+              }}
+            >
+              {clockRange(row)}
+            </Button>
           )}
         </ItemTitle>
         {(description || entry._offline) && (

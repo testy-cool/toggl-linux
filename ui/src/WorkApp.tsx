@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "cn";
-import { ChevronDown, Clock3, RefreshCw, Square, X } from "lucide-react";
+import {
+  ChevronDown,
+  Clock3,
+  Pencil,
+  RefreshCw,
+  Square,
+  X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -14,7 +21,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Item,
-  ItemDescription,
+  ItemContent,
   ItemGroup,
   ItemTitle,
 } from "@/components/ui/item";
@@ -456,25 +463,29 @@ export default function WorkApp() {
                   className="current-timer"
                   data-testid="current-timer"
                 >
-                  <ActionHint text="Edit running timer">
-                    <Button
-                      variant="ghost"
-                      className="current-work"
-                      disabled={busy}
-                      aria-label="Edit running timer"
-                      onClick={() => setDraft(draftFor(data, "current"))}
-                    >
-                      <ItemTitle className="current-description">
-                        <span className="truncate">{timerTitle(data)}</span>
-                      </ItemTitle>
-                      <ItemDescription className="current-project">
+                  <ItemContent className="current-work">
+                    <ItemTitle className="current-description">
+                      <span className="truncate">{timerTitle(data)}</span>
+                      <span className="current-project truncate">
                         {[
                           projectName(data, data.state.project_id),
                           taskName(data, data.state.task_id),
                         ]
                           .filter(Boolean)
                           .join(" · ")}
-                      </ItemDescription>
+                      </span>
+                    </ItemTitle>
+                  </ItemContent>
+                  <ActionHint text="Edit running timer">
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="current-edit"
+                      disabled={busy}
+                      aria-label="Edit running timer"
+                      onClick={() => setDraft(draftFor(data, "current"))}
+                    >
+                      <Pencil />
                     </Button>
                   </ActionHint>
                   <label className="current-start">
@@ -491,6 +502,7 @@ export default function WorkApp() {
                   </span>
                   <Button
                     variant="destructive"
+                    className="current-stop"
                     disabled={busy && !savingTime}
                     onClick={stopTimer}
                   >
@@ -529,7 +541,7 @@ export default function WorkApp() {
                   <div className="work-toolbar flex items-center justify-between gap-2">
                     <Tabs value={tab} onValueChange={changeTab}>
                       <TabsList>
-                        <TabsTrigger value="work">Work</TabsTrigger>
+                        <TabsTrigger value="work">Projects</TabsTrigger>
                         <TabsTrigger value="tasks">Tasks</TabsTrigger>
                         <TabsTrigger value="today">Today</TabsTrigger>
                       </TabsList>
@@ -566,7 +578,7 @@ export default function WorkApp() {
                   <div className="search-row">
                     <Input
                       aria-label="Search work"
-                      placeholder="Search projects, tasks, and recent work…"
+                      placeholder="Search projects, tasks, and recent activity…"
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
                     />

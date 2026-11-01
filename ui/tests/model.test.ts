@@ -71,6 +71,21 @@ test('creating reusable task metadata never starts an interval', () => {
   draft.project = '6'
   assert.deepEqual(commandFor(draft), {action: 'task-create', payload: {name: 'Reusable', project_id: 6, context: draft.snapshot.project_context}})
 })
+test('cross-project task changes create a separate task and never move the original', () => {
+  const data = sample()
+  const original = workItems(data).find(work => work.task)!
+  const edit = draftFor(data, 'task', original)
+  edit.project = '7'
+  assert.equal(commandFor(edit).action, 'task-update')
+  assert.equal(commandFor(edit).payload.project_id, 6)
+
+  const copy = {...edit, mode: 'new-task' as const, project: '7', description: 'Copied task'}
+  assert.deepEqual(commandFor(copy), {
+    action: 'task-create',
+    payload: {name: 'Copied task', project_id: 7, context: data.project_context},
+  })
+  assert.equal(data.tasks[0].project_id, 6)
+})
 test('tasks from a different workspace do not enter the work list', () => {
   const data = sample()
   data.tasks.push({...data.tasks[0], id: 32, workspace_id: 2, name: 'Other account task'})
