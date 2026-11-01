@@ -41,8 +41,8 @@ def test_first_open_and_reopen_use_absolute_desktop_coordinates():
         def fire(self):
             for fn in self.handlers: fn()
     position=[]
-    native=SimpleNamespace(move=lambda x,y: position.append((x,y)))
-    window=SimpleNamespace(native=native, events=SimpleNamespace(closing=Event(),shown=Event()))
+    native=SimpleNamespace(move=lambda x,y: position.append((x,y)),present_with_time=lambda _time: None,get_window=lambda: None)
+    window=SimpleNamespace(native=native, events=SimpleNamespace(closing=Event(),shown=Event(),before_show=Event()))
     # Emulate pywebview GTK's screen-relative positioning on monitor 0 at x=1920.
     def relative_move(x,y): native.move(1920+x,y)
     window.move=relative_move
