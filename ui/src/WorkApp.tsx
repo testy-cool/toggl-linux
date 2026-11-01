@@ -36,8 +36,8 @@ import {
   isCurrentEntry,
   localTime,
   retimeCommand,
+  stopCommand,
   timerKey,
-  withExpected,
 } from "./model";
 import type { Command, Draft, Entry, Snapshot, Work } from "./model";
 
@@ -61,9 +61,11 @@ export default function WorkApp() {
   useEffect(() => {
     latest.current = data;
   }, [data]);
-  // A typed time saves when the field loses focus, so the click that took the focus must still run.
+  // A typed time saves when the field loses focus. Stop and the next typed time must survive that
+  // save; every other control stays disabled during it, as for any write.
   const correcting = useRef(false);
-  const heldBack = useRef<[Command, boolean, boolean][]>([]);
+  const [savingTime, setSavingTime] = useState(false);
+  const heldBack = useRef<(() => Command | null)[]>([]);
   const draftRef = useRef<Draft | null>(null);
   useEffect(() => {
     draftRef.current = draft;
@@ -105,22 +107,27 @@ export default function WorkApp() {
       correction = false,
       keepError = false,
     ): Promise<void> {
-      if (writing.current) {
-        if (correcting.current)
-          heldBack.current.push([command, closeDraft, correction]);
-        return;
-      }
+      if (writing.current) return;
+      const next = () => {
+        while (heldBack.current.length) {
+          const held = heldBack.current.shift()!();
+          if (held) return void run(held, false, held.action !== "stop", true);
+        }
+        void poll();
+      };
       if (
         command.action === "edit-current" &&
         Object.keys(command.payload.changes as object).length === 0
       ) {
         setDraft(null);
+        next();
         return;
       }
       writing.current = true;
       correcting.current = correction;
       epoch.current += 1;
-      setBusy(!correction);
+      setBusy(true);
+      setSavingTime(correction);
       if (!keepError) setError("");
       try {
         const frozen = draftRef.current,
@@ -155,15 +162,8 @@ export default function WorkApp() {
         correcting.current = false;
         epoch.current += 1;
         setBusy(false);
-        const next = heldBack.current.shift();
-        if (next && latest.current)
-          void run(
-            withExpected(next[0], latest.current.state),
-            next[1],
-            next[2],
-            true,
-          );
-        else void poll();
+        setSavingTime(false);
+        next();
       }
     },
     [poll],
@@ -282,13 +282,29 @@ export default function WorkApp() {
     );
   }
   function retime(entry: Entry | null, field: "start" | "stop", time: string) {
-    if (!data || busy) return;
+    if (!data || (writing.current && !correcting.current)) return;
+    if (correcting.current) {
+      heldBack.current.push(() =>
+        retimeCommand(latest.current!, entry, field, time),
+      );
+      return;
+    }
     try {
       const command = retimeCommand(data, entry, field, time);
       if (command) void act(command, false, true);
       else if (entry) openEntry(entry);
     } catch (failure) {
       setError(String(failure));
+    }
+  }
+  function stopTimer() {
+    if (!data) return;
+    const clicked = data.state;
+    const build = () => stopCommand(latest.current!, clicked);
+    if (correcting.current) heldBack.current.push(build);
+    else {
+      const command = build();
+      if (command) void act(command);
     }
   }
   function saveDraft(asTask = false) {
@@ -411,7 +427,6 @@ export default function WorkApp() {
                       key={timerKey(data)}
                       label="Started at"
                       value={localTime(data.state.start_time).slice(11, 16)}
-                      disabled={busy}
                       onChange={(time) => retime(null, "start", time)}
                     />
                   </label>
@@ -420,16 +435,8 @@ export default function WorkApp() {
                   </span>
                   <Button
                     variant="destructive"
-                    disabled={busy}
-                    onClick={() =>
-                      void act({
-                        action: "stop",
-                        payload: {
-                          expected: data.state,
-                          context: data.project_context,
-                        },
-                      })
-                    }
+                    disabled={busy && !savingTime}
+                    onClick={stopTimer}
                   >
                     <Square data-icon="inline-start" /> Stop
                   </Button>

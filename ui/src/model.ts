@@ -489,11 +489,10 @@ export function isDay(text: string) {
 export const timerKey = (s: Snapshot) =>
   JSON.stringify([s.project_context, s.state.entry_id, s.state.start_time]);
 
-/** A command held back during a correction checks against the timer that correction left behind. */
-export function withExpected(command: Command, state: Snapshot["state"]): Command {
-  return "expected" in command.payload
-    ? { ...command, payload: { ...command.payload, expected: state } }
-    : command;
+/** Stop the timer the click was aimed at, or nothing if it has since changed or stopped. */
+export function stopCommand(s: Snapshot, clicked: Snapshot["state"]): Command | null {
+  if (!s.state.tracking || !sameId(s.state.entry_id, clicked.entry_id)) return null;
+  return { action: "stop", payload: { expected: s.state, context: s.project_context } };
 }
 
 /** The command for one typed time, or null when the entry needs its full review form. */

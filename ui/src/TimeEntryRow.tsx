@@ -36,7 +36,6 @@ export function TimeEntryRow({
             key={`start:${entry.id}`}
             label={`Start of ${entry.description || "entry"}`}
             value={localTime(entry.start).slice(11, 16)}
-            disabled={busy}
             onChange={(time) => retime(entry, "start", time)}
           />
           –
@@ -45,7 +44,6 @@ export function TimeEntryRow({
               key={`stop:${entry.id}`}
               label={`End of ${entry.description || "entry"}`}
               value={localTime(end).slice(11, 16)}
-              disabled={busy}
               onChange={(time) => retime(entry, "stop", time)}
             />
           ) : (

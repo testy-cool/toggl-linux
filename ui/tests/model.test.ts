@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { afterOwnStop, commandFor, isDay, retimeCommand, timerKey, withExpected, contextMatches, draftFor, localTime, running, workItems, workGroups, isCurrentEntry, rebaseSyncedDraft, samePending } from '../src/model.ts'
+import { afterOwnStop, commandFor, isDay, retimeCommand, stopCommand, timerKey, contextMatches, draftFor, localTime, running, workItems, workGroups, isCurrentEntry, rebaseSyncedDraft, samePending } from '../src/model.ts'
 import type { Snapshot } from '../src/model.ts'
 
 const sample = (): Snapshot => ({
@@ -314,11 +314,12 @@ test('half-typed text belongs to one running timer', () => {
   for (const changed of [other, edited, account]) assert.notEqual(timerKey(changed), timerKey(data))
 })
 
-test('a Stop held back during a correction expects the corrected timer', () => {
+test('a Stop held back during a correction stops only the timer it was aimed at', () => {
   const data = sample()
-  const corrected = {...data.state, start_time: '2026-10-29T11:00:00+00:00'}
-  const stop = {action: 'stop', payload: {expected: data.state, context: data.project_context}}
-  assert.deepEqual(withExpected(stop, corrected).payload.expected, corrected)
-  const edit = {action: 'edit-entry', payload: {entry: finished}}
-  assert.equal(withExpected(edit, corrected), edit)
+  const corrected = sample(); corrected.state = {...data.state, start_time: '2026-10-29T11:00:00+00:00'}
+  assert.deepEqual(stopCommand(corrected, data.state)!.payload.expected, corrected.state)
+  const other = sample(); other.state = {...data.state, entry_id: 22}
+  assert.equal(stopCommand(other, data.state), null)
+  const stopped = sample(); stopped.state = {...data.state, tracking: false}
+  assert.equal(stopCommand(stopped, data.state), null)
 })
