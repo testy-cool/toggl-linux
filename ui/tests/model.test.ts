@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { afterOwnStop, commandFor, isDay, retimeCommand, contextMatches, draftFor, localTime, running, workItems, workGroups, isCurrentEntry, rebaseSyncedDraft, samePending } from '../src/model.ts'
+import { afterOwnStop, commandFor, isDay, retimeCommand, timerKey, withExpected, contextMatches, draftFor, localTime, running, workItems, workGroups, isCurrentEntry, rebaseSyncedDraft, samePending } from '../src/model.ts'
 import type { Snapshot } from '../src/model.ts'
 
 const sample = (): Snapshot => ({
@@ -303,4 +303,22 @@ test('only real calendar days pass as a typed date', () => {
   assert.equal(isDay('2026-02-31'), false)
   assert.equal(isDay('2026-10-2'), false)
   assert.equal(isDay('yesterday'), false)
+})
+
+test('half-typed text belongs to one running timer', () => {
+  const data = sample()
+  const other = sample(); other.state = {...other.state, entry_id: 22}
+  const edited = sample(); edited.state = {...edited.state, start_time: '2026-10-29T11:00:00+00:00'}
+  const account = sample(); account.project_context = {account: 'other', workspace_id: 1}
+  assert.equal(timerKey(sample()), timerKey(data))
+  for (const changed of [other, edited, account]) assert.notEqual(timerKey(changed), timerKey(data))
+})
+
+test('a Stop held back during a correction expects the corrected timer', () => {
+  const data = sample()
+  const corrected = {...data.state, start_time: '2026-10-29T11:00:00+00:00'}
+  const stop = {action: 'stop', payload: {expected: data.state, context: data.project_context}}
+  assert.deepEqual(withExpected(stop, corrected).payload.expected, corrected)
+  const edit = {action: 'edit-entry', payload: {entry: finished}}
+  assert.equal(withExpected(edit, corrected), edit)
 })

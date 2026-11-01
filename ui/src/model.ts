@@ -485,6 +485,17 @@ export function isDay(text: string) {
   );
 }
 
+/** Changes when the running timer does, so half-typed text cannot be applied to a different one. */
+export const timerKey = (s: Snapshot) =>
+  JSON.stringify([s.project_context, s.state.entry_id, s.state.start_time]);
+
+/** A command held back during a correction checks against the timer that correction left behind. */
+export function withExpected(command: Command, state: Snapshot["state"]): Command {
+  return "expected" in command.payload
+    ? { ...command, payload: { ...command.payload, expected: state } }
+    : command;
+}
+
 /** The command for one typed time, or null when the entry needs its full review form. */
 export function retimeCommand(
   s: Snapshot,

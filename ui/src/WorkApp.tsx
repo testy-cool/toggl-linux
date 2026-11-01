@@ -36,6 +36,8 @@ import {
   isCurrentEntry,
   localTime,
   retimeCommand,
+  timerKey,
+  withExpected,
 } from "./model";
 import type { Command, Draft, Entry, Snapshot, Work } from "./model";
 
@@ -55,6 +57,13 @@ export default function WorkApp() {
   const dailyAttempt = useRef("");
   const todayReading = useRef(false);
   const [loadingToday, setLoadingToday] = useState(false);
+  const latest = useRef<Snapshot | null>(null);
+  useEffect(() => {
+    latest.current = data;
+  }, [data]);
+  // A typed time saves when the field loses focus, so the click that took the focus must still run.
+  const correcting = useRef(false);
+  const heldBack = useRef<[Command, boolean, boolean][]>([]);
   const draftRef = useRef<Draft | null>(null);
   useEffect(() => {
     draftRef.current = draft;
@@ -90,8 +99,17 @@ export default function WorkApp() {
     }
   }, []);
   const act = useCallback(
-    async (command: Command, closeDraft = false) => {
-      if (writing.current) return;
+    async function run(
+      command: Command,
+      closeDraft = false,
+      correction = false,
+      keepError = false,
+    ): Promise<void> {
+      if (writing.current) {
+        if (correcting.current)
+          heldBack.current.push([command, closeDraft, correction]);
+        return;
+      }
       if (
         command.action === "edit-current" &&
         Object.keys(command.payload.changes as object).length === 0
@@ -100,9 +118,10 @@ export default function WorkApp() {
         return;
       }
       writing.current = true;
+      correcting.current = correction;
       epoch.current += 1;
-      setBusy(true);
-      setError("");
+      setBusy(!correction);
+      if (!keepError) setError("");
       try {
         const frozen = draftRef.current,
           source = frozen && pendingSource(frozen);
@@ -117,6 +136,9 @@ export default function WorkApp() {
             : command.payload,
         );
         if (mounted.current) {
+          latest.current = latest.current
+            ? { ...latest.current, ...result }
+            : result;
           setData((previous) =>
             previous ? { ...previous, ...result } : result,
           );
@@ -130,9 +152,18 @@ export default function WorkApp() {
         setError(String(failure instanceof Error ? failure.message : failure));
       } finally {
         writing.current = false;
+        correcting.current = false;
         epoch.current += 1;
         setBusy(false);
-        void poll();
+        const next = heldBack.current.shift();
+        if (next && latest.current)
+          void run(
+            withExpected(next[0], latest.current.state),
+            next[1],
+            next[2],
+            true,
+          );
+        else void poll();
       }
     },
     [poll],
@@ -254,7 +285,7 @@ export default function WorkApp() {
     if (!data || busy) return;
     try {
       const command = retimeCommand(data, entry, field, time);
-      if (command) void act(command);
+      if (command) void act(command, false, true);
       else if (entry) openEntry(entry);
     } catch (failure) {
       setError(String(failure));
@@ -377,6 +408,7 @@ export default function WorkApp() {
                   <label className="current-start">
                     Started
                     <TimeInput
+                      key={timerKey(data)}
                       label="Started at"
                       value={localTime(data.state.start_time).slice(11, 16)}
                       disabled={busy}
