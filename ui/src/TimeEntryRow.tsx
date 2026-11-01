@@ -126,12 +126,8 @@ export function TimeEntryRow({
             </Button>
           )}
         </ItemTitle>
-        {(description || entry._offline) && (
-          <ItemDescription>
-            {description}
-            {entry._offline ? `${description ? " · " : ""}Pending sync` : ""}
-          </ItemDescription>
-        )}
+        {description && <ItemDescription>{description}</ItemDescription>}
+        {entry._offline && <ItemDescription>Pending sync</ItemDescription>}
       </ItemContent>
       <ItemActions>
         <ActionHint text="Edit this time entry">

@@ -315,12 +315,15 @@ export default function WorkApp() {
     if (correcting.current) {
       heldBack.current.push(() => {
         const snapshot = latest.current!;
-        return retimeCommand(
+        const command = retimeCommand(
           snapshot,
           entry ? entryFromSnapshot(snapshot, entry) : null,
           field,
           time,
         );
+        if (!command)
+          setError("Review this entry with its pencil before changing its times.");
+        return command;
       });
       return;
     }
