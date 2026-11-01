@@ -327,6 +327,8 @@ Work and Tasks show an expanded project tree, with locally bundled Inter,
 14px project and task names, and supporting text at 12px or larger.
 The window uses ReUI's standard tree labels, spacing and state styling with a
 neutral theme. Controls and entry rows retain their library styling.
+Task and recent-work groups alternate subtle backgrounds within each project;
+expanded intervals keep their parent task's shade.
 Only projects with work and rows with today's intervals show an expansion arrow.
 Empty rows keep their Start and Rename actions; named empty projects keep New Task.
 Click an expandable name or press Enter to view today's intervals; this opens no form and
