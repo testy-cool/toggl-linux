@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Exercise the real React/WebKit window against an isolated, offline tray."""
 import argparse
+import atexit
 from datetime import datetime, timedelta, timezone
+import faulthandler
 import json
 import os
 from pathlib import Path
@@ -11,6 +13,7 @@ import threading
 import time
 from unittest.mock import patch
 
+atexit.register(faulthandler.cancel_dump_traceback_later)
 os.environ['PYSTRAY_BACKEND'] = 'gtk'
 os.environ['GSETTINGS_BACKEND'] = 'memory'
 os.environ.pop('TOGGL_API_TOKEN', None)
@@ -602,6 +605,8 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
                 print('UI diagnostics failed:', str(diagnostic), flush=True)
             picture('failure.png')
         finally:
+            faulthandler.dump_traceback_later(20)
+            print('Native shutdown: destroying work window', flush=True)
             bridge._quitting = True
             window.destroy()
 
@@ -617,9 +622,11 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
              patch.object(app, '_play_sound'), patch.object(app, '_notify'), \
              patch.object(toggl_tasks, 'write', side_effect=metadata):
             webview.start(verify, gui='gtk', private_mode=True)
+            print('Native shutdown: GUI loop finished', flush=True)
             network.assert_not_called()
         if errors:
             raise errors[0]
     finally:
         server.shutdown()
         server.server_close()
+        print('Native shutdown: control server stopped', flush=True)
