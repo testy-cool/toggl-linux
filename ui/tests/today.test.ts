@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { todayTotals, localDay, todayLabel, todaySummary, timeKeyForWork } from '../src/today.ts';
+import { clockRange, todayTotals, localDay, todayLabel, todaySummary, timeKeyForWork } from '../src/today.ts';
 import { workItems } from '../src/model.ts';
 import type { Entry, Snapshot } from '../src/model.ts';
 
@@ -17,6 +17,11 @@ const snapshot = (...entries: Entry[]): Snapshot => ({
   today_date:localDay(now),today_fetched_at:now/1000,
 });
 
+test('browse ranges use 24-hour local time for afternoon intervals', () => {
+  const from=new Date(2026,9,30,15,5).getTime();
+  const to=new Date(2026,9,30,16,10).getTime();
+  assert.equal(clockRange({key:'pm',entry:entry(1),from,to,seconds:3900}),'15:05–16:10');
+});
 test('task totals combine different descriptions while activities and projects remain separate', () => {
   const s=snapshot(entry(1),entry(2,stamp(10),stamp(10,30),{description:'Other detail'}),
     entry(3,stamp(11),stamp(11,20),{task_id:null,description:'Navigation'}),

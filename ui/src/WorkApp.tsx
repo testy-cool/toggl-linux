@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "cn";
-import { ChevronDown, Clock3, RefreshCw, Square, X } from "lucide-react";
+import {
+  ChevronDown,
+  Clock3,
+  Pencil,
+  RefreshCw,
+  Square,
+  X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -14,7 +21,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Item,
-  ItemDescription,
+  ItemContent,
   ItemGroup,
   ItemTitle,
 } from "@/components/ui/item";
@@ -45,6 +52,7 @@ import {
   afterOwnStop,
   draftFor,
   elapsed,
+  entryFromSnapshot,
   projectName,
   running,
   sameId,
@@ -86,6 +94,7 @@ export default function WorkApp() {
   const correcting = useRef(false);
   const [savingTime, setSavingTime] = useState(false);
   const heldBack = useRef<(() => Command | null)[]>([]);
+  const preferenceWrites = useRef<Promise<unknown>>(Promise.resolve());
   const draftRef = useRef<Draft | null>(null);
   useEffect(() => {
     draftRef.current = draft;
@@ -304,9 +313,18 @@ export default function WorkApp() {
   function retime(entry: Entry | null, field: "start" | "stop", time: string) {
     if (!data || (writing.current && !correcting.current)) return;
     if (correcting.current) {
-      heldBack.current.push(() =>
-        retimeCommand(latest.current!, entry, field, time),
-      );
+      heldBack.current.push(() => {
+        const snapshot = latest.current!;
+        const command = retimeCommand(
+          snapshot,
+          entry ? entryFromSnapshot(snapshot, entry) : null,
+          field,
+          time,
+        );
+        if (!command)
+          setError("Review this entry with its pencil before changing its times.");
+        return command;
+      });
       return;
     }
     try {
@@ -335,6 +353,30 @@ export default function WorkApp() {
       setError(String(failure));
     }
   }
+  function saveExpansion(
+    knownProjects: (string | number | null)[],
+    expandedProjects: (string | number | null)[],
+    expandedTasks: (string | number)[],
+  ) {
+    if (!data) return;
+    const context = data.project_context;
+    preferenceWrites.current = preferenceWrites.current
+      .catch(() => undefined)
+      .then(() =>
+        request("save-work-preferences", {
+          context,
+          known_projects: knownProjects,
+          expanded_projects: expandedProjects,
+          expanded_tasks: expandedTasks,
+        }),
+      )
+      .catch((failure) => {
+        if (mounted.current)
+          setError(
+            String(failure instanceof Error ? failure.message : failure),
+          );
+      });
+  }
   const projects =
     data?.projects.filter(
       (p) =>
@@ -352,6 +394,15 @@ export default function WorkApp() {
             .includes(needle),
       )
     : [];
+  const currentTitle = data ? timerTitle(data) : "";
+  const currentContext = data
+    ? [
+        projectName(data, data.state.project_id),
+        taskName(data, data.state.task_id),
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "";
 
   return (
     <TooltipProvider delayDuration={500}>
@@ -433,25 +484,33 @@ export default function WorkApp() {
                   className="current-timer"
                   data-testid="current-timer"
                 >
+                  <ActionHint text={`${currentTitle} · ${currentContext}`}>
+                    <ItemContent
+                      className="current-work"
+                      tabIndex={0}
+                      title={`${currentTitle} · ${currentContext}`}
+                      aria-label={`Running timer: ${currentTitle}. ${currentContext}`}
+                    >
+                      <ItemTitle className="current-description">
+                        <span className="current-title truncate">
+                          {currentTitle}
+                        </span>
+                        <span className="current-project truncate">
+                          {currentContext}
+                        </span>
+                      </ItemTitle>
+                    </ItemContent>
+                  </ActionHint>
                   <ActionHint text="Edit running timer">
                     <Button
                       variant="ghost"
-                      className="current-work"
+                      size="icon-sm"
+                      className="current-edit"
                       disabled={busy}
                       aria-label="Edit running timer"
                       onClick={() => setDraft(draftFor(data, "current"))}
                     >
-                      <ItemTitle className="current-description">
-                        <span className="truncate">{timerTitle(data)}</span>
-                      </ItemTitle>
-                      <ItemDescription className="current-project">
-                        {[
-                          projectName(data, data.state.project_id),
-                          taskName(data, data.state.task_id),
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      </ItemDescription>
+                      <Pencil />
                     </Button>
                   </ActionHint>
                   <label className="current-start">
@@ -468,6 +527,7 @@ export default function WorkApp() {
                   </span>
                   <Button
                     variant="destructive"
+                    className="current-stop"
                     disabled={busy && !savingTime}
                     onClick={stopTimer}
                   >
@@ -506,7 +566,7 @@ export default function WorkApp() {
                   <div className="work-toolbar flex items-center justify-between gap-2">
                     <Tabs value={tab} onValueChange={changeTab}>
                       <TabsList>
-                        <TabsTrigger value="work">Work</TabsTrigger>
+                        <TabsTrigger value="work">Projects</TabsTrigger>
                         <TabsTrigger value="tasks">Tasks</TabsTrigger>
                         <TabsTrigger value="today">Today</TabsTrigger>
                       </TabsList>
@@ -543,7 +603,7 @@ export default function WorkApp() {
                   <div className="search-row">
                     <Input
                       aria-label="Search work"
-                      placeholder="Search projects, tasks, and recent work…"
+                      placeholder="Search projects, tasks, and recent activity…"
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
                     />
@@ -587,6 +647,7 @@ export default function WorkApp() {
                     project={project}
                     tasksOnly={tab === "tasks"}
                     busy={busy || !!draft}
+                    savingTime={savingTime}
                     edit={openWork}
                     rename={(work) => setDraft(draftFor(data, "task", work))}
                     createTask={(group) =>
@@ -595,6 +656,7 @@ export default function WorkApp() {
                         project: String(group.id),
                       })
                     }
+                    saveExpansion={saveExpansion}
                     act={(command) => void act(command)}
                   />
                 </div>
@@ -618,6 +680,7 @@ export default function WorkApp() {
                             row={row}
                             parentLabel={group.label}
                             busy={busy || !!draft}
+                            savingTime={savingTime}
                             edit={openEntry}
                             retime={retime}
                             resume={(entry) =>

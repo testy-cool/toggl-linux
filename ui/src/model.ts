@@ -70,6 +70,12 @@ export type Snapshot = {
   }[];
   project_context: { account: string | null; workspace_id: Id | null };
   task_capability: string;
+  work_preferences?: {
+    configured: boolean;
+    known_projects: (Id | null)[];
+    expanded_projects: (Id | null)[];
+    expanded_tasks: Id[];
+  };
   pending_count: number;
   warning: string;
 };
@@ -106,6 +112,33 @@ export const projectName = (s: Snapshot, id: Id | null) =>
 export const taskName = (s: Snapshot, id: Id | null) =>
   s.tasks.find((t) => sameId(t.id, id))?.name ??
   (id == null ? "" : "Current task");
+const comparableTaskName = (name: string) => name.trim().toLowerCase();
+export const taskNameConflict = (
+  s: Snapshot,
+  name: string,
+  workspace: Id | null,
+  except?: Id,
+) => {
+  const candidate = comparableTaskName(name);
+  return (
+    !!candidate &&
+    s.tasks.some(
+      (task) =>
+        sameId(task.workspace_id, workspace) &&
+        (except === undefined || !sameId(task.id, except)) &&
+        comparableTaskName(task.name) === candidate,
+    )
+  );
+};
+export function nextTaskCopyName(s: Snapshot, task: Task) {
+  const base = task.name.trim() || "Task";
+  for (let index = 1; index <= s.tasks.length + 1; index += 1) {
+    const suffix = index === 1 ? " copy" : ` copy ${index}`;
+    const candidate = `${base.slice(0, 200 - suffix.length).trimEnd()}${suffix}`;
+    if (!taskNameConflict(s, candidate, task.workspace_id)) return candidate;
+  }
+  return "Task copy";
+}
 export const timerTitle = (s: Snapshot) =>
   s.state.description || taskName(s, s.state.task_id) || "No description";
 export const scope = (d: Draft) =>
@@ -180,6 +213,15 @@ export const isCurrentEntry = (s: Snapshot, entry: Entry) =>
   (s.state.entry_id != null
     ? sameId(entry.id, s.state.entry_id)
     : samePending(entry, s.current_pending));
+
+export function entryFromSnapshot(s: Snapshot, selected: Entry) {
+  const matches = s.entries.filter(
+    (entry) =>
+      sameId(entry.workspace_id, selected.workspace_id) &&
+      sameId(entry.id, selected.id),
+  );
+  return matches.length === 1 ? matches[0] : selected;
+}
 
 function rebaseFields(d: Draft, source: Entry, entry: Entry): Draft {
   const projectChanged = !sameId(d.project, source.project_id);
@@ -535,7 +577,7 @@ export function commandFor(d: Draft, asTask = false): Command {
       action: d.mode === "task" ? "task-update" : "task-create",
       payload: {
         name: d.description.trim(),
-        project_id: project,
+        project_id: d.mode === "task" ? d.work!.project_id : project,
         context: s.project_context,
         ...(d.mode === "task" ? { task: d.work!.task } : {}),
       },

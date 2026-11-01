@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Exercise the real React/WebKit window against an isolated, offline tray."""
 import argparse
+import atexit
 from datetime import datetime, timedelta, timezone
+import faulthandler
 import json
 import os
 from pathlib import Path
@@ -11,6 +13,7 @@ import threading
 import time
 from unittest.mock import patch
 
+atexit.register(faulthandler.cancel_dump_traceback_later)
 os.environ['PYSTRAY_BACKEND'] = 'gtk'
 os.environ['GSETTINGS_BACKEND'] = 'memory'
 os.environ.pop('TOGGL_API_TOKEN', None)
@@ -25,6 +28,7 @@ gi.require_version('Gdk', '3.0')
 from gi.repository import GLib, Gdk
 import toggl_tray as app
 import toggl_control as control
+import toggl_task_tree
 import toggl_tasks
 import toggl_today
 from toggl_webview import Bridge, create_window
@@ -55,14 +59,21 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
         dict(id=8, workspace_id=1, name='Empty project', active=True)])
     app._task_cache = dict(context=control.snapshot(app)['project_context'], tasks=[
         dict(id=31, workspace_id=1, project_id=6, name='Improve navigation', active=True),
-        dict(id=32, workspace_id=1, project_id=6, name='Unused task', active=True)])
+        dict(id=32, workspace_id=1, project_id=7, name='Unused task', active=True)])
     app._task_capability = 'supported'
     now = datetime.now(timezone.utc)
     midnight = now.astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
     prior = dict(id=991, workspace_id=1, project_id=6, task_id=31,
                  description='Previous today session', start=midnight.isoformat(),
                  stop=(midnight+(now-midnight)/2).isoformat(), duration=1)
+    recent = dict(id=992, workspace_id=1, project_id=6, task_id=None,
+                  description='Review recent notes', start=(midnight+(now-midnight)/4).isoformat(),
+                  stop=(midnight+3*(now-midnight)/4).isoformat(), duration=1)
     toggl_today.remember(app, prior)
+    toggl_today.remember(app, recent)
+    toggl_task_tree._save(app, dict(context=control.snapshot(app)['project_context'],
+                                    fetched_at=time.time(), entries=[recent], local_entries=[],
+                                    hidden_activities=[]))
     app._today_cache['fetched_at'] = time.time()  # A private, already-loaded cloud fixture.
     server = control.start_server(app)
     bridge = Bridge(root, managed=True)
@@ -91,9 +102,19 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
         until(lambda: js(f"document.querySelector('input[aria-label=\"Search work\"]').value === {json.dumps(value)}"))
 
     def choose(label, value):
-        js(f"document.querySelector('button[role=combobox][aria-label={label}]').dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',bubbles:true}}))")
+        selector = json.dumps(f'button[role="combobox"][aria-label="{label}"]')
+        js(f"document.querySelector({selector}).dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',bubbles:true}}))")
         until(lambda: js("!!document.querySelector('[role=option]')"))
         js(f"Array.from(document.querySelectorAll('[role=option]')).find(e=>e.textContent.trim()==={json.dumps(value)}).click()")
+
+    def reload_react():
+        js("document.documentElement.dataset.smokeReload='old';location.reload()")
+        def ready():
+            try:
+                return js("document.documentElement.dataset.smokeReload!=='old' && !!document.querySelector('[role=tree][aria-label=\"Projects and work\"]') && typeof window.pywebview?.api?.command==='function'")
+            except Exception:
+                return False
+        until(ready, timeout=30)
 
     def menu(label, option):
         code = f"Array.from(document.querySelectorAll('button')).find(b=>b.getAttribute('aria-label')==={json.dumps('More actions for '+label)})"
@@ -106,7 +127,8 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
         assert payload['context'] == control.snapshot(app)['project_context']
         tasks = app._task_cache['tasks']
         if action == 'task-create':
-            saved = dict(id=42, workspace_id=1, project_id=payload['project_id'], name=payload['name'], active=True)
+            saved = dict(id=max([t['id'] for t in tasks]+[41])+1, workspace_id=1,
+                         project_id=payload['project_id'], name=payload['name'], active=True)
             tasks.append(saved)
         else:
             saved = next(t for t in tasks if t['id'] == payload['task']['id'])
@@ -145,14 +167,20 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             assert not js(f"({leaf}).hasAttribute('aria-expanded')")
             assert not js(f"!!({leaf}).querySelector('.work-name svg,button[aria-label=\"Unused task\"]')")
             assert js("!!document.querySelector('button[aria-label=\"Start Unused task\"]')")
-            assert js("!!document.querySelector('button[aria-label=\"Rename task Unused task\"]')")
+            assert js("!!document.querySelector('button[aria-label=\"Edit task Unused task\"]')")
             js(f"({leaf}).dispatchEvent(new KeyboardEvent('keydown',{{key:'Enter',code:'Enter',bubbles:true}}));({leaf}).dispatchEvent(new KeyboardEvent('keyup',{{key:'Enter',code:'Enter',bubbles:true}}));({leaf}).querySelector('.work-name').click()")
             assert not js("!!document.getElementById('work-description')")
             assert not app.state['tracking']
             assert js("document.querySelector('[role=treeitem][aria-label=\"Empty project\"]').getAttribute('data-folder')") == 'false'
             assert js("!!document.querySelector('button[aria-label=\"New task in Empty project\"]')")
             assert js("parseInt(getComputedStyle(document.querySelector('.project-name')).fontWeight)>=600"), 'Project headings must stand out from work rows'
-            assert js("document.querySelector('[role=treeitem][aria-label=\"Unused task\"] .work-kind').textContent==='Task'")
+            assert js("document.querySelector('[role=treeitem][aria-label=\"Unused task\"]').getAttribute('data-work-kind')==='task'")
+            assert js("Array.from(document.querySelectorAll('.work-section-heading')).some(e=>e.textContent==='Saved tasks')")
+            assert js("Array.from(document.querySelectorAll('.work-section-heading')).some(e=>e.textContent==='Recent activity')")
+            assert js("document.querySelector('[role=treeitem][aria-label=\"Review recent notes\"]').getAttribute('data-work-kind')==='activity'")
+            assert js("!!document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"] button.edit-entries')")
+            assert js("!!document.querySelector('[role=treeitem][aria-label=\"Review recent notes\"] button.edit-entries')")
+            assert not js("!!document.querySelector('.work-kind')"), 'Saved and recent work must be grouped instead of labeled per row'
             assert js("(()=>{const plus=document.querySelector('button[aria-label=\"New task in Studio\"]').getBoundingClientRect(),total=document.querySelector('.work-time').getBoundingClientRect();return plus.right<total.left})()"), 'Project creation must sit beside the project name, outside Today'
             assert not js("!!document.querySelector('[role=treeitem][aria-label=\"No project\"]')")
             fetched = app._today_cache['fetched_at']
@@ -172,9 +200,55 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('data-folder')==='false'"))
             assert js("document.activeElement === document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]')")
             js("document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',code:'ArrowDown',bubbles:true}));document.activeElement.dispatchEvent(new KeyboardEvent('keyup',{key:'ArrowDown',code:'ArrowDown',bubbles:true}))")
-            until(lambda: js("document.activeElement?.getAttribute('aria-label')==='Unused task'"))
+            until(lambda: js("document.activeElement?.getAttribute('aria-label')==='Review recent notes'"))
             toggl_today.remember(app, prior)
             until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('data-folder')==='true'"))
+
+            # The first saved choice comes from a filtered tree. Projects absent
+            # from that filter stay unknown, so they retain the expanded default.
+            choose('Filter by project', 'Studio')
+            until(lambda: not js("!!document.querySelector('[role=treeitem][aria-label=Research]')"))
+            click('Improve navigation')
+            until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'"))
+            preferences_path = root/'ui-preferences.json'
+            until(lambda: preferences_path.exists() and control.snapshot(app)['work_preferences']['expanded_tasks'] == ['31'])
+            filtered_preferences = control.snapshot(app)['work_preferences']
+            assert filtered_preferences == {
+                'configured': True,
+                'known_projects': ['6'],
+                'expanded_projects': ['6'],
+                'expanded_tasks': ['31'],
+            }
+            assert js("typeof localStorage === 'undefined'"), 'Private WebKit must not be mistaken for durable localStorage'
+
+            # Reloading creates a fresh React tree and reads the private file.
+            # The filter itself resets, the saved task reopens, and Research
+            # remains default-expanded because it was unseen, not collapsed.
+            reload_react()
+            until(lambda: js("!!document.querySelector('[role=treeitem][aria-label=Research]')"))
+            assert js("document.querySelector('button[aria-label=\"Filter by project\"]').textContent.trim()==='All projects'")
+            until(lambda: js("document.querySelector('[role=treeitem][aria-label=Research]').getAttribute('aria-expanded')==='true'"))
+            until(lambda: js("document.querySelector('[role=treeitem][aria-label=Studio]').getAttribute('aria-expanded')==='true'"))
+            until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'"))
+            assert js("typeof localStorage === 'undefined'")
+
+            # A project that was an empty leaf was never explicitly collapsed.
+            # Its first task must therefore be visible now and after a reload.
+            click('New task in Empty project')
+            until(lambda: js("!!document.getElementById('work-description')"))
+            text('Created in empty project')
+            assert js("document.querySelector('button[aria-label=Project]').textContent.trim()==='Empty project'")
+            click('Create task')
+            until(lambda: any(t['name'] == 'Created in empty project' for t in app._cached_tasks()))
+            until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Empty project\"]').getAttribute('aria-expanded')==='true'"))
+            assert js("!!document.querySelector('[role=treeitem][aria-label=\"Created in empty project\"]')")
+            picture('created-empty-project.png')
+            reload_react()
+            until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Empty project\"]').getAttribute('aria-expanded')==='true'"))
+            until(lambda: js("!!document.querySelector('[role=treeitem][aria-label=\"Created in empty project\"]')"))
+            until(lambda: js("document.querySelector('[role=treeitem][aria-label=Research]').getAttribute('aria-expanded')==='true'"))
+            until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'"))
+
             click('Studio')
             until(lambda: js("!Array.from(document.querySelectorAll('button')).some(b=>b.getAttribute('aria-label')==='Start Improve navigation')"))
             search('Research')
@@ -190,12 +264,25 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             until(lambda: js("document.querySelector('button[aria-label=Project]')?.textContent.trim()==='Research'"))
             click('Cancel')
             until(lambda: js("!!document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]')"))
-            js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))")
-            until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'"))
+            if not js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'"):
+                click('Improve navigation')
+                until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'"))
+            click('Improve navigation')
+            until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='false'"))
+            js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"] button.edit-entries').click()")
+            until(lambda: js("document.activeElement?.getAttribute('aria-label')==='Correct times for Previous today session'"))
+            assert not js("!!document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"] button.edit-entries')")
             assert not js("!!document.getElementById('work-description')")
             until(lambda: js("document.body.textContent.includes('Previous today session')"))
-            assert js("!!document.querySelector('input[aria-label=\"Start of Previous today session\"]')")
+            assert not js("!!document.querySelector('input[aria-label=\"Start of Previous today session\"]')")
+            assert js("!!document.querySelector('button[aria-label=\"Correct times for Previous today session\"]')")
+            assert js("!/[AP]M/.test(document.querySelector('button[aria-label=\"Correct times for Previous today session\"]').textContent)"), 'Session ranges must use 24-hour local time'
             assert js("(()=>{const interval=document.querySelector('[data-interval]'),duration=interval.querySelector('.work-time').getBoundingClientRect(),parent=document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"] .work-time').getBoundingClientRect(),edit=interval.querySelector('[data-slot=item-actions]').getBoundingClientRect();return Math.abs(duration.right-parent.right)<=2&&edit.right<duration.left})()"), 'Session durations must align below task totals, with editing in its own area'
+            js("const range=document.querySelector('button[aria-label=\"Correct times for Previous today session\"]');range.focus();range.click()")
+            until(lambda: js("document.activeElement?.getAttribute('aria-label')==='Start of Previous today session'"))
+            js("const done=Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Done');done.focus();done.click()")
+            until(lambda: js("document.activeElement?.getAttribute('aria-label')==='Correct times for Previous today session'"))
+            assert not js("!!document.querySelector('input[aria-label=\"Start of Previous today session\"]')")
             click('Edit entry Previous today session')
             until(lambda: js("!!document.getElementById('work-description')"))
             assert js("!!document.getElementById('work-start').value && !document.querySelector('input[type=datetime-local]')")
@@ -215,23 +302,27 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             started = app.state['start_time']
             until(lambda: js("!!document.querySelector('[data-testid=current-timer]')"))
             assert not js("!!document.querySelector('button[aria-label=\"Start Improve navigation\"]')"), 'Running work must not keep a redundant start control'
-            assert js("document.querySelector('[data-running=true] .work-kind').textContent==='Task'"), 'Running work must retain the scope of its direct edit action'
+            assert js("document.querySelector('[data-running=true]').getAttribute('data-work-kind')==='task'"), 'Running work must retain its saved-task structure'
             app._task_cache['tasks'][0]['active'] = False
             until(lambda: js("!!document.querySelector('[data-running=true] button[aria-label^=\"Edit timer\"]')"))
-            assert not js("!!document.querySelector('[data-running=true] .work-kind')"), 'An archived current task must not be mislabeled Recent'
+            assert js("document.querySelector('[data-running=true]').getAttribute('data-work-kind')==='task'"), 'An archived current task must not be grouped as recent activity'
             app._task_cache['tasks'][0]['active'] = True
-            until(lambda: js("document.querySelector('[data-running=true] .work-kind')?.textContent==='Task'"))
-            js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"] .work-name').click()")
+            until(lambda: js("document.querySelector('[data-running=true]')?.getAttribute('data-work-kind')==='task'"))
             assert not js("!!document.getElementById('work-description')")
-            assert js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='false'")
-            click('Improve navigation')
-            assert js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'")
+            if not js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'"):
+                click('Improve navigation')
+                until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'"))
+            app.state['description'] = 'Research notes on compact work panel hierarchy'
+            until(lambda: js("document.querySelector('.current-title')?.textContent.trim()==='Research notes on compact work panel hierarchy'"))
             picture('work-panel.png')
             window.resize(375, 480)
             until(lambda: js("innerWidth===375 && innerHeight===480"))
-            assert js("document.querySelector('.current-work').getBoundingClientRect().width>=160"), 'Running work must have readable space beside the typed time controls'
-            assert js("(()=>{const work=document.querySelector('.current-work').getBoundingClientRect(),start=document.querySelector('.current-start').getBoundingClientRect(),elapsed=document.querySelector('.current-timer .elapsed').getBoundingClientRect();return work.bottom<=start.top&&work.right<=elapsed.left})()"), 'Running work must not overlap its time controls'
+            assert js("document.querySelector('.current-work').getBoundingClientRect().width>=300"), 'The running title must receive the full narrow row'
+            assert js("document.querySelector('[data-testid=current-timer]').getBoundingClientRect().height<=80"), 'The two-line running timer must stay compact'
+            assert js("(()=>{const work=document.querySelector('.current-work').getBoundingClientRect(),start=document.querySelector('.current-start').getBoundingClientRect(),title=document.querySelector('.current-title').getBoundingClientRect(),context=document.querySelector('.current-project').getBoundingClientRect();return work.bottom<=start.top&&context.top>=title.bottom-1})()"), 'Running work must use a readable secondary context line above its controls'
+            assert js("document.querySelector('.current-work').title.includes('Research notes on compact work panel hierarchy')")
             assert js("document.querySelector('.current-work .current-project').textContent.includes('Improve navigation')")
+            assert js("Array.from(document.querySelectorAll('.work-time')).every(e=>getComputedStyle(e).whiteSpace==='nowrap')")
             picture('compact-work.png')
             window.resize(600, 780)
             until(lambda: js("innerWidth===600 && innerHeight===780"))
@@ -259,7 +350,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             assert window.background_color.lower() == painted_background
             assert js("parseFloat(getComputedStyle(document.querySelector('.work-name')).fontSize)") == 14
             until(lambda: js("Array.from(document.fonts).some(f=>f.family.includes('Inter')&&f.status==='loaded')"))
-            assert js("document.querySelector('[data-testid=current-timer]').getBoundingClientRect().height") <= 64
+            assert js("document.querySelector('[data-testid=current-timer]').getBoundingClientRect().height") <= 80
             click('Edit running timer')
             until(lambda: js("!!document.getElementById('work-description')"))
             assert js("parseFloat(getComputedStyle(document.querySelector('.app-header .current-project')).fontSize)") == 12
@@ -292,18 +383,21 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             text('Created in the webview')
             choose('Project', 'Studio')
             click('Create task')
-            until(lambda: any(t['id'] == 42 for t in app._cached_tasks()))
+            until(lambda: any(t['name'] == 'Created in the webview' for t in app._cached_tasks()))
+            created_task_id = next(t['id'] for t in app._cached_tasks()
+                                   if t['name'] == 'Created in the webview')
             until(lambda: js("!document.getElementById('work-description')"))
             click('Tasks')
             assert not js("!!document.querySelector('.work-kind')"), 'The Tasks tab does not need repeated Task labels'
-            menu('Created in the webview', 'Rename task')
+            menu('Created in the webview', 'Edit task')
             until(lambda: js("!!document.getElementById('work-description')"))
             text('Renamed in the webview')
             click('Save changes')
             until(lambda: any(t['name'] == 'Renamed in the webview' for t in app._cached_tasks()))
             until(lambda: js("!document.getElementById('work-description')"))
             menu('Renamed in the webview', 'Archive task')
-            until(lambda: next(t for t in app._cached_tasks() if t['id'] == 42)['active'] is False)
+            until(lambda: next(t for t in app._cached_tasks()
+                               if t['id'] == created_task_id)['active'] is False)
             until(lambda: js("document.body.textContent.includes('Restore')"))
             for compact_width in (375, 360):
                 window.resize(compact_width, 480)
@@ -311,9 +405,33 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
                 assert js("(()=>{const row=document.querySelector('[data-archived]');return row.querySelector('.work-name').getBoundingClientRect().width>=240&&row.querySelector('.work-label').getBoundingClientRect().height<=40})()"), 'Archived task names must keep useful width beside Restore'
                 picture(f'archived-task-{compact_width}.png')
             click('Restore')
-            until(lambda: next(t for t in app._cached_tasks() if t['id'] == 42)['active'] is True)
+            until(lambda: next(t for t in app._cached_tasks()
+                               if t['id'] == created_task_id)['active'] is True)
             window.resize(600, 780)
             until(lambda: js("innerWidth===600 && innerHeight===780"))
+            menu('Renamed in the webview', 'Edit task')
+            until(lambda: js("document.body.textContent.includes('Edit saved task')"))
+            click('Create in another project')
+            until(lambda: js("document.body.textContent.includes('Create task in another project')"))
+            until(lambda: js("document.activeElement?.id==='work-description'"))
+            assert js("document.getElementById('work-description').value==='Renamed in the webview copy'")
+            choose('Project', 'Research')
+            click('Create task')
+            until(lambda: any(t['name'] == 'Renamed in the webview copy' and t['project_id'] == 7
+                              for t in app._cached_tasks()))
+            original = next(t for t in app._cached_tasks()
+                            if t['id'] == created_task_id)
+            assert original['project_id'] == 6 and original['name'] == 'Renamed in the webview'
+            until(lambda: js("!document.getElementById('work-description')"))
+            menu('Renamed in the webview', 'Edit task')
+            click('Create in another project')
+            until(lambda: js("document.getElementById('work-description')?.value==='Renamed in the webview copy 2'"))
+            text('RENAMED IN THE WEBVIEW')
+            assert js("document.getElementById('work-description').getAttribute('aria-invalid')==='true'")
+            assert js("document.body.textContent.includes('already exists in this workspace')")
+            assert js("Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Create task').disabled")
+            click('Cancel')
+            until(lambda: js("!document.getElementById('work-description')"))
             assert not app.state['tracking']
             click('Today')
             until(lambda: js("document.body.textContent.includes('Draft survives closing and stopping')"))
@@ -461,9 +579,15 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             print(json.dumps(dict(real_webkit=True, real_react=True, private_offline_start=True,
                                   empty_work_leaf=True, empty_project_leaf=True, inert_leaf_keyboard=True,
                                   daily_loading_states=True, folder_to_leaf_focus=True, bundled_inter=True, work_font_px=14,
-                                  row_click_expands_without_start=True, daily_intervals=True,
+                                  row_click_expands_without_start=True, grouped_saved_and_recent=True,
+                                  file_backed_expansion=True, fresh_react_expansion_reload=True,
+                                  filtered_default_expansion=True, new_project_creation_visible=True,
+                                  private_webkit_local_storage=False, daily_intervals=True,
+                                  time_focus_transfer=True, edit_entries_focus=True,
+                                  ranges_24_hour=True, running_title_priority=True,
                                   same_interval_edit=True, project_move=True, hidden_draft=True,
                                   draft_after_stop=True, task_create_rename_archive_restore=True,
+                                  cross_project_task_copy=True, task_copy_validation=True,
                                   pending_entry_edit=True, timer_conflict=True, account_conflict=True,
                                   full_interval_review=True, draft_after_sync=True,
                                   pending_today_editor=True, new_draft_after_sync=True,
@@ -475,11 +599,14 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             try:
                 print('Native readiness:', dict(mapped=window.native.get_mapped() if window.native else False,
                       injected=window.events._pywebviewready.is_set(), loaded=window.events.loaded.is_set()), flush=True)
+                print('Preference diagnostics:', control.snapshot(app)['work_preferences'], flush=True)
                 print('UI diagnostics:', js("JSON.stringify({url:location.href,ready:document.readyState,visibility:document.visibilityState,bridge:typeof window.pywebview,api:typeof window.pywebview?.api,methods:Object.keys(window.pywebview?.api??{}),readyMethod:typeof window.pywebview?.api?.ready,body:document.body.innerText,html:document.head.innerHTML})"), flush=True)
             except Exception as diagnostic:
                 print('UI diagnostics failed:', str(diagnostic), flush=True)
             picture('failure.png')
         finally:
+            faulthandler.dump_traceback_later(20)
+            print('Native shutdown: destroying work window', flush=True)
             bridge._quitting = True
             window.destroy()
 
@@ -495,9 +622,11 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
              patch.object(app, '_play_sound'), patch.object(app, '_notify'), \
              patch.object(toggl_tasks, 'write', side_effect=metadata):
             webview.start(verify, gui='gtk', private_mode=True)
+            print('Native shutdown: GUI loop finished', flush=True)
             network.assert_not_called()
         if errors:
             raise errors[0]
     finally:
         server.shutdown()
         server.server_close()
+        print('Native shutdown: control server stopped', flush=True)

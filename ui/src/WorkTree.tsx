@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import { hotkeysCoreFeature, syncDataLoaderFeature } from "@headless-tree/core";
 import { useTree } from "@headless-tree/react";
 import { Circle, MoreHorizontal, Pencil, Play, Plus } from "lucide-react";
@@ -17,8 +23,16 @@ import { TimeEntryRow } from "./TimeEntryRow";
 import { ActionHint } from "./ActionHint";
 import { clockRange, timeKeyForWork, todayLabel } from "./today";
 import type { Today, TodayRow } from "./today";
-import { workGroups, running } from "./model";
-import type { Command, Snapshot, Work, WorkGroup, Entry } from "./model";
+import { workGroups, running, sameId } from "./model";
+import type { Command, Snapshot, Work, WorkGroup, Entry, Id } from "./model";
+
+function isSavedTaskWork(data: Snapshot, work: Work) {
+  return (
+    !!work.task ||
+    (work.task_id != null &&
+      data.tasks.some((task) => sameId(task.id, work.task_id)))
+  );
+}
 
 type Node = {
   name: string;
@@ -27,6 +41,7 @@ type Node = {
   work?: Work;
   row?: TodayRow;
   parentLabel?: string;
+  section?: "Saved tasks" | "Recent activity";
 };
 
 function RowLabel({
@@ -59,9 +74,11 @@ export function WorkTree({
   project,
   tasksOnly,
   busy,
+  savingTime,
   edit,
   rename,
   createTask,
+  saveExpansion,
   act,
 }: {
   data: Snapshot;
@@ -74,9 +91,15 @@ export function WorkTree({
   project: string;
   tasksOnly: boolean;
   busy: boolean;
+  savingTime: boolean;
   edit: (work: Work) => void;
   rename: (work: Work) => void;
   createTask: (project: WorkGroup) => void;
+  saveExpansion: (
+    knownProjects: (string | number | null)[],
+    expandedProjects: (string | number | null)[],
+    expandedTasks: (string | number)[],
+  ) => void;
   act: (command: Command) => void;
 }) {
   const groups = useMemo(
@@ -90,15 +113,27 @@ export function WorkTree({
     for (const group of groups) {
       const id = `project:${group.id ?? "none"}`;
       result.root.children!.push(id);
+      const saved = group.works.filter((work) =>
+        isSavedTaskWork(data, work),
+      );
+      const recent = group.works.filter((work) => !saved.includes(work));
+      const works = [...saved, ...recent];
+      const mixed = saved.length > 0 && recent.length > 0;
       result[id] = {
         name: group.name,
         group,
-        children: group.works.map((w) => w.key),
+        children: works.map((work) => work.key),
       };
-      for (const work of group.works) {
+      for (const work of works) {
+        const section =
+          mixed && work === saved[0]
+            ? "Saved tasks"
+            : mixed && work === recent[0]
+              ? "Recent activity"
+              : undefined;
         const rows = today.groups.get(timeKeyForWork(data, work))?.rows ?? [];
         const children = rows.map((row) => `interval:${work.key}:${row.key}`);
-        result[work.key] = { name: work.label, work, children };
+        result[work.key] = { name: work.label, work, children, section };
         for (const row of rows)
           result[`interval:${work.key}:${row.key}`] = {
             name: `${clockRange(row)} · ${row.entry.description || work.label}`,
@@ -109,9 +144,12 @@ export function WorkTree({
     }
     return result;
   }, [groups, today, data]);
-  // Keep browsing choices when searching, polling, or returning from the editor.
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  // Search gets temporary browsing choices. The unfiltered tree starts from the
+  // account-scoped file and keeps local choices through polling and editors.
+  const [expansion, setExpansion] = useState<Record<string, boolean>>({});
+  const [focusInterval, setFocusInterval] = useState<string | null>(null);
   const searchScope = query.trim().toLocaleLowerCase();
+  const preferenceScope = JSON.stringify(data.project_context);
   const roots = nodes.root.children!;
   const folders = useMemo(
     () =>
@@ -120,26 +158,115 @@ export function WorkTree({
       ),
     [nodes],
   );
+  const preferences = useMemo(
+    () =>
+      data.work_preferences ?? {
+        configured: false,
+        known_projects: [],
+        expanded_projects: [],
+        expanded_tasks: [],
+      },
+    [data.work_preferences],
+  );
+  const persistentGroups = useMemo(
+    () => workGroups(data, false, "", "all"),
+    [data],
+  );
+  const expansionKey = (id: string) =>
+    `${preferenceScope}:${searchScope}:${id}`;
   const expanded = useMemo(
     () =>
-      folders.filter((id) =>
-        nodes[id].group
-          ? !collapsed[`${searchScope}:${id}`]
-          : collapsed[`${searchScope}:${id}`] === false,
-      ),
-    [folders, nodes, collapsed, searchScope],
+      folders.filter((id) => {
+        const saved = expansion[`${preferenceScope}:${searchScope}:${id}`];
+        if (saved !== undefined) return saved;
+        const node = nodes[id];
+        if (searchScope) return !!node.group;
+        if (node.group) {
+          const known = preferences.known_projects.some((projectId) =>
+            sameId(projectId, node.group!.id),
+          );
+          return (
+            !preferences.configured ||
+            !known ||
+            preferences.expanded_projects.some((projectId) =>
+              sameId(projectId, node.group!.id),
+            )
+          );
+        }
+        if (node.work?.task)
+          return (
+            preferences.configured &&
+            preferences.expanded_tasks.some((taskId) =>
+              sameId(taskId, node.work!.task!.id),
+            )
+          );
+        return false;
+      }),
+    [
+      folders,
+      nodes,
+      expansion,
+      preferenceScope,
+      preferences,
+      searchScope,
+    ],
   );
   const tree = useTree<Node>({
     rootItemId: "root",
     state: { expandedItems: expanded },
     setExpandedItems: (update) => {
       const next = typeof update === "function" ? update(expanded) : update;
-      setCollapsed((previous) => ({
+      setExpansion((previous) => ({
         ...previous,
         ...Object.fromEntries(
-          folders.map((id) => [`${searchScope}:${id}`, !next.includes(id)]),
+          folders.map((id) => [expansionKey(id), next.includes(id)]),
         ),
       }));
+      if (!searchScope) {
+        const visible = new Set(folders);
+        const projectCandidates = new Map<string, Id | null>();
+        for (const group of persistentGroups)
+          if (group.works.length)
+            projectCandidates.set(String(group.id ?? "none"), group.id);
+        for (const id of [
+          ...preferences.known_projects,
+          ...preferences.expanded_projects,
+        ])
+          projectCandidates.set(String(id ?? "none"), id);
+        const taskCandidates = new Map<string, Id>();
+        for (const task of data.tasks)
+          if (sameId(task.workspace_id, data.state.workspace_id))
+            taskCandidates.set(String(task.id), task.id);
+        for (const id of preferences.expanded_tasks)
+          taskCandidates.set(String(id), id);
+        const chosen = (nodeId: string, fromFile: boolean) =>
+          visible.has(nodeId)
+            ? next.includes(nodeId)
+            : (expansion[`${preferenceScope}::${nodeId}`] ?? fromFile);
+        const knownProjects = [...projectCandidates.values()].filter((id) => {
+          const nodeId = `project:${id ?? "none"}`;
+          return (
+            visible.has(nodeId) ||
+            expansion[`${preferenceScope}::${nodeId}`] !== undefined ||
+            preferences.known_projects.some((saved) => sameId(saved, id))
+          );
+        });
+        saveExpansion(
+          knownProjects,
+          knownProjects.filter((id) =>
+            chosen(
+              `project:${id ?? "none"}`,
+              preferences.expanded_projects.some((saved) => sameId(saved, id)),
+            ),
+          ),
+          [...taskCandidates.values()].filter((id) =>
+            chosen(
+              `task:${id}`,
+              preferences.expanded_tasks.some((saved) => sameId(saved, id)),
+            ),
+          ),
+        );
+      }
     },
     getItemName: (item) => item.getItemData()?.name ?? "",
     isItemFolder: (item) => !!item.getItemData()?.children?.length,
@@ -170,260 +297,294 @@ export function WorkTree({
         const seconds = work
           ? (today.groups.get(timeKeyForWork(data, work))?.seconds ?? 0)
           : 0;
+        const savedTask = !!work && isSavedTaskWork(data, work);
+        const hasEntries = !!work && !!node.children?.length;
         return (
-          <TreeItem
-            key={item.getId()}
-            item={item}
-            asChild
-            className={group ? "mt-2 first:mt-0" : undefined}
-          >
-            <div
-              className="tree-row"
-              data-project={!!group || undefined}
-              data-running={active || undefined}
-              data-archived={work?.task?.active === false || undefined}
-              data-interval={!!row || undefined}
-              onFocus={(event) => {
-                if (event.target === event.currentTarget) item.setFocused();
-              }}
-              onKeyDown={(event) => {
-                if (
-                  event.target === event.currentTarget &&
-                  (event.key === "Enter" || event.key === " ")
-                ) {
-                  event.preventDefault();
-                  event.currentTarget.click();
-                }
-              }}
+          <Fragment key={item.getId()}>
+            {node.section && (
+              <div
+                aria-hidden="true"
+                role="presentation"
+                className="work-section-heading"
+              >
+                {node.section}
+              </div>
+            )}
+            <TreeItem
+              item={item}
+              asChild
+              className={group ? "mt-2 first:mt-0" : undefined}
             >
-              {row ? (
-                <TimeEntryRow
-                  row={row}
-                  parentLabel={node.parentLabel}
-                  busy={busy}
-                  edit={openEntry}
-                  retime={retime}
-                />
-              ) : group ? (
-                <div className="project-heading">
-                  <RowLabel className="project-name font-semibold">
-                    <Circle
-                      aria-hidden="true"
-                      className="project-color"
-                      fill="currentColor"
-                      style={{ color: group.color }}
-                    />
-                    <span className="work-label">{group.name}</span>
-                  </RowLabel>
-                  {group.id != null &&
-                    data.task_capability !== "unavailable" && (
-                      <ActionHint text={`New task in ${group.name}`}>
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          disabled={busy}
-                          aria-label={`New task in ${group.name}`}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            createTask(group);
-                          }}
-                        >
-                          <Plus />
-                        </Button>
-                      </ActionHint>
-                    )}
-                </div>
-              ) : (
-                work && (
-                  <>
-                    <RowLabel className="work-name">
-                      <span className="work-title">
-                        <span className="work-label">{work.label}</span>
-                        {!tasksOnly &&
-                          work.key !== "current" &&
-                          work.task?.active !== false && (
-                            <span className="work-kind">
-                              {work.task ? "Task" : "Recent"}
-                            </span>
-                          )}
-                      </span>
+              <div
+                className="tree-row"
+                data-project={!!group || undefined}
+                data-work={!!work || undefined}
+                data-work-kind={
+                  work ? (savedTask ? "task" : "activity") : undefined
+                }
+                data-running={active || undefined}
+                data-archived={work?.task?.active === false || undefined}
+                data-interval={!!row || undefined}
+                aria-description={
+                  work
+                    ? savedTask
+                      ? "Saved task"
+                      : "Recent activity"
+                    : undefined
+                }
+                onFocus={(event) => {
+                  if (event.target === event.currentTarget) item.setFocused();
+                }}
+                onKeyDown={(event) => {
+                  if (
+                    event.target === event.currentTarget &&
+                    (event.key === "Enter" || event.key === " ")
+                  ) {
+                    event.preventDefault();
+                    event.currentTarget.click();
+                  }
+                }}
+              >
+                {row ? (
+                  <TimeEntryRow
+                    row={row}
+                    parentLabel={node.parentLabel}
+                    busy={busy}
+                    savingTime={savingTime}
+                    focusRange={focusInterval === item.getId()}
+                    onRangeFocused={() => setFocusInterval(null)}
+                    edit={openEntry}
+                    retime={retime}
+                  />
+                ) : group ? (
+                  <div className="project-heading">
+                    <RowLabel className="project-name font-semibold">
+                      <Circle
+                        aria-hidden="true"
+                        className="project-color"
+                        fill="currentColor"
+                        style={{ color: group.color }}
+                      />
+                      <span className="work-label">{group.name}</span>
                     </RowLabel>
-                    {active ? (
-                      <Badge variant="secondary">Running</Badge>
-                    ) : work.task?.active === false ? (
-                      <Badge variant="secondary">Archived</Badge>
-                    ) : null}
-                    {(work.task || active) && (
-                      <ActionHint
-                        text={
-                          work.task ? "Rename saved task" : "Edit running timer"
-                        }
-                      >
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          disabled={busy}
-                          aria-label={
-                            work.task
-                              ? `Rename task ${work.label}`
-                              : `Edit timer ${work.label}`
-                          }
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            if (work.task) rename(work);
-                            else edit(work);
-                          }}
-                        >
-                          <Pencil />
-                        </Button>
-                      </ActionHint>
-                    )}
-                    {work.task?.active === false ? (
-                      <Button
-                        variant="ghost"
-                        disabled={busy}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          act({
-                            action: "task-update",
-                            payload: {
-                              context: data.project_context,
-                              task: work.task,
-                              name: work.task!.name,
-                              active: true,
-                            },
-                          });
-                        }}
-                      >
-                        Restore
-                      </Button>
-                    ) : (
-                      !active && (
-                        <ActionHint
-                          text={
-                            data.state.tracking
-                              ? "Start this work and stop the current timer"
-                              : "Start this work"
-                          }
-                        >
+                    {group.id != null &&
+                      data.task_capability !== "unavailable" && (
+                        <ActionHint text={`New task in ${group.name}`}>
                           <Button
                             variant="ghost"
                             size="icon-sm"
                             disabled={busy}
-                            aria-label={`Start ${work.label}`}
+                            aria-label={`New task in ${group.name}`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              createTask(group);
+                            }}
+                          >
+                            <Plus />
+                          </Button>
+                        </ActionHint>
+                      )}
+                  </div>
+                ) : (
+                  work && (
+                    <>
+                      <RowLabel className="work-name">
+                        <span className="work-label">{work.label}</span>
+                      </RowLabel>
+                      <div className="work-controls">
+                        {active ? (
+                          <Badge variant="secondary">Running</Badge>
+                        ) : work.task?.active === false ? (
+                          <Badge variant="secondary">Archived</Badge>
+                        ) : null}
+                        {hasEntries && !item.isExpanded() && (
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            className="edit-entries"
+                            disabled={busy}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setFocusInterval(node.children![0]);
+                              item.expand();
+                              item.setFocused();
+                            }}
+                          >
+                            Edit entries
+                          </Button>
+                        )}
+                        {(work.task || active) && (
+                          <ActionHint
+                            text={
+                              work.task ? "Edit saved task" : "Edit running timer"
+                            }
+                          >
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              disabled={busy}
+                              aria-label={
+                                work.task
+                                  ? `Edit task ${work.label}`
+                                  : `Edit timer ${work.label}`
+                              }
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                if (work.task) rename(work);
+                                else edit(work);
+                              }}
+                            >
+                              <Pencil />
+                            </Button>
+                          </ActionHint>
+                        )}
+                        {work.task?.active === false ? (
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            disabled={busy}
                             onClick={(event) => {
                               event.stopPropagation();
                               act({
-                                action: "switch",
+                                action: "task-update",
                                 payload: {
-                                  changes: {
-                                    project_id: work.project_id,
-                                    task_id: work.task_id,
-                                    description: work.description,
-                                  },
-                                  expected: data.state,
                                   context: data.project_context,
+                                  task: work.task,
+                                  name: work.task!.name,
+                                  active: true,
                                 },
                               });
                             }}
                           >
-                            <Play />
+                            Restore
                           </Button>
-                        </ActionHint>
-                      )
-                    )}
-                    {
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            disabled={busy}
-                            aria-label={`More actions for ${work.label}`}
+                        ) : (
+                          !active && (
+                            <ActionHint
+                              text={
+                                data.state.tracking
+                                  ? "Start this work and stop the current timer"
+                                  : "Start this work"
+                              }
+                            >
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                disabled={busy}
+                                aria-label={`Start ${work.label}`}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  act({
+                                    action: "switch",
+                                    payload: {
+                                      changes: {
+                                        project_id: work.project_id,
+                                        task_id: work.task_id,
+                                        description: work.description,
+                                      },
+                                      expected: data.state,
+                                      context: data.project_context,
+                                    },
+                                  });
+                                }}
+                              >
+                                <Play />
+                              </Button>
+                            </ActionHint>
+                          )
+                        )}
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              disabled={busy}
+                              aria-label={`More actions for ${work.label}`}
+                              onClick={(event) => event.stopPropagation()}
+                            >
+                              <MoreHorizontal />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent
+                            align="end"
                             onClick={(event) => event.stopPropagation()}
                           >
-                            <MoreHorizontal />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent
-                          align="end"
-                          onClick={(event) => event.stopPropagation()}
-                        >
-                          <DropdownMenuGroup>
-                            {!work.task && (
-                              <DropdownMenuItem onSelect={() => prepare(work)}>
-                                New timer with these details
-                              </DropdownMenuItem>
-                            )}
-                            {!work.task && (
-                              <DropdownMenuItem
-                                disabled={
-                                  data.task_capability === "unavailable" ||
-                                  work.project_id == null
-                                }
-                                onSelect={() => saveTask(work)}
-                              >
-                                Save as task
-                              </DropdownMenuItem>
-                            )}
-                            {!work.task && (
-                              <DropdownMenuItem
-                                onSelect={() =>
-                                  act({
-                                    action: "hide-activity",
-                                    payload: {
-                                      project_id: work.project_id,
-                                      description: work.description,
-                                      context: data.project_context,
-                                    },
-                                  })
-                                }
-                              >
-                                Hide suggestion
-                              </DropdownMenuItem>
-                            )}
-                            {work.task && (
-                              <DropdownMenuItem onSelect={() => rename(work)}>
-                                Rename task
-                              </DropdownMenuItem>
-                            )}
-                            {work.task && (
-                              <DropdownMenuItem
-                                onSelect={() =>
-                                  act({
-                                    action: "task-update",
-                                    payload: {
-                                      context: data.project_context,
-                                      task: work.task,
-                                      name: work.task!.name,
-                                      active: work.task!.active === false,
-                                    },
-                                  })
-                                }
-                              >
-                                {work.task.active === false
-                                  ? "Restore task"
-                                  : "Archive task"}
-                              </DropdownMenuItem>
-                            )}
-                          </DropdownMenuGroup>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    }
-                    <span
-                      className={cn(
-                        "work-time",
-                        seconds === 0 && "text-muted-foreground",
-                      )}
-                      aria-label={`Today for ${work.label}`}
-                    >
-                      {todayLabel(today, seconds)}
-                    </span>
-                  </>
-                )
-              )}
-            </div>
-          </TreeItem>
+                            <DropdownMenuGroup>
+                              {!work.task && (
+                                <DropdownMenuItem onSelect={() => prepare(work)}>
+                                  New timer with these details
+                                </DropdownMenuItem>
+                              )}
+                              {!work.task && (
+                                <DropdownMenuItem
+                                  disabled={
+                                    data.task_capability === "unavailable" ||
+                                    work.project_id == null
+                                  }
+                                  onSelect={() => saveTask(work)}
+                                >
+                                  Save as task
+                                </DropdownMenuItem>
+                              )}
+                              {!work.task && (
+                                <DropdownMenuItem
+                                  onSelect={() =>
+                                    act({
+                                      action: "hide-activity",
+                                      payload: {
+                                        project_id: work.project_id,
+                                        description: work.description,
+                                        context: data.project_context,
+                                      },
+                                    })
+                                  }
+                                >
+                                  Hide suggestion
+                                </DropdownMenuItem>
+                              )}
+                              {work.task && (
+                                <DropdownMenuItem onSelect={() => rename(work)}>
+                                  Edit task
+                                </DropdownMenuItem>
+                              )}
+                              {work.task && (
+                                <DropdownMenuItem
+                                  onSelect={() =>
+                                    act({
+                                      action: "task-update",
+                                      payload: {
+                                        context: data.project_context,
+                                        task: work.task,
+                                        name: work.task!.name,
+                                        active: work.task!.active === false,
+                                      },
+                                    })
+                                  }
+                                >
+                                  {work.task.active === false
+                                    ? "Restore task"
+                                    : "Archive task"}
+                                </DropdownMenuItem>
+                              )}
+                            </DropdownMenuGroup>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                      <span
+                        className={cn(
+                          "work-time",
+                          seconds === 0 && "text-muted-foreground",
+                        )}
+                        aria-label={`Today for ${work.label}`}
+                      >
+                        {todayLabel(today, seconds)}
+                      </span>
+                    </>
+                  )
+                )}
+              </div>
+            </TreeItem>
+          </Fragment>
         );
       })}
     </Tree>

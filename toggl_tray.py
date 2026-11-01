@@ -466,6 +466,7 @@ def _ensure_private_state_dir():
     private_files = (
         CONFIG_FILE, STATE_FILE, PENDING_FILE, LEDGER_FILE, REQUEST_BUDGET_FILE, LOCK_FILE,
         STATE_DIR / "projects.json", STATE_DIR / "tasks.json", STATE_DIR / "task-history.json",
+        STATE_DIR / "ui-preferences.json",
     )
     for path in private_files:
         for candidate in (path, _backup_path(path)):
@@ -486,7 +487,7 @@ def _atomic_write_text(path, text, backup=True):
             backup_path = _backup_path(path)
             backup_path.write_text(existing)
             backup_path.chmod(0o600)
-        except (json.JSONDecodeError, OSError):
+        except (UnicodeDecodeError, json.JSONDecodeError, OSError):
             pass
     tmp.write_text(text)
     tmp.chmod(0o600)
@@ -499,7 +500,7 @@ def _load_json_with_backup(path, default):
         if candidate.exists():
             try:
                 return json.loads(candidate.read_text())
-            except (json.JSONDecodeError, OSError):
+            except (UnicodeDecodeError, json.JSONDecodeError, OSError):
                 continue
     return default
 

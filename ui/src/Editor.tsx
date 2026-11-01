@@ -1,6 +1,8 @@
+import { useLayoutEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Item, ItemContent, ItemTitle } from "@/components/ui/item";
 import {
   Field,
   FieldDescription,
@@ -29,6 +31,8 @@ import {
   projectName,
   sameId,
   scope,
+  nextTaskCopyName,
+  taskNameConflict,
   timerMatches,
   timerTitle,
 } from "./model";
@@ -87,16 +91,33 @@ export function Editor({
   hide(): void;
 }) {
   const metadata = d.mode === "task" || d.mode === "new-task";
+  const copyTask = d.mode === "new-task" && !!d.work?.task;
+  const descriptionRef = useRef<HTMLInputElement>(null);
+  const wasCopyTask = useRef(copyTask);
+  useLayoutEffect(() => {
+    const shouldFocus = copyTask && !wasCopyTask.current;
+    wasCopyTask.current = copyTask;
+    if (shouldFocus) descriptionRef.current?.focus();
+  }, [copyTask]);
   const fullReview = d.mode === "entry" && d.entry?._needs_full_review;
   const staleContext = !contextMatches(d.snapshot, current);
   const staleTimer =
     (d.mode === "current" || d.mode === "new") &&
     !timerMatches(d.snapshot.state, current.state);
+  const hasCopyDestination =
+    d.mode === "task" &&
+    d.snapshot.projects.some(
+      (project) =>
+        sameId(project.workspace_id, scope(d)) &&
+        project.active !== false &&
+        !sameId(project.id, d.work!.project_id),
+    );
   const projects = d.snapshot.projects
     .filter(
       (p) =>
         sameId(p.workspace_id, scope(d)) &&
-        (p.active !== false || sameId(p.id, d.project)),
+        (p.active !== false || sameId(p.id, d.project)) &&
+        (!copyTask || !sameId(p.id, d.work!.project_id)),
     )
     .map((p) => ({ id: String(p.id), name: p.name }));
   if (d.project !== "none" && !projects.some((p) => p.id === d.project))
@@ -113,13 +134,32 @@ export function Editor({
     tasks.push({ id: d.task, name: "Current task" });
   const nameValid =
     !!d.description.trim() && d.description.trim().length <= 200;
-  const title = {
-    current: "Edit running timer",
-    new: "New timer",
-    task: "Edit saved task",
-    "new-task": "New saved task",
-    entry: "Edit time entry",
-  }[d.mode];
+  const duplicateName =
+    metadata &&
+    taskNameConflict(
+      d.snapshot,
+      d.description,
+      scope(d),
+      d.mode === "task" ? d.work!.task!.id : undefined,
+    );
+  const nameError = !metadata
+    ? ""
+    : !nameValid
+      ? "Enter a task name of 1–200 characters."
+      : duplicateName
+        ? copyTask
+          ? `A task with this name already exists in this workspace. Enter a different name, such as “${nextTaskCopyName(d.snapshot, d.work!.task!)}”.`
+          : "A task with this name already exists in this workspace. Enter a different name."
+        : "";
+  const title = copyTask
+    ? "Create task in another project"
+    : {
+        current: "Edit running timer",
+        new: "New timer",
+        task: "Edit saved task",
+        "new-task": "New saved task",
+        entry: "Edit time entry",
+      }[d.mode];
   const note = staleContext
     ? "Your account or workspace changed. Your draft is kept. Copy it or cancel to reload."
     : staleTimer
@@ -133,8 +173,12 @@ export function Editor({
           : d.mode === "entry"
             ? "Corrects this entry without starting another timer."
             : d.mode === "task"
-              ? `This saved task stays in ${projectName(d.snapshot, d.work!.project_id)}.`
-              : "Save a reusable task in this project.";
+              ? hasCopyDestination
+                ? `Rename this task here, or create a separate task in another project. Its time entries stay in ${projectName(d.snapshot, d.work!.project_id)}.`
+                : `Rename this task here. No other active project is available for a copy, and its time entries stay in ${projectName(d.snapshot, d.work!.project_id)}.`
+              : copyTask
+                ? `Creates a separate task. “${d.work!.task!.name}” and its time entries stay in ${projectName(d.snapshot, d.work!.project_id)}.`
+                : "Save a reusable task in this project.";
   return (
     <Frame
       variant="ghost"
@@ -161,9 +205,12 @@ export function Editor({
                   {metadata ? "Task name" : "Description"}
                 </FieldLabel>
                 <Input
+                  ref={descriptionRef}
                   id="work-description"
                   autoFocus
                   value={d.description}
+                  aria-invalid={!!nameError || undefined}
+                  aria-describedby={nameError ? "work-description-error" : undefined}
                   placeholder={
                     metadata ? "Name this task" : "What are you working on?"
                   }
@@ -175,15 +222,54 @@ export function Editor({
                 />
               </Field>
               <FieldGroup className="grid gap-4 min-[480px]:grid-cols-2">
-                <Choice
-                  label="Project"
-                  value={d.project}
-                  options={[{ id: "none", name: "No project" }, ...projects]}
-                  disabled={busy || d.mode === "task"}
-                  onChange={(project) =>
-                    change({ ...d, project, task: "none" })
-                  }
-                />
+                {d.mode === "task" ? (
+                  <Field className="min-[480px]:col-span-2">
+                    <FieldLabel>Project</FieldLabel>
+                    <Item size="xs" variant="muted" className="task-project-item">
+                      <ItemContent>
+                        <ItemTitle>
+                          {projectName(d.snapshot, d.work!.project_id)}
+                        </ItemTitle>
+                      </ItemContent>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        disabled={busy || !hasCopyDestination}
+                        onClick={() =>
+                          change({
+                            ...d,
+                            mode: "new-task",
+                            description: nextTaskCopyName(
+                              d.snapshot,
+                              d.work!.task!,
+                            ),
+                            project: "none",
+                            task: "none",
+                            reviewed: false,
+                          })
+                        }
+                      >
+                        Create in another project
+                      </Button>
+                    </Item>
+                  </Field>
+                ) : (
+                  <Choice
+                    label="Project"
+                    value={d.project}
+                    options={[
+                      {
+                        id: "none",
+                        name: metadata ? "Choose a project" : "No project",
+                      },
+                      ...projects,
+                    ]}
+                    disabled={busy}
+                    onChange={(project) =>
+                      change({ ...d, project, task: "none" })
+                    }
+                  />
+                )}
                 {!metadata && (
                   <Choice
                     label="Task"
@@ -231,9 +317,9 @@ export function Editor({
                   </Button>
                 </Field>
               )}
-              {metadata && !nameValid && (
-                <FieldDescription>
-                  Enter a task name of 1–200 characters.
+              {metadata && nameError && (
+                <FieldDescription id="work-description-error">
+                  {nameError}
                 </FieldDescription>
               )}
             </FieldGroup>
@@ -254,7 +340,8 @@ export function Editor({
                 staleContext ||
                 staleTimer ||
                 (fullReview && !d.reviewed) ||
-                (metadata && (!nameValid || d.project === "none"))
+                (metadata &&
+                  (!nameValid || duplicateName || d.project === "none"))
               }
             >
               {busy

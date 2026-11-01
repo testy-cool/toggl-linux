@@ -68,6 +68,7 @@ export const clockRange = (row: TodayRow) => {
   const options: Intl.DateTimeFormatOptions = {
     hour: "2-digit",
     minute: "2-digit",
+    hourCycle: "h23",
   };
   return `${new Date(row.from).toLocaleTimeString([], options)}–${row.entry.stop || row.entry.duration >= 0 ? new Date(row.to).toLocaleTimeString([], options) : "now"}`;
 };
