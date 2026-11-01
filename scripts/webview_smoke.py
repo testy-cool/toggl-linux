@@ -294,8 +294,15 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             menu('Renamed in the webview', 'Archive task')
             until(lambda: next(t for t in app._cached_tasks() if t['id'] == 42)['active'] is False)
             until(lambda: js("document.body.textContent.includes('Restore')"))
+            for compact_width in (375, 360):
+                window.resize(compact_width, 480)
+                until(lambda: js(f"innerWidth==={compact_width} && innerHeight===480"))
+                assert js("(()=>{const row=document.querySelector('[data-archived]');return row.querySelector('.work-name').getBoundingClientRect().width>=240&&row.querySelector('.work-label').getBoundingClientRect().height<=40})()"), 'Archived task names must keep useful width beside Restore'
+                picture(f'archived-task-{compact_width}.png')
             click('Restore')
             until(lambda: next(t for t in app._cached_tasks() if t['id'] == 42)['active'] is True)
+            window.resize(600, 780)
+            until(lambda: js("innerWidth===600 && innerHeight===780"))
             assert not app.state['tracking']
             click('Today')
             until(lambda: js("document.body.textContent.includes('Draft survives closing and stopping')"))

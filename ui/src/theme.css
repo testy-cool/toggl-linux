@@ -164,6 +164,8 @@ html, body, #root { height: 100%; overflow: hidden; }
 [data-slot=select-value] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 [data-slot=item-content] { min-width: 0; }
 @media (max-width: 460px) {
+  .tree-row[data-archived] { flex-wrap: wrap; justify-content: flex-end; }
+  .tree-row[data-archived] .work-name { flex: 0 0 100%; }
   .current-timer { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
   .current-work { grid-column: 1; grid-row: 1; }
   .current-timer .elapsed { grid-column: 2; grid-row: 1; justify-self: end; }

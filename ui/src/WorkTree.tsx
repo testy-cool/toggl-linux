@@ -177,6 +177,7 @@ export function WorkTree({
               className="tree-row"
               data-project={!!group || undefined}
               data-running={active || undefined}
+              data-archived={work?.task?.active === false || undefined}
               data-interval={!!row || undefined}
               onFocus={(event) => {
                 if (event.target === event.currentTarget) item.setFocused();
