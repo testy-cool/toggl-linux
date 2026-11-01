@@ -64,8 +64,8 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
                  description='Previous today session', start=midnight.isoformat(),
                  stop=(midnight+(now-midnight)/2).isoformat(), duration=1)
     recent = dict(id=992, workspace_id=1, project_id=6, task_id=None,
-                  description='Review recent notes', start=(midnight+timedelta(hours=1)).isoformat(),
-                  stop=(midnight+timedelta(hours=1, minutes=20)).isoformat(), duration=1200)
+                  description='Review recent notes', start=(midnight+(now-midnight)/4).isoformat(),
+                  stop=(midnight+3*(now-midnight)/4).isoformat(), duration=1)
     toggl_today.remember(app, prior)
     toggl_today.remember(app, recent)
     toggl_task_tree._save(app, dict(context=control.snapshot(app)['project_context'],
