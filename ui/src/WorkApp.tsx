@@ -7,6 +7,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Item, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item";
 import { TimeEntryRow } from "./TimeEntryRow";
+import { TimeInput } from "./TimeInput";
 import { localDay, todayTotals, todayLabel, todayGroupLabel } from "./today";
 import {
   Empty,
@@ -33,6 +34,8 @@ import {
   pendingSource,
   rebaseSyncedDraft,
   isCurrentEntry,
+  localTime,
+  retimeCommand,
 } from "./model";
 import type { Command, Draft, Entry, Snapshot, Work } from "./model";
 
@@ -247,6 +250,16 @@ export default function WorkApp() {
       ),
     );
   }
+  function retime(entry: Entry | null, field: "start" | "stop", time: string) {
+    if (!data || busy) return;
+    try {
+      const command = retimeCommand(data, entry, field, time);
+      if (command) void act(command);
+      else if (entry) openEntry(entry);
+    } catch (failure) {
+      setError(String(failure));
+    }
+  }
   function saveDraft(asTask = false) {
     if (!draft) return;
     try {
@@ -361,6 +374,15 @@ export default function WorkApp() {
                       {projectName(data, data.state.project_id)}
                     </ItemDescription>
                   </Button>
+                  <label className="current-start">
+                    Started
+                    <TimeInput
+                      label="Started at"
+                      value={localTime(data.state.start_time).slice(11, 16)}
+                      disabled={busy}
+                      onChange={(time) => retime(null, "start", time)}
+                    />
+                  </label>
                   <span className="elapsed" aria-label="Elapsed time">
                     {elapsed(data.state, now)}
                   </span>
@@ -479,6 +501,7 @@ export default function WorkApp() {
                     data={data}
                     today={totals!}
                     openEntry={openEntry}
+                    retime={retime}
                     prepare={(work) => setDraft(draftFor(data, "new", work))}
                     saveTask={(work) =>
                       setDraft(draftFor(data, "new-task", work))
@@ -518,6 +541,7 @@ export default function WorkApp() {
                             row={row}
                             busy={busy || !!draft}
                             edit={openEntry}
+                            retime={retime}
                             resume={(entry) =>
                               void act({
                                 action: "resume",

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { afterOwnStop, commandFor, contextMatches, draftFor, localTime, running, workItems, workGroups, isCurrentEntry, rebaseSyncedDraft, samePending } from '../src/model.ts'
+import { afterOwnStop, commandFor, isDay, retimeCommand, contextMatches, draftFor, localTime, running, workItems, workGroups, isCurrentEntry, rebaseSyncedDraft, samePending } from '../src/model.ts'
 import type { Snapshot } from '../src/model.ts'
 
 const sample = (): Snapshot => ({
@@ -265,3 +265,42 @@ test('duration-only entry drafts show their derived end and preserve the origina
   assert.deepEqual(commandFor(draft).payload.changes,{start:'2026-10-29T09:05:00.000Z'});
   assert.deepEqual(commandFor(draft).payload.entry,entry);
 });
+
+const finished = {id: 40, workspace_id: 1, project_id: 6, task_id: null, description: 'Done', start: '2026-10-29T08:00:30Z', stop: '2026-10-29T09:15:45Z', duration: 4515}
+
+test('typing a start time changes only the start and keeps its day', () => {
+  const data = sample(); data.state = {...data.state, tracking: false}
+  const command = retimeCommand(data, finished, 'start', '07:30')!
+  assert.equal(command.action, 'edit-entry')
+  const changes = command.payload.changes as Record<string, string>
+  assert.deepEqual(Object.keys(changes), ['start'])
+  assert.equal(localTime(changes.start), `${localTime(finished.start).slice(0, 10)}T07:30:00`)
+})
+
+test('typing a stop time changes only the stop', () => {
+  const data = sample(); data.state = {...data.state, tracking: false}
+  const changes = retimeCommand(data, finished, 'stop', '10:05')!.payload.changes as Record<string, string>
+  assert.deepEqual(Object.keys(changes), ['stop'])
+  assert.equal(localTime(changes.stop), `${localTime(finished.stop).slice(0, 10)}T10:05:00`)
+})
+
+test('typing the running timer start edits the running timer', () => {
+  const data = sample()
+  const command = retimeCommand(data, null, 'start', '06:15')!
+  assert.equal(command.action, 'edit-current')
+  const changes = command.payload.changes as Record<string, string>
+  assert.deepEqual(Object.keys(changes), ['start'])
+  assert.equal(localTime(changes.start).slice(11), '06:15:00')
+})
+
+test('an interval that needs a full review opens its form instead of saving', () => {
+  const data = sample()
+  assert.equal(retimeCommand(data, {...finished, _needs_full_review: true}, 'start', '07:30'), null)
+})
+
+test('only real calendar days pass as a typed date', () => {
+  assert.equal(isDay('2026-10-29'), true)
+  assert.equal(isDay('2026-02-31'), false)
+  assert.equal(isDay('2026-10-2'), false)
+  assert.equal(isDay('yesterday'), false)
+})

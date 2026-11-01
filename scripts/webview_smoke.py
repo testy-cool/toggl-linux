@@ -185,8 +185,10 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'"))
             assert not js("!!document.getElementById('work-description')")
             until(lambda: js("document.body.textContent.includes('Previous today session')"))
+            assert js("!!document.querySelector('input[aria-label=\"Start of Previous today session\"]')")
             click('Edit entry Previous today session')
             until(lambda: js("!!document.getElementById('work-description')"))
+            assert js("!!document.getElementById('work-start').value && !document.querySelector('input[type=datetime-local]')")
             click('Cancel')
             assert not app.state['tracking']
             code="Array.from(document.querySelectorAll('button')).find(b=>b.getAttribute('aria-label')==='More actions for Improve navigation')"

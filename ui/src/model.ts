@@ -477,6 +477,30 @@ export function draftFor(
         : undefined,
   };
 }
+export function isDay(text: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false;
+  const date = new Date(`${text}T12:00:00`);
+  return (
+    Number.isFinite(date.getTime()) && localTime(date.toISOString()).startsWith(text)
+  );
+}
+
+/** The command for one typed time, or null when the entry needs its full review form. */
+export function retimeCommand(
+  s: Snapshot,
+  entry: Entry | null,
+  field: "start" | "stop",
+  time: string,
+): Command | null {
+  const d =
+    !entry || isCurrentEntry(s, entry)
+      ? draftFor(s, "current")
+      : draftFor(s, "entry", undefined, entry);
+  if (d.entry?._needs_full_review) return null;
+  d[field] = `${d[field].slice(0, 10)}T${time}:00`;
+  return commandFor(d);
+}
+
 export function commandFor(d: Draft, asTask = false): Command {
   if (d.mode === "entry" && d.entry?._needs_full_review && !d.reviewed)
     throw new Error("Review and approve all interval fields before saving");
