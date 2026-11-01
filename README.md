@@ -188,7 +188,7 @@ python3 toggl_tray.py install-app --autostart
 - Pending writes are saved to `~/.local/share/toggl-tray/pending.json`
 - Every toggle/start/stop/pending action is appended to `~/.local/share/toggl-tray/events.jsonl`
 - Recent Toggl request attempts are tracked in `~/.local/share/toggl-tray/request_budget.json`
-- `state.json` and `pending.json` use atomic writes and keep `.bak` backups for recovery
+- `state.json` and `pending.json` use atomic writes and keep `.bak` backups for recovery; unreadable JSON or UTF-8 falls back to the backup, and the next write repairs the primary file
 
 ## Dependencies
 
@@ -361,8 +361,10 @@ and scroll position remain in memory. Project and saved-task expansion also
 survives a complete UI process restart in private
 `~/.local/share/toggl-tray/ui-preferences.json`. The file stores only allowlisted
 IDs for the current account and workspace; credentials and timer writes stay out
-of it. A filtered tree preserves choices for projects outside the filter. A
-project that first gains work opens by default so the new task remains visible,
+of it. A partial project or task cache cannot erase an ID already validated for
+that scope, while an unseen ID still needs current metadata. A filtered tree
+preserves choices for projects outside the filter. A project that first gains
+work opens by default so the new task remains visible,
 while an explicit collapse survives reloads. Search can reveal matches
 temporarily, then clearing search restores the saved tree.
 

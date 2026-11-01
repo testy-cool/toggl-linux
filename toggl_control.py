@@ -393,7 +393,14 @@ def _dispatch(app, action, payload):
             return _dispatch(app, 'work-snapshot', {})
     if action == 'save-work-preferences':
         try:
-            return {"work_preferences": toggl_ui_preferences.write(app, payload)}
+            # Credential/workspace mutation uses this same lock. Capture the
+            # scope once, then validate and replace its record atomically.
+            with app.toggle_lock:
+                context = toggl_projects.context(app)
+                preferences = toggl_ui_preferences.write(
+                    app, payload, context=context
+                )
+            return {"work_preferences": preferences}
         except ValueError as error:
             raise ControlError(str(error)) from error
     if action == "set-api-base":

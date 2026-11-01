@@ -8,7 +8,7 @@ import toggl_projects
 FILE_NAME = "ui-preferences.json"
 MAX_SCOPES = 20
 MAX_IDS = 1000
-_lock = threading.Lock()
+_lock = threading.RLock()
 
 
 def _path(app):
@@ -73,22 +73,27 @@ def _stored_preferences(record):
     }
 
 
-def read(app):
-    """Return only the current account/workspace's expansion choices."""
-    wanted = _scope_key(toggl_projects.context(app))
+def _read_context(app, context):
+    wanted = _scope_key(context)
     if wanted is None:
         return _empty()
-    with _lock:
-        for record in reversed(_read_file(app)):
-            if not isinstance(record, dict) or _scope_key(record.get("context")) != wanted:
-                continue
-            stored = _stored_preferences(record)
-            if stored is not None:
-                return stored
+    for record in reversed(_read_file(app)):
+        if not isinstance(record, dict) or _scope_key(record.get("context")) != wanted:
+            continue
+        stored = _stored_preferences(record)
+        if stored is not None:
+            return stored
     return _empty()
 
 
-def _validated_ids(app, payload):
+def read(app):
+    """Return only the current account/workspace's expansion choices."""
+    context = toggl_projects.context(app)
+    with _lock:
+        return _read_context(app, context)
+
+
+def _validated_ids(app, payload, context, previous):
     known_projects = payload.get("known_projects")
     projects = payload.get("expanded_projects")
     tasks = payload.get("expanded_tasks")
@@ -102,7 +107,6 @@ def _validated_ids(app, payload):
     if any(isinstance(value, bool) or not isinstance(value, (str, int)) for value in tasks):
         raise ValueError("Expanded task IDs are invalid")
 
-    context = toggl_projects.context(app)
     workspace = context.get("workspace_id")
     allowed_projects = {
         str(project.get("id"))
@@ -111,6 +115,13 @@ def _validated_ids(app, payload):
         and str(project.get("workspace_id")) == str(workspace)
         and project.get("id") is not None
     }
+    # A partial or stale metadata cache must not turn a previously validated
+    # choice into a collapse. IDs not already saved still need current metadata.
+    allowed_projects.update(
+        str(value)
+        for value in previous["known_projects"] + previous["expanded_projects"]
+        if value is not None
+    )
     allowed_tasks = {
         str(task.get("id"))
         for task in app._cached_tasks()
@@ -118,6 +129,7 @@ def _validated_ids(app, payload):
         and str(task.get("workspace_id")) == str(workspace)
         and task.get("id") is not None
     }
+    allowed_tasks.update(str(value) for value in previous["expanded_tasks"])
 
     def normalized_project_ids(values):
         normalized = []
@@ -150,24 +162,25 @@ def _validated_ids(app, payload):
     return normalized_known, normalized_projects, normalized_tasks
 
 
-def write(app, payload):
+def write(app, payload, *, context=None):
     """Replace one scope's allowlisted expansion state without touching timer data."""
-    context = toggl_projects.context(app)
+    context = context if context is not None else toggl_projects.context(app)
     if not isinstance(payload, dict) or payload.get("context") != context:
         raise ValueError("Account or workspace changed; reopen the work panel")
     if set(payload) - {"context", "known_projects", "expanded_projects", "expanded_tasks"}:
         raise ValueError("Unsupported work-panel preference")
-    known_projects, projects, tasks = _validated_ids(app, payload)
-    record = {
-        "context": context,
-        "work_tree": {
-            "known_projects": known_projects,
-            "expanded_projects": projects,
-            "expanded_tasks": tasks,
-        },
-    }
     wanted = _scope_key(context)
     with _lock:
+        previous = _read_context(app, context)
+        known_projects, projects, tasks = _validated_ids(app, payload, context, previous)
+        record = {
+            "context": context,
+            "work_tree": {
+                "known_projects": known_projects,
+                "expanded_projects": projects,
+                "expanded_tasks": tasks,
+            },
+        }
         scopes = [
             existing
             for existing in _read_file(app)
