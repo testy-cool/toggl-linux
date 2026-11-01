@@ -139,7 +139,7 @@ html, body, #root { height: 100%; overflow: hidden; }
 .tree-row button:disabled { pointer-events: auto; }
 .project-name, .work-name { flex: 1; min-width: 0; }
 .project-color { width: 10px; height: 10px; color: var(--muted-foreground); }
-.work-label { white-space: normal; overflow-wrap: anywhere; }
+.work-label { min-width: 0; white-space: normal; overflow-wrap: break-word; }
 .work-kind { color: var(--muted-foreground); font-size: 12px; line-height: 16px; }
 .work-time { min-width: 56px; flex-shrink: 0; text-align: end; font-size: 12px; line-height: 16px; font-variant-numeric: tabular-nums; }
 .tree-column-heading { text-align: end; color: var(--muted-foreground); font-size: 12px; line-height: 16px; }
@@ -164,7 +164,11 @@ html, body, #root { height: 100%; overflow: hidden; }
 [data-slot=select-value] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 [data-slot=item-content] { min-width: 0; }
 @media (max-width: 460px) {
-  .current-timer { flex-wrap: wrap; }
+  .current-timer { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+  .current-work { grid-column: 1; grid-row: 1; }
+  .current-timer .elapsed { grid-column: 2; grid-row: 1; justify-self: end; }
+  .current-start { grid-column: 1; grid-row: 2; }
+  .current-timer > button:not(.current-work) { grid-column: 2; grid-row: 2; justify-self: end; }
   .app-header { padding-inline: 16px; }
   .app-content { padding-inline: 16px; }
   .project-filter { width: 135px; }

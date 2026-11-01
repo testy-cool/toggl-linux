@@ -221,6 +221,21 @@ export function todayTotals(s: Snapshot, now: number): Today {
 
 export const todayLabel = (today: Today, seconds: number) =>
   `${(!today.loaded || today.incomplete) && seconds > 0 ? "≈" : ""}${(today.loaded && !today.incomplete) || seconds > 0 ? shortTime(seconds) : "—"}`;
+export function todaySummary(s: Snapshot, today: Today): string {
+  if (!today.loaded || today.incomplete) {
+    if (today.seconds > 0)
+      return `Today ${todayLabel(today, today.seconds)} · estimated`;
+    return today.incomplete ? "Today incomplete" : "Today’s totals not loaded";
+  }
+  const fetched = s.today_fetched_at
+    ? new Date(s.today_fetched_at * 1000)
+    : null;
+  const updated =
+    fetched && Number.isFinite(fetched.getTime())
+      ? ` · updated ${fetched.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+      : "";
+  return `Today ${todayLabel(today, today.seconds)}${updated}`;
+}
 export const todayGroupLabel = (s: Snapshot, group: TodayGroup) => {
   const project = s.projects.find(
     (p) =>
