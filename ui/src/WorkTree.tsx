@@ -239,11 +239,13 @@ export function WorkTree({
                     <RowLabel className="work-name">
                       <span className="work-title">
                         <span className="work-label">{work.label}</span>
-                        {!tasksOnly && work.task?.active !== false && (
-                          <span className="work-kind">
-                            {work.task ? "Task" : "Recent"}
-                          </span>
-                        )}
+                        {!tasksOnly &&
+                          work.key !== "current" &&
+                          work.task?.active !== false && (
+                            <span className="work-kind">
+                              {work.task ? "Task" : "Recent"}
+                            </span>
+                          )}
                       </span>
                     </RowLabel>
                     {active ? (

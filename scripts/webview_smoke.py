@@ -216,6 +216,11 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             until(lambda: js("!!document.querySelector('[data-testid=current-timer]')"))
             assert not js("!!document.querySelector('button[aria-label=\"Start Improve navigation\"]')"), 'Running work must not keep a redundant start control'
             assert js("document.querySelector('[data-running=true] .work-kind').textContent==='Task'"), 'Running work must retain the scope of its direct edit action'
+            app._task_cache['tasks'][0]['active'] = False
+            until(lambda: js("!!document.querySelector('[data-running=true] button[aria-label^=\"Edit timer\"]')"))
+            assert not js("!!document.querySelector('[data-running=true] .work-kind')"), 'An archived current task must not be mislabeled Recent'
+            app._task_cache['tasks'][0]['active'] = True
+            until(lambda: js("document.querySelector('[data-running=true] .work-kind')?.textContent==='Task'"))
             js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"] .work-name').click()")
             assert not js("!!document.getElementById('work-description')")
             assert js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='false'")
