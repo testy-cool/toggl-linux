@@ -36,6 +36,7 @@ def test_expansion_survives_module_restart_and_stays_out_of_timer_state(tmp_stat
     original = dict(app.state)
     payload = {
         "context": toggl_projects.context(app),
+        "known_projects": [project["id"], None, project["id"], "unknown"],
         "expanded_projects": [project["id"], None, project["id"], "unknown"],
         "expanded_tasks": [task["id"], task["id"], "unknown"],
     }
@@ -43,6 +44,7 @@ def test_expansion_survives_module_restart_and_stays_out_of_timer_state(tmp_stat
     result = control.dispatch(app, "save-work-preferences", payload)
     assert result["work_preferences"] == {
         "configured": True,
+        "known_projects": ["7", None],
         "expanded_projects": ["7", None],
         "expanded_tasks": ["31"],
     }
@@ -64,6 +66,7 @@ def test_expansion_is_scoped_to_the_account_and_workspace(tmp_state_dir):
     first_context = toggl_projects.context(app)
     control.dispatch(app, "save-work-preferences", {
         "context": first_context,
+        "known_projects": [7],
         "expanded_projects": [7],
         "expanded_tasks": [31],
     })
@@ -73,6 +76,7 @@ def test_expansion_is_scoped_to_the_account_and_workspace(tmp_state_dir):
     app._task_cache = None
     assert control.snapshot(app)["work_preferences"] == {
         "configured": False,
+        "known_projects": [],
         "expanded_projects": [],
         "expanded_tasks": [],
     }
@@ -83,6 +87,42 @@ def test_expansion_is_scoped_to_the_account_and_workspace(tmp_state_dir):
     assert control.snapshot(app)["work_preferences"]["expanded_tasks"] == ["31"]
 
 
+def test_snapshot_skips_malformed_scope_records_and_keeps_a_valid_match(tmp_state_dir):
+    _seed_work()
+    context = toggl_projects.context(app)
+    path = tmp_state_dir / toggl_ui_preferences.FILE_NAME
+    path.write_text(json.dumps({"version": 1, "scopes": [0]}))
+    assert control.snapshot(app)["work_preferences"] == {
+        "configured": False,
+        "known_projects": [],
+        "expanded_projects": [],
+        "expanded_tasks": [],
+    }
+
+    valid = {
+        "context": context,
+        "work_tree": {
+            "known_projects": ["7"],
+            "expanded_projects": ["7"],
+            "expanded_tasks": ["31"],
+        },
+    }
+    malformed_match = {
+        "context": context,
+        "work_tree": {"known_projects": ["7"], "expanded_projects": "7"},
+    }
+    path.write_text(json.dumps({
+        "version": 1,
+        "scopes": [valid, {"unrelated": True}, 0, malformed_match],
+    }))
+    assert control.snapshot(app)["work_preferences"] == {
+        "configured": True,
+        "known_projects": ["7"],
+        "expanded_projects": ["7"],
+        "expanded_tasks": ["31"],
+    }
+
+
 def test_preference_action_rejects_stale_context_and_arbitrary_fields():
     _seed_work()
     context = toggl_projects.context(app)
@@ -90,15 +130,31 @@ def test_preference_action_rejects_stale_context_and_arbitrary_fields():
     with pytest.raises(control.ControlError, match="changed"):
         control.dispatch(app, "save-work-preferences", {
             "context": {**context, "workspace_id": 999},
+            "known_projects": [7],
             "expanded_projects": [7],
             "expanded_tasks": [31],
         })
     with pytest.raises(control.ControlError, match="Unsupported"):
         control.dispatch(app, "save-work-preferences", {
             "context": context,
+            "known_projects": [7],
             "expanded_projects": [7],
             "expanded_tasks": [31],
             "description": "must never become timer data",
+        })
+    with pytest.raises(control.ControlError, match="known projects"):
+        control.dispatch(app, "save-work-preferences", {
+            "context": context,
+            "known_projects": [],
+            "expanded_projects": [7],
+            "expanded_tasks": [],
+        })
+    with pytest.raises(control.ControlError, match="Too many"):
+        control.dispatch(app, "save-work-preferences", {
+            "context": context,
+            "known_projects": [7] * (toggl_ui_preferences.MAX_IDS + 1),
+            "expanded_projects": [],
+            "expanded_tasks": [],
         })
     assert app.state == before
 
@@ -106,6 +162,7 @@ def test_preference_action_rejects_stale_context_and_arbitrary_fields():
 def test_webview_can_only_write_preferences_through_the_fixed_socket():
     payload = {
         "context": {"account": "fixture", "workspace_id": 1},
+        "known_projects": [7],
         "expanded_projects": [7],
         "expanded_tasks": [31],
     }

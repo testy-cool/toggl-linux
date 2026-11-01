@@ -1,4 +1,9 @@
-import { useState, type KeyboardEvent, type MouseEvent } from "react";
+import {
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type Ref,
+} from "react";
 import { cn } from "cn";
 import { TimePicker, TimePickerInput } from "@/components/reui/time-picker";
 import { Input } from "@/components/ui/input";
@@ -32,6 +37,7 @@ export function TimeInput({
   value,
   disabled,
   className,
+  inputRef,
   onChange,
 }: {
   id?: string;
@@ -39,6 +45,7 @@ export function TimeInput({
   value: string;
   disabled?: boolean;
   className?: string;
+  inputRef?: Ref<HTMLInputElement>;
   onChange(value: string): void;
 }) {
   return (
@@ -57,6 +64,7 @@ export function TimeInput({
         }}
       >
         <TimePickerInput
+          ref={inputRef}
           onMouseDown={selectOnFirstClick}
           onFocus={(event) => event.currentTarget.select()}
           onKeyDown={noArrowStepping}

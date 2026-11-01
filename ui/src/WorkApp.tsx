@@ -344,6 +344,7 @@ export default function WorkApp() {
     }
   }
   function saveExpansion(
+    knownProjects: (string | number | null)[],
     expandedProjects: (string | number | null)[],
     expandedTasks: (string | number)[],
   ) {
@@ -354,6 +355,7 @@ export default function WorkApp() {
       .then(() =>
         request("save-work-preferences", {
           context,
+          known_projects: knownProjects,
           expanded_projects: expandedProjects,
           expanded_tasks: expandedTasks,
         }),

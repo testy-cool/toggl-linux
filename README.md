@@ -333,9 +333,11 @@ the complete row.
 Click an expandable name or press Enter to browse today's sessions without
 opening an editor or starting a timer. Sessions show a plain time range until
 you activate it, then use ReUI's typed time controls for direct corrections.
-The session pencil opens the full entry editor for its description, project,
-task, and times. Empty or repeated session descriptions stay hidden when the
-parent already names the work, while pending-sync status remains visible.
+Keyboard activation moves focus to the start field; **Done** returns focus to the
+compact range action. The session pencil opens the full entry editor for its
+description, project, task, and times. Empty or repeated session descriptions
+stay hidden when the parent already names the work, while pending-sync status
+remains visible.
 
 Play is the only direct start or switch action. A saved task's pencil opens its
 metadata editor. The task API cannot move an existing task, so **Create in
@@ -359,8 +361,11 @@ and scroll position remain in memory. Project and saved-task expansion also
 survives a complete UI process restart in private
 `~/.local/share/toggl-tray/ui-preferences.json`. The file stores only allowlisted
 IDs for the current account and workspace; credentials and timer writes stay out
-of it. Search can reveal matches temporarily, then clearing search restores the
-saved tree.
+of it. A filtered tree preserves choices for projects outside the filter. A
+project that first gains work opens by default so the new task remains visible,
+while an explicit collapse survives reloads. Search can reveal matches
+temporarily, then clearing search restores the saved tree.
+
 The Today tab groups sessions by task or activity with durations and subtotals.
 Totals count only the selected workspace and the part of each interval within
 today's local midnight boundaries, including daylight-saving days and overnight

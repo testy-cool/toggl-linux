@@ -18,6 +18,7 @@ def _path(app):
 def _empty(configured=False):
     return {
         "configured": configured,
+        "known_projects": [],
         "expanded_projects": [],
         "expanded_tasks": [],
     }
@@ -49,19 +50,24 @@ def _stored_preferences(record):
     work_tree = record.get("work_tree")
     if not isinstance(work_tree, dict):
         return None
+    known_projects = work_tree.get("known_projects")
     projects = work_tree.get("expanded_projects")
     tasks = work_tree.get("expanded_tasks")
-    if not isinstance(projects, list) or not isinstance(tasks, list):
+    if not all(isinstance(values, list) for values in (known_projects, projects, tasks)):
         return None
-    if len(projects) > MAX_IDS or len(tasks) > MAX_IDS:
+    if any(len(values) > MAX_IDS for values in (known_projects, projects, tasks)):
         return None
     if any(value is not None and (isinstance(value, bool) or not isinstance(value, (str, int)))
-           for value in projects):
+           for values in (known_projects, projects) for value in values):
         return None
     if any(isinstance(value, bool) or not isinstance(value, (str, int)) for value in tasks):
         return None
+    known_keys = {"none" if value is None else str(value) for value in known_projects}
+    if any(("none" if value is None else str(value)) not in known_keys for value in projects):
+        return None
     return {
         "configured": True,
+        "known_projects": known_projects,
         "expanded_projects": projects,
         "expanded_tasks": tasks,
     }
@@ -74,21 +80,25 @@ def read(app):
         return _empty()
     with _lock:
         for record in reversed(_read_file(app)):
-            if _scope_key(record.get("context")) == wanted:
-                return _stored_preferences(record) or _empty()
+            if not isinstance(record, dict) or _scope_key(record.get("context")) != wanted:
+                continue
+            stored = _stored_preferences(record)
+            if stored is not None:
+                return stored
     return _empty()
 
 
 def _validated_ids(app, payload):
+    known_projects = payload.get("known_projects")
     projects = payload.get("expanded_projects")
     tasks = payload.get("expanded_tasks")
-    if not isinstance(projects, list) or not isinstance(tasks, list):
-        raise ValueError("Expanded projects and tasks must be lists")
-    if len(projects) > MAX_IDS or len(tasks) > MAX_IDS:
+    if not all(isinstance(values, list) for values in (known_projects, projects, tasks)):
+        raise ValueError("Known projects, expanded projects, and expanded tasks must be lists")
+    if any(len(values) > MAX_IDS for values in (known_projects, projects, tasks)):
         raise ValueError("Too many work-panel expansion choices")
     if any(value is not None and (isinstance(value, bool) or not isinstance(value, (str, int)))
-           for value in projects):
-        raise ValueError("Expanded project IDs are invalid")
+           for values in (known_projects, projects) for value in values):
+        raise ValueError("Project expansion IDs are invalid")
     if any(isinstance(value, bool) or not isinstance(value, (str, int)) for value in tasks):
         raise ValueError("Expanded task IDs are invalid")
 
@@ -109,16 +119,25 @@ def _validated_ids(app, payload):
         and task.get("id") is not None
     }
 
-    normalized_projects = []
-    seen_projects = set()
-    for value in projects:
-        key = "none" if value is None else str(value)
-        if key != "none" and key not in allowed_projects:
-            continue
-        if key in seen_projects:
-            continue
-        seen_projects.add(key)
-        normalized_projects.append(None if key == "none" else key)
+    def normalized_project_ids(values):
+        normalized = []
+        seen = set()
+        for value in values:
+            key = "none" if value is None else str(value)
+            if key != "none" and key not in allowed_projects:
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(None if key == "none" else key)
+        return normalized
+
+    normalized_known = normalized_project_ids(known_projects)
+    normalized_projects = normalized_project_ids(projects)
+    known_keys = {"none" if value is None else str(value) for value in normalized_known}
+    if any(("none" if value is None else str(value)) not in known_keys
+           for value in normalized_projects):
+        raise ValueError("Expanded projects must also be known projects")
 
     normalized_tasks = []
     seen_tasks = set()
@@ -128,7 +147,7 @@ def _validated_ids(app, payload):
             continue
         seen_tasks.add(key)
         normalized_tasks.append(key)
-    return normalized_projects, normalized_tasks
+    return normalized_known, normalized_projects, normalized_tasks
 
 
 def write(app, payload):
@@ -136,12 +155,13 @@ def write(app, payload):
     context = toggl_projects.context(app)
     if not isinstance(payload, dict) or payload.get("context") != context:
         raise ValueError("Account or workspace changed; reopen the work panel")
-    if set(payload) - {"context", "expanded_projects", "expanded_tasks"}:
+    if set(payload) - {"context", "known_projects", "expanded_projects", "expanded_tasks"}:
         raise ValueError("Unsupported work-panel preference")
-    projects, tasks = _validated_ids(app, payload)
+    known_projects, projects, tasks = _validated_ids(app, payload)
     record = {
         "context": context,
         "work_tree": {
+            "known_projects": known_projects,
             "expanded_projects": projects,
             "expanded_tasks": tasks,
         },
@@ -151,7 +171,10 @@ def write(app, payload):
         scopes = [
             existing
             for existing in _read_file(app)
-            if _scope_key(existing.get("context") if isinstance(existing, dict) else None) != wanted
+            if isinstance(existing, dict)
+            and _scope_key(existing.get("context")) is not None
+            and _stored_preferences(existing) is not None
+            and _scope_key(existing.get("context")) != wanted
         ]
         scopes.append(record)
         app._atomic_write_text(
@@ -160,6 +183,7 @@ def write(app, payload):
         )
     return {
         "configured": True,
+        "known_projects": known_projects,
         "expanded_projects": projects,
         "expanded_tasks": tasks,
     }

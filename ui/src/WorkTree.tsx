@@ -93,7 +93,11 @@ export function WorkTree({
   edit: (work: Work) => void;
   rename: (work: Work) => void;
   createTask: (project: WorkGroup) => void;
-  saveExpansion: (expandedProjects: (string | number | null)[], expandedTasks: (string | number)[]) => void;
+  saveExpansion: (
+    knownProjects: (string | number | null)[],
+    expandedProjects: (string | number | null)[],
+    expandedTasks: (string | number)[],
+  ) => void;
   act: (command: Command) => void;
 }) {
   const groups = useMemo(
@@ -155,6 +159,7 @@ export function WorkTree({
     () =>
       data.work_preferences ?? {
         configured: false,
+        known_projects: [],
         expanded_projects: [],
         expanded_tasks: [],
       },
@@ -173,13 +178,18 @@ export function WorkTree({
         if (saved !== undefined) return saved;
         const node = nodes[id];
         if (searchScope) return !!node.group;
-        if (node.group)
+        if (node.group) {
+          const known = preferences.known_projects.some((projectId) =>
+            sameId(projectId, node.group!.id),
+          );
           return (
             !preferences.configured ||
+            !known ||
             preferences.expanded_projects.some((projectId) =>
               sameId(projectId, node.group!.id),
             )
           );
+        }
         if (node.work?.task)
           return (
             preferences.configured &&
@@ -215,7 +225,10 @@ export function WorkTree({
         for (const group of persistentGroups)
           if (group.works.length)
             projectCandidates.set(String(group.id ?? "none"), group.id);
-        for (const id of preferences.expanded_projects)
+        for (const id of [
+          ...preferences.known_projects,
+          ...preferences.expanded_projects,
+        ])
           projectCandidates.set(String(id ?? "none"), id);
         const taskCandidates = new Map<string, Id>();
         for (const task of data.tasks)
@@ -227,8 +240,17 @@ export function WorkTree({
           visible.has(nodeId)
             ? next.includes(nodeId)
             : (expansion[`${preferenceScope}::${nodeId}`] ?? fromFile);
+        const knownProjects = [...projectCandidates.values()].filter((id) => {
+          const nodeId = `project:${id ?? "none"}`;
+          return (
+            visible.has(nodeId) ||
+            expansion[`${preferenceScope}::${nodeId}`] !== undefined ||
+            preferences.known_projects.some((saved) => sameId(saved, id))
+          );
+        });
         saveExpansion(
-          [...projectCandidates.values()].filter((id) =>
+          knownProjects,
+          knownProjects.filter((id) =>
             chosen(
               `project:${id ?? "none"}`,
               preferences.expanded_projects.some((saved) => sameId(saved, id)),

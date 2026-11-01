@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Pencil, Play } from "lucide-react";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
@@ -34,6 +34,16 @@ export function TimeEntryRow({
   const entry = row.entry;
   const end = entryEnd(entry);
   const [editingTime, setEditingTime] = useState(false);
+  const rangeRef = useRef<HTMLButtonElement>(null);
+  const startRef = useRef<HTMLInputElement>(null);
+  const restoreRangeFocus = useRef(false);
+  useLayoutEffect(() => {
+    if (editingTime) startRef.current?.focus();
+    else if (restoreRangeFocus.current) {
+      restoreRangeFocus.current = false;
+      rangeRef.current?.focus();
+    }
+  }, [editingTime]);
   const nested = parentLabel !== undefined;
   const description = nested
     ? entry.description?.trim() &&
@@ -56,6 +66,7 @@ export function TimeEntryRow({
                 label={`Start of ${entry.description || "entry"}`}
                 value={localTime(entry.start).slice(11, 16)}
                 disabled={busy}
+                inputRef={startRef}
                 onChange={(time) => retime(entry, "start", time)}
               />
               <span aria-hidden="true">–</span>
@@ -76,6 +87,7 @@ export function TimeEntryRow({
                 disabled={busy}
                 onClick={(event) => {
                   event.stopPropagation();
+                  restoreRangeFocus.current = true;
                   setEditingTime(false);
                 }}
               >
@@ -84,6 +96,7 @@ export function TimeEntryRow({
             </div>
           ) : (
             <Button
+              ref={rangeRef}
               variant="ghost"
               size="xs"
               className="interval-range"

@@ -72,6 +72,7 @@ export type Snapshot = {
   task_capability: string;
   work_preferences?: {
     configured: boolean;
+    known_projects: (Id | null)[];
     expanded_projects: (Id | null)[];
     expanded_tasks: Id[];
   };
