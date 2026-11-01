@@ -70,6 +70,11 @@ export type Snapshot = {
   }[];
   project_context: { account: string | null; workspace_id: Id | null };
   task_capability: string;
+  work_preferences?: {
+    configured: boolean;
+    expanded_projects: (Id | null)[];
+    expanded_tasks: Id[];
+  };
   pending_count: number;
   warning: string;
 };

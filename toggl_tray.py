@@ -466,6 +466,7 @@ def _ensure_private_state_dir():
     private_files = (
         CONFIG_FILE, STATE_FILE, PENDING_FILE, LEDGER_FILE, REQUEST_BUDGET_FILE, LOCK_FILE,
         STATE_DIR / "projects.json", STATE_DIR / "tasks.json", STATE_DIR / "task-history.json",
+        STATE_DIR / "ui-preferences.json",
     )
     for path in private_files:
         for candidate in (path, _backup_path(path)):

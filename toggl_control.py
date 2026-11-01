@@ -10,6 +10,7 @@ import toggl_task_tree
 import toggl_tasks
 import toggl_debug
 import toggl_today
+import toggl_ui_preferences
 from pathlib import Path
 
 MAX_MESSAGE = 2 * 1024 * 1024
@@ -66,6 +67,7 @@ def snapshot(app):
     freshness['today_incomplete'] = freshness['today_incomplete'] or bool(stale)
     result = {"state": current, "projects": app._cached_projects(), "tasks": app._cached_tasks(),
             "task_capability": toggl_tasks.capability(app), "entries": entries,
+            "work_preferences": toggl_ui_preferences.read(app),
             "pending_count": len(app._load_pending()), "warning": warning,
             "project_context": toggl_projects.context(app), "projects_url": toggl_projects.projects_url(app),
             "current_pending": current_pending[0] if len(current_pending) == 1 else None,
@@ -357,7 +359,8 @@ def dispatch(app, action, payload):
     if action in {'snapshot', 'work-snapshot'}:
         return _dispatch(app, action, payload)
     known = {'set-api-base', 'project-create', 'project-update', 'task-create', 'task-update',
-             'sync', 'refresh', 'refresh-today', 'start', 'switch', 'resume', 'stop', 'edit-current', 'edit-entry', 'hide-activity'}
+             'save-work-preferences', 'sync', 'refresh', 'refresh-today', 'start', 'switch',
+             'resume', 'stop', 'edit-current', 'edit-entry', 'hide-activity'}
     label = action if isinstance(action, str) and action in known else 'unknown'
     toggl_debug.LOGGER.debug('Control action=%s requested', label)
     try:
@@ -388,6 +391,11 @@ def _dispatch(app, action, payload):
                                     'description': payload.get('description')})
             toggl_task_tree.hide_activity(app, values['project_id'], values['description'])
             return _dispatch(app, 'work-snapshot', {})
+    if action == 'save-work-preferences':
+        try:
+            return {"work_preferences": toggl_ui_preferences.write(app, payload)}
+        except ValueError as error:
+            raise ControlError(str(error)) from error
     if action == "set-api-base":
         with app.toggle_lock:
             try:

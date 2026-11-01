@@ -86,6 +86,7 @@ export default function WorkApp() {
   const correcting = useRef(false);
   const [savingTime, setSavingTime] = useState(false);
   const heldBack = useRef<(() => Command | null)[]>([]);
+  const preferenceWrites = useRef<Promise<unknown>>(Promise.resolve());
   const draftRef = useRef<Draft | null>(null);
   useEffect(() => {
     draftRef.current = draft;
@@ -334,6 +335,28 @@ export default function WorkApp() {
     } catch (failure) {
       setError(String(failure));
     }
+  }
+  function saveExpansion(
+    expandedProjects: (string | number | null)[],
+    expandedTasks: (string | number)[],
+  ) {
+    if (!data) return;
+    const context = data.project_context;
+    preferenceWrites.current = preferenceWrites.current
+      .catch(() => undefined)
+      .then(() =>
+        request("save-work-preferences", {
+          context,
+          expanded_projects: expandedProjects,
+          expanded_tasks: expandedTasks,
+        }),
+      )
+      .catch((failure) => {
+        if (mounted.current)
+          setError(
+            String(failure instanceof Error ? failure.message : failure),
+          );
+      });
   }
   const projects =
     data?.projects.filter(
@@ -595,6 +618,7 @@ export default function WorkApp() {
                         project: String(group.id),
                       })
                     }
+                    saveExpansion={saveExpansion}
                     act={(command) => void act(command)}
                   />
                 </div>

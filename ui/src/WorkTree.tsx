@@ -17,8 +17,8 @@ import { TimeEntryRow } from "./TimeEntryRow";
 import { ActionHint } from "./ActionHint";
 import { clockRange, timeKeyForWork, todayLabel } from "./today";
 import type { Today, TodayRow } from "./today";
-import { workGroups, running } from "./model";
-import type { Command, Snapshot, Work, WorkGroup, Entry } from "./model";
+import { workGroups, running, sameId } from "./model";
+import type { Command, Snapshot, Work, WorkGroup, Entry, Id } from "./model";
 
 type Node = {
   name: string;
@@ -62,6 +62,7 @@ export function WorkTree({
   edit,
   rename,
   createTask,
+  saveExpansion,
   act,
 }: {
   data: Snapshot;
@@ -77,6 +78,7 @@ export function WorkTree({
   edit: (work: Work) => void;
   rename: (work: Work) => void;
   createTask: (project: WorkGroup) => void;
+  saveExpansion: (expandedProjects: (string | number | null)[], expandedTasks: (string | number)[]) => void;
   act: (command: Command) => void;
 }) {
   const groups = useMemo(
@@ -109,9 +111,11 @@ export function WorkTree({
     }
     return result;
   }, [groups, today, data]);
-  // Keep browsing choices when searching, polling, or returning from the editor.
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  // Search gets temporary browsing choices. The unfiltered tree starts from the
+  // account-scoped file and keeps local choices through polling and editors.
+  const [expansion, setExpansion] = useState<Record<string, boolean>>({});
   const searchScope = query.trim().toLocaleLowerCase();
+  const preferenceScope = JSON.stringify(data.project_context);
   const roots = nodes.root.children!;
   const folders = useMemo(
     () =>
@@ -120,26 +124,97 @@ export function WorkTree({
       ),
     [nodes],
   );
+  const preferences = useMemo(
+    () =>
+      data.work_preferences ?? {
+        configured: false,
+        expanded_projects: [],
+        expanded_tasks: [],
+      },
+    [data.work_preferences],
+  );
+  const persistentGroups = useMemo(
+    () => workGroups(data, false, "", "all"),
+    [data],
+  );
+  const expansionKey = (id: string) =>
+    `${preferenceScope}:${searchScope}:${id}`;
   const expanded = useMemo(
     () =>
-      folders.filter((id) =>
-        nodes[id].group
-          ? !collapsed[`${searchScope}:${id}`]
-          : collapsed[`${searchScope}:${id}`] === false,
-      ),
-    [folders, nodes, collapsed, searchScope],
+      folders.filter((id) => {
+        const saved = expansion[`${preferenceScope}:${searchScope}:${id}`];
+        if (saved !== undefined) return saved;
+        const node = nodes[id];
+        if (searchScope) return !!node.group;
+        if (node.group)
+          return (
+            !preferences.configured ||
+            preferences.expanded_projects.some((projectId) =>
+              sameId(projectId, node.group!.id),
+            )
+          );
+        if (node.work?.task)
+          return (
+            preferences.configured &&
+            preferences.expanded_tasks.some((taskId) =>
+              sameId(taskId, node.work!.task!.id),
+            )
+          );
+        return false;
+      }),
+    [
+      folders,
+      nodes,
+      expansion,
+      preferenceScope,
+      preferences,
+      searchScope,
+    ],
   );
   const tree = useTree<Node>({
     rootItemId: "root",
     state: { expandedItems: expanded },
     setExpandedItems: (update) => {
       const next = typeof update === "function" ? update(expanded) : update;
-      setCollapsed((previous) => ({
+      setExpansion((previous) => ({
         ...previous,
         ...Object.fromEntries(
-          folders.map((id) => [`${searchScope}:${id}`, !next.includes(id)]),
+          folders.map((id) => [expansionKey(id), next.includes(id)]),
         ),
       }));
+      if (!searchScope) {
+        const visible = new Set(folders);
+        const projectCandidates = new Map<string, Id | null>();
+        for (const group of persistentGroups)
+          if (group.works.length)
+            projectCandidates.set(String(group.id ?? "none"), group.id);
+        for (const id of preferences.expanded_projects)
+          projectCandidates.set(String(id ?? "none"), id);
+        const taskCandidates = new Map<string, Id>();
+        for (const task of data.tasks)
+          if (sameId(task.workspace_id, data.state.workspace_id))
+            taskCandidates.set(String(task.id), task.id);
+        for (const id of preferences.expanded_tasks)
+          taskCandidates.set(String(id), id);
+        const chosen = (nodeId: string, fromFile: boolean) =>
+          visible.has(nodeId)
+            ? next.includes(nodeId)
+            : (expansion[`${preferenceScope}::${nodeId}`] ?? fromFile);
+        saveExpansion(
+          [...projectCandidates.values()].filter((id) =>
+            chosen(
+              `project:${id ?? "none"}`,
+              preferences.expanded_projects.some((saved) => sameId(saved, id)),
+            ),
+          ),
+          [...taskCandidates.values()].filter((id) =>
+            chosen(
+              `task:${id}`,
+              preferences.expanded_tasks.some((saved) => sameId(saved, id)),
+            ),
+          ),
+        );
+      }
     },
     getItemName: (item) => item.getItemData()?.name ?? "",
     isItemFolder: (item) => !!item.getItemData()?.children?.length,

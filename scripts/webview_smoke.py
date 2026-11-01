@@ -192,6 +192,10 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             until(lambda: js("!!document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]')"))
             js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))")
             until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'"))
+            preferences_path = root/'ui-preferences.json'
+            until(lambda: preferences_path.exists() and '31' in preferences_path.read_text())
+            assert js("typeof localStorage === 'undefined'"), 'Private WebKit must not be mistaken for durable localStorage'
+            assert js("document.querySelector('[role=treeitem][aria-label=Studio]')?.getAttribute('aria-expanded')==='true'")
             assert not js("!!document.getElementById('work-description')")
             until(lambda: js("document.body.textContent.includes('Previous today session')"))
             assert js("!!document.querySelector('input[aria-label=\"Start of Previous today session\"]')")
@@ -461,7 +465,8 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             print(json.dumps(dict(real_webkit=True, real_react=True, private_offline_start=True,
                                   empty_work_leaf=True, empty_project_leaf=True, inert_leaf_keyboard=True,
                                   daily_loading_states=True, folder_to_leaf_focus=True, bundled_inter=True, work_font_px=14,
-                                  row_click_expands_without_start=True, daily_intervals=True,
+                                  row_click_expands_without_start=True, file_backed_expansion=True,
+                                  private_webkit_local_storage=False, daily_intervals=True,
                                   same_interval_edit=True, project_move=True, hidden_draft=True,
                                   draft_after_stop=True, task_create_rename_archive_restore=True,
                                   pending_entry_edit=True, timer_conflict=True, account_conflict=True,
