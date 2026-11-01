@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { afterOwnStop, commandFor, isDay, retimeCommand, stopCommand, timerKey, contextMatches, draftFor, localTime, running, workItems, workGroups, isCurrentEntry, rebaseSyncedDraft, samePending } from '../src/model.ts'
+import { afterOwnStop, commandFor, entryFromSnapshot, isDay, retimeCommand, stopCommand, timerKey, contextMatches, draftFor, localTime, running, workItems, workGroups, isCurrentEntry, nextTaskCopyName, rebaseSyncedDraft, samePending, taskNameConflict } from '../src/model.ts'
 import type { Snapshot } from '../src/model.ts'
 
 const sample = (): Snapshot => ({
@@ -85,6 +85,19 @@ test('cross-project task changes create a separate task and never move the origi
     payload: {name: 'Copied task', project_id: 7, context: data.project_context},
   })
   assert.equal(data.tasks[0].project_id, 6)
+})
+test('task names are checked case-insensitively and copied to a unique default', () => {
+  const data = sample()
+  data.tasks.push(
+    {...data.tasks[0], id:32, name:'Saved task copy', active:false},
+    {...data.tasks[0], id:33, name:'Saved task copy 2'},
+    {...data.tasks[0], id:34, workspace_id:2, name:'Other workspace'},
+  )
+  assert.equal(taskNameConflict(data, '  SAVED TASK  ', 1), true)
+  assert.equal(taskNameConflict(data, 'saved task', 1, 31), false)
+  assert.equal(taskNameConflict(data, 'other workspace', 1), false)
+  assert.equal(nextTaskCopyName(data, data.tasks[0]), 'Saved task copy 3')
+  assert.equal(nextTaskCopyName(data,{...data.tasks[0],name:'x'.repeat(200)}).length,200)
 })
 test('tasks from a different workspace do not enter the work list', () => {
   const data = sample()
@@ -297,6 +310,15 @@ test('typing a stop time changes only the stop', () => {
   const changes = retimeCommand(data, finished, 'stop', '10:05')!.payload.changes as Record<string, string>
   assert.deepEqual(Object.keys(changes), ['stop'])
   assert.equal(localTime(changes.stop), `${localTime(finished.stop).slice(0, 10)}T10:05:00`)
+})
+
+test('a queued second correction targets the entry returned by the first save', () => {
+  const data=sample(); data.state={...data.state,tracking:false};
+  const corrected={...finished,start:'2026-10-29T08:05:00Z',duration:4215};
+  data.entries=[corrected];
+  const command=retimeCommand(data,entryFromSnapshot(data,finished),'stop','10:05')!;
+  assert.deepEqual(command.payload.entry,corrected);
+  assert.deepEqual(Object.keys(command.payload.changes as object),['stop']);
 })
 
 test('typing the running timer start edits the running timer', () => {

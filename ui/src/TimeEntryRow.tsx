@@ -20,6 +20,9 @@ export function TimeEntryRow({
   row,
   parentLabel,
   busy,
+  savingTime = false,
+  focusRange = false,
+  onRangeFocused,
   edit,
   retime,
   resume,
@@ -27,6 +30,9 @@ export function TimeEntryRow({
   row: TodayRow;
   parentLabel?: string;
   busy: boolean;
+  savingTime?: boolean;
+  focusRange?: boolean;
+  onRangeFocused?: () => void;
   edit: (entry: Entry) => void;
   retime: (entry: Entry, field: "start" | "stop", time: string) => void;
   resume?: (entry: Entry) => void;
@@ -37,6 +43,7 @@ export function TimeEntryRow({
   const rangeRef = useRef<HTMLButtonElement>(null);
   const startRef = useRef<HTMLInputElement>(null);
   const restoreRangeFocus = useRef(false);
+  const handledFocusRequest = useRef(false);
   useLayoutEffect(() => {
     if (editingTime) startRef.current?.focus();
     else if (restoreRangeFocus.current) {
@@ -44,6 +51,14 @@ export function TimeEntryRow({
       rangeRef.current?.focus();
     }
   }, [editingTime]);
+  useLayoutEffect(() => {
+    if (focusRange && !editingTime && !handledFocusRequest.current) {
+      handledFocusRequest.current = true;
+      rangeRef.current?.focus();
+      onRangeFocused?.();
+    }
+    if (!focusRange) handledFocusRequest.current = false;
+  }, [editingTime, focusRange, onRangeFocused]);
   const nested = parentLabel !== undefined;
   const description = nested
     ? entry.description?.trim() &&
@@ -65,7 +80,7 @@ export function TimeEntryRow({
                 key={`start:${entry.id}`}
                 label={`Start of ${entry.description || "entry"}`}
                 value={localTime(entry.start).slice(11, 16)}
-                disabled={busy}
+                disabled={busy && !savingTime}
                 inputRef={startRef}
                 onChange={(time) => retime(entry, "start", time)}
               />
@@ -75,7 +90,7 @@ export function TimeEntryRow({
                   key={`stop:${entry.id}`}
                   label={`End of ${entry.description || "entry"}`}
                   value={localTime(end).slice(11, 16)}
-                  disabled={busy}
+                  disabled={busy && !savingTime}
                   onChange={(time) => retime(entry, "stop", time)}
                 />
               ) : (
@@ -84,7 +99,7 @@ export function TimeEntryRow({
               <Button
                 variant="ghost"
                 size="xs"
-                disabled={busy}
+                disabled={busy && !savingTime}
                 onClick={(event) => {
                   event.stopPropagation();
                   restoreRangeFocus.current = true;
@@ -100,7 +115,7 @@ export function TimeEntryRow({
               variant="ghost"
               size="xs"
               className="interval-range"
-              disabled={busy}
+              disabled={busy && !savingTime}
               aria-label={`Correct times for ${entry.description || "entry"}`}
               onClick={(event) => {
                 event.stopPropagation();

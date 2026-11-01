@@ -64,7 +64,9 @@ Task lifecycle (tray, timer window, Vicinae)
 +-- Permanent deletion is not exposed
 ```
 
-Task names are server metadata and remain separate from descriptions on individual time entries. The task API does not expose a move operation. In the work window, **Create in another project** creates a separate task and keeps the original task, ID, project, and historical entries unchanged. Historical descriptions appear as **Recent activities**, collapsed by default; each can be started again, saved as a real task, or hidden locally. Servers without task support retain this activity fallback.
+Task names are server metadata and remain separate from descriptions on individual time entries. The task API does not expose a move operation. In the work window, **Create in another project** creates a separate task with an editable, unique default name and keeps the original task, ID, project, and historical entries unchanged. The form rejects case-insensitive duplicate names before submission. If the workspace has no other active project, the copy action stays disabled and explains why. Historical descriptions appear as **Recent activities**, collapsed by default; each can be started again, saved as a real task, or hidden locally. Servers without task support retain this activity fallback.
+
+The work window displays session ranges in 24-hour local time. **Edit entries** expands a collapsed work row and focuses its first range, while expanded rows expose their correction controls directly. If one time correction is saving, both time fields and **Done** remain usable; a second correction waits for the first response and targets the updated entry.
 
 The native timer window groups project, task, description, start time and Start/Stop together. **Save Changes** corrects the current interval; **Start New Entry** ends it and starts another. Enter or Ctrl+Enter saves corrections; Ctrl+Shift+Enter starts a new entry while tracking. Start time shows its date: enter a full date and time to correct an older interval, or HH:MM for today. Stop, Sync and Refresh preserve unsaved drafts.
 

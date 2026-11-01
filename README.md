@@ -331,10 +331,13 @@ total first, then place status and actions on a second line. Focus highlights
 the complete row.
 
 Click an expandable name or press Enter to browse today's sessions without
-opening an editor or starting a timer. Sessions show a plain time range until
-you activate it, then use ReUI's typed time controls for direct corrections.
+opening an editor or starting a timer. Sessions show a 24-hour local time range
+until you activate it, then use ReUI's typed time controls for direct corrections.
+**Edit entries** expands a collapsed row and moves focus to its first range.
 Keyboard activation moves focus to the start field; **Done** returns focus to the
-compact range action. The session pencil opens the full entry editor for its
+compact range action. Both time fields and **Done** remain usable while one
+correction saves, and a second correction waits for the first response. The
+session pencil opens the full entry editor for its
 description, project, task, and times. Empty or repeated session descriptions
 stay hidden when the parent already names the work, while pending-sync status
 remains visible.
@@ -342,12 +345,17 @@ remains visible.
 Play is the only direct start or switch action. A saved task's pencil opens its
 metadata editor. The task API cannot move an existing task, so **Create in
 another project** makes a separate task and leaves the original task and its
-time entries intact. Saved tasks and recent activity with loaded sessions show
-**Edit entries**. A recent activity's menu still offers **New timer with these
+time entries intact. The copy starts with an editable, unique name and rejects
+case-insensitive duplicates before submission. If no other active project is
+available, the disabled copy action explains why. Collapsed saved tasks and
+recent activity with loaded sessions show **Edit entries**; expanded rows show
+their correction controls instead. A recent activity's menu still offers **New timer with these
 details**, **Save as task**, and **Hide suggestion**. Empty rows keep their start
 and task-editing actions, and empty projects keep **New task**.
 
-The running timer uses a compact status strip. Its title is plain text, while a
+The running timer uses a compact status strip. Its running title comes first,
+with project and task context on a quieter second line. Focusing or hovering the
+text shows the complete title and context when the visible lines truncate. A
 visible pencil opens the editor. Started, elapsed time, and Stop remain available
 at narrow widths. **New** beside the tabs offers **New task** and **New timer**.
 The editors use the available height, scroll fields that do not fit, and keep

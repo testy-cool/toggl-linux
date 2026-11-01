@@ -74,6 +74,7 @@ export function WorkTree({
   project,
   tasksOnly,
   busy,
+  savingTime,
   edit,
   rename,
   createTask,
@@ -90,6 +91,7 @@ export function WorkTree({
   project: string;
   tasksOnly: boolean;
   busy: boolean;
+  savingTime: boolean;
   edit: (work: Work) => void;
   rename: (work: Work) => void;
   createTask: (project: WorkGroup) => void;
@@ -145,6 +147,7 @@ export function WorkTree({
   // Search gets temporary browsing choices. The unfiltered tree starts from the
   // account-scoped file and keeps local choices through polling and editors.
   const [expansion, setExpansion] = useState<Record<string, boolean>>({});
+  const [focusInterval, setFocusInterval] = useState<string | null>(null);
   const searchScope = query.trim().toLocaleLowerCase();
   const preferenceScope = JSON.stringify(data.project_context);
   const roots = nodes.root.children!;
@@ -347,6 +350,9 @@ export function WorkTree({
                     row={row}
                     parentLabel={node.parentLabel}
                     busy={busy}
+                    savingTime={savingTime}
+                    focusRange={focusInterval === item.getId()}
+                    onRangeFocused={() => setFocusInterval(null)}
                     edit={openEntry}
                     retime={retime}
                   />
@@ -391,7 +397,7 @@ export function WorkTree({
                         ) : work.task?.active === false ? (
                           <Badge variant="secondary">Archived</Badge>
                         ) : null}
-                        {hasEntries && (
+                        {hasEntries && !item.isExpanded() && (
                           <Button
                             variant="ghost"
                             size="xs"
@@ -399,6 +405,7 @@ export function WorkTree({
                             disabled={busy}
                             onClick={(event) => {
                               event.stopPropagation();
+                              setFocusInterval(node.children![0]);
                               item.expand();
                               item.setFocused();
                             }}

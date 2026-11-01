@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -30,6 +31,8 @@ import {
   projectName,
   sameId,
   scope,
+  nextTaskCopyName,
+  taskNameConflict,
   timerMatches,
   timerTitle,
 } from "./model";
@@ -89,11 +92,26 @@ export function Editor({
 }) {
   const metadata = d.mode === "task" || d.mode === "new-task";
   const copyTask = d.mode === "new-task" && !!d.work?.task;
+  const descriptionRef = useRef<HTMLInputElement>(null);
+  const wasCopyTask = useRef(copyTask);
+  useLayoutEffect(() => {
+    const shouldFocus = copyTask && !wasCopyTask.current;
+    wasCopyTask.current = copyTask;
+    if (shouldFocus) descriptionRef.current?.focus();
+  }, [copyTask]);
   const fullReview = d.mode === "entry" && d.entry?._needs_full_review;
   const staleContext = !contextMatches(d.snapshot, current);
   const staleTimer =
     (d.mode === "current" || d.mode === "new") &&
     !timerMatches(d.snapshot.state, current.state);
+  const hasCopyDestination =
+    d.mode === "task" &&
+    d.snapshot.projects.some(
+      (project) =>
+        sameId(project.workspace_id, scope(d)) &&
+        project.active !== false &&
+        !sameId(project.id, d.work!.project_id),
+    );
   const projects = d.snapshot.projects
     .filter(
       (p) =>
@@ -116,6 +134,23 @@ export function Editor({
     tasks.push({ id: d.task, name: "Current task" });
   const nameValid =
     !!d.description.trim() && d.description.trim().length <= 200;
+  const duplicateName =
+    metadata &&
+    taskNameConflict(
+      d.snapshot,
+      d.description,
+      scope(d),
+      d.mode === "task" ? d.work!.task!.id : undefined,
+    );
+  const nameError = !metadata
+    ? ""
+    : !nameValid
+      ? "Enter a task name of 1–200 characters."
+      : duplicateName
+        ? copyTask
+          ? `A task with this name already exists in this workspace. Enter a different name, such as “${nextTaskCopyName(d.snapshot, d.work!.task!)}”.`
+          : "A task with this name already exists in this workspace. Enter a different name."
+        : "";
   const title = copyTask
     ? "Create task in another project"
     : {
@@ -138,7 +173,9 @@ export function Editor({
           : d.mode === "entry"
             ? "Corrects this entry without starting another timer."
             : d.mode === "task"
-              ? `Rename this task here, or create a separate task in another project. Its time entries stay in ${projectName(d.snapshot, d.work!.project_id)}.`
+              ? hasCopyDestination
+                ? `Rename this task here, or create a separate task in another project. Its time entries stay in ${projectName(d.snapshot, d.work!.project_id)}.`
+                : `Rename this task here. No other active project is available for a copy, and its time entries stay in ${projectName(d.snapshot, d.work!.project_id)}.`
               : copyTask
                 ? `Creates a separate task. “${d.work!.task!.name}” and its time entries stay in ${projectName(d.snapshot, d.work!.project_id)}.`
                 : "Save a reusable task in this project.";
@@ -168,9 +205,12 @@ export function Editor({
                   {metadata ? "Task name" : "Description"}
                 </FieldLabel>
                 <Input
+                  ref={descriptionRef}
                   id="work-description"
                   autoFocus
                   value={d.description}
+                  aria-invalid={!!nameError || undefined}
+                  aria-describedby={nameError ? "work-description-error" : undefined}
                   placeholder={
                     metadata ? "Name this task" : "What are you working on?"
                   }
@@ -194,11 +234,15 @@ export function Editor({
                       <Button
                         type="button"
                         variant="ghost"
-                        disabled={busy}
+                        disabled={busy || !hasCopyDestination}
                         onClick={() =>
                           change({
                             ...d,
                             mode: "new-task",
+                            description: nextTaskCopyName(
+                              d.snapshot,
+                              d.work!.task!,
+                            ),
                             project: "none",
                             task: "none",
                             reviewed: false,
@@ -273,9 +317,9 @@ export function Editor({
                   </Button>
                 </Field>
               )}
-              {metadata && !nameValid && (
-                <FieldDescription>
-                  Enter a task name of 1–200 characters.
+              {metadata && nameError && (
+                <FieldDescription id="work-description-error">
+                  {nameError}
                 </FieldDescription>
               )}
             </FieldGroup>
@@ -296,7 +340,8 @@ export function Editor({
                 staleContext ||
                 staleTimer ||
                 (fullReview && !d.reviewed) ||
-                (metadata && (!nameValid || d.project === "none"))
+                (metadata &&
+                  (!nameValid || duplicateName || d.project === "none"))
               }
             >
               {busy

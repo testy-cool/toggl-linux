@@ -52,6 +52,7 @@ import {
   afterOwnStop,
   draftFor,
   elapsed,
+  entryFromSnapshot,
   projectName,
   running,
   sameId,
@@ -312,9 +313,15 @@ export default function WorkApp() {
   function retime(entry: Entry | null, field: "start" | "stop", time: string) {
     if (!data || (writing.current && !correcting.current)) return;
     if (correcting.current) {
-      heldBack.current.push(() =>
-        retimeCommand(latest.current!, entry, field, time),
-      );
+      heldBack.current.push(() => {
+        const snapshot = latest.current!;
+        return retimeCommand(
+          snapshot,
+          entry ? entryFromSnapshot(snapshot, entry) : null,
+          field,
+          time,
+        );
+      });
       return;
     }
     try {
@@ -384,6 +391,15 @@ export default function WorkApp() {
             .includes(needle),
       )
     : [];
+  const currentTitle = data ? timerTitle(data) : "";
+  const currentContext = data
+    ? [
+        projectName(data, data.state.project_id),
+        taskName(data, data.state.task_id),
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "";
 
   return (
     <TooltipProvider delayDuration={500}>
@@ -465,19 +481,23 @@ export default function WorkApp() {
                   className="current-timer"
                   data-testid="current-timer"
                 >
-                  <ItemContent className="current-work">
-                    <ItemTitle className="current-description">
-                      <span className="truncate">{timerTitle(data)}</span>
-                      <span className="current-project truncate">
-                        {[
-                          projectName(data, data.state.project_id),
-                          taskName(data, data.state.task_id),
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      </span>
-                    </ItemTitle>
-                  </ItemContent>
+                  <ActionHint text={`${currentTitle} · ${currentContext}`}>
+                    <ItemContent
+                      className="current-work"
+                      tabIndex={0}
+                      title={`${currentTitle} · ${currentContext}`}
+                      aria-label={`Running timer: ${currentTitle}. ${currentContext}`}
+                    >
+                      <ItemTitle className="current-description">
+                        <span className="current-title truncate">
+                          {currentTitle}
+                        </span>
+                        <span className="current-project truncate">
+                          {currentContext}
+                        </span>
+                      </ItemTitle>
+                    </ItemContent>
+                  </ActionHint>
                   <ActionHint text="Edit running timer">
                     <Button
                       variant="ghost"
@@ -624,6 +644,7 @@ export default function WorkApp() {
                     project={project}
                     tasksOnly={tab === "tasks"}
                     busy={busy || !!draft}
+                    savingTime={savingTime}
                     edit={openWork}
                     rename={(work) => setDraft(draftFor(data, "task", work))}
                     createTask={(group) =>
@@ -656,6 +677,7 @@ export default function WorkApp() {
                             row={row}
                             parentLabel={group.label}
                             busy={busy || !!draft}
+                            savingTime={savingTime}
                             edit={openEntry}
                             retime={retime}
                             resume={(entry) =>

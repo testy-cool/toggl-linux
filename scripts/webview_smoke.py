@@ -264,10 +264,16 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             if not js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'"):
                 click('Improve navigation')
                 until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'"))
+            click('Improve navigation')
+            until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='false'"))
+            js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"] button.edit-entries').click()")
+            until(lambda: js("document.activeElement?.getAttribute('aria-label')==='Correct times for Previous today session'"))
+            assert not js("!!document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"] button.edit-entries')")
             assert not js("!!document.getElementById('work-description')")
             until(lambda: js("document.body.textContent.includes('Previous today session')"))
             assert not js("!!document.querySelector('input[aria-label=\"Start of Previous today session\"]')")
             assert js("!!document.querySelector('button[aria-label=\"Correct times for Previous today session\"]')")
+            assert js("!/[AP]M/.test(document.querySelector('button[aria-label=\"Correct times for Previous today session\"]').textContent)"), 'Session ranges must use 24-hour local time'
             assert js("(()=>{const interval=document.querySelector('[data-interval]'),duration=interval.querySelector('.work-time').getBoundingClientRect(),parent=document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"] .work-time').getBoundingClientRect(),edit=interval.querySelector('[data-slot=item-actions]').getBoundingClientRect();return Math.abs(duration.right-parent.right)<=2&&edit.right<duration.left})()"), 'Session durations must align below task totals, with editing in its own area'
             js("const range=document.querySelector('button[aria-label=\"Correct times for Previous today session\"]');range.focus();range.click()")
             until(lambda: js("document.activeElement?.getAttribute('aria-label')==='Start of Previous today session'"))
@@ -303,12 +309,17 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             if not js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'"):
                 click('Improve navigation')
                 until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'"))
+            app.state['description'] = 'Research notes on compact work panel hierarchy'
+            until(lambda: js("document.querySelector('.current-title')?.textContent.trim()==='Research notes on compact work panel hierarchy'"))
             picture('work-panel.png')
             window.resize(375, 480)
             until(lambda: js("innerWidth===375 && innerHeight===480"))
-            assert js("document.querySelector('.current-work').getBoundingClientRect().width>=160"), 'Running work must have readable space beside the typed time controls'
-            assert js("(()=>{const work=document.querySelector('.current-work').getBoundingClientRect(),start=document.querySelector('.current-start').getBoundingClientRect(),elapsed=document.querySelector('.current-timer .elapsed').getBoundingClientRect();return work.bottom<=start.top&&work.right<=elapsed.left})()"), 'Running work must not overlap its time controls'
+            assert js("document.querySelector('.current-work').getBoundingClientRect().width>=300"), 'The running title must receive the full narrow row'
+            assert js("document.querySelector('[data-testid=current-timer]').getBoundingClientRect().height<=80"), 'The two-line running timer must stay compact'
+            assert js("(()=>{const work=document.querySelector('.current-work').getBoundingClientRect(),start=document.querySelector('.current-start').getBoundingClientRect(),title=document.querySelector('.current-title').getBoundingClientRect(),context=document.querySelector('.current-project').getBoundingClientRect();return work.bottom<=start.top&&context.top>=title.bottom-1})()"), 'Running work must use a readable secondary context line above its controls'
+            assert js("document.querySelector('.current-work').title.includes('Research notes on compact work panel hierarchy')")
             assert js("document.querySelector('.current-work .current-project').textContent.includes('Improve navigation')")
+            assert js("Array.from(document.querySelectorAll('.work-time')).every(e=>getComputedStyle(e).whiteSpace==='nowrap')")
             picture('compact-work.png')
             window.resize(600, 780)
             until(lambda: js("innerWidth===600 && innerHeight===780"))
@@ -336,7 +347,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             assert window.background_color.lower() == painted_background
             assert js("parseFloat(getComputedStyle(document.querySelector('.work-name')).fontSize)") == 14
             until(lambda: js("Array.from(document.fonts).some(f=>f.family.includes('Inter')&&f.status==='loaded')"))
-            assert js("document.querySelector('[data-testid=current-timer]').getBoundingClientRect().height") <= 64
+            assert js("document.querySelector('[data-testid=current-timer]').getBoundingClientRect().height") <= 80
             click('Edit running timer')
             until(lambda: js("!!document.getElementById('work-description')"))
             assert js("parseFloat(getComputedStyle(document.querySelector('.app-header .current-project')).fontSize)") == 12
@@ -399,14 +410,24 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             until(lambda: js("document.body.textContent.includes('Edit saved task')"))
             click('Create in another project')
             until(lambda: js("document.body.textContent.includes('Create task in another project')"))
-            text('Copied into Research')
+            until(lambda: js("document.activeElement?.id==='work-description'"))
+            assert js("document.getElementById('work-description').value==='Renamed in the webview copy'")
             choose('Project', 'Research')
             click('Create task')
-            until(lambda: any(t['name'] == 'Copied into Research' and t['project_id'] == 7
+            until(lambda: any(t['name'] == 'Renamed in the webview copy' and t['project_id'] == 7
                               for t in app._cached_tasks()))
             original = next(t for t in app._cached_tasks()
                             if t['id'] == created_task_id)
             assert original['project_id'] == 6 and original['name'] == 'Renamed in the webview'
+            until(lambda: js("!document.getElementById('work-description')"))
+            menu('Renamed in the webview', 'Edit task')
+            click('Create in another project')
+            until(lambda: js("document.getElementById('work-description')?.value==='Renamed in the webview copy 2'"))
+            text('RENAMED IN THE WEBVIEW')
+            assert js("document.getElementById('work-description').getAttribute('aria-invalid')==='true'")
+            assert js("document.body.textContent.includes('already exists in this workspace')")
+            assert js("Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Create task').disabled")
+            click('Cancel')
             until(lambda: js("!document.getElementById('work-description')"))
             assert not app.state['tracking']
             click('Today')
@@ -559,10 +580,11 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
                                   file_backed_expansion=True, fresh_react_expansion_reload=True,
                                   filtered_default_expansion=True, new_project_creation_visible=True,
                                   private_webkit_local_storage=False, daily_intervals=True,
-                                  time_focus_transfer=True,
+                                  time_focus_transfer=True, edit_entries_focus=True,
+                                  ranges_24_hour=True, running_title_priority=True,
                                   same_interval_edit=True, project_move=True, hidden_draft=True,
                                   draft_after_stop=True, task_create_rename_archive_restore=True,
-                                  cross_project_task_copy=True,
+                                  cross_project_task_copy=True, task_copy_validation=True,
                                   pending_entry_edit=True, timer_conflict=True, account_conflict=True,
                                   full_interval_review=True, draft_after_sync=True,
                                   pending_today_editor=True, new_draft_after_sync=True,
