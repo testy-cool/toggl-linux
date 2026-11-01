@@ -621,7 +621,7 @@ export default function WorkApp() {
                     </Empty>
                   )}
               </ScrollArea>
-              <footer className="flex items-center justify-between gap-3">
+              {!draft && <footer className="flex items-center justify-between gap-3">
                 <span className="text-xs text-muted-foreground">
                   {loadingToday
                     ? "Loading today’s time…"
@@ -642,7 +642,7 @@ export default function WorkApp() {
                   <RefreshCw data-icon="inline-start" />
                   Refresh
                 </Button>
-              </footer>
+              </footer>}
             </>
           )}
         </div>

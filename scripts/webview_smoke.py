@@ -133,6 +133,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             assert bridge._ready.wait(20), 'JavaScript bridge never became ready'
             until(lambda: window.native.get_mapped())
             until(lambda: js("document.body.textContent.includes('Improve navigation')"))
+            assert js("(()=>{const active=document.querySelector('[role=tab][data-state=active]'),inactive=document.querySelector('[role=tab][data-state=inactive]');return getComputedStyle(active).backgroundColor!==getComputedStyle(inactive).backgroundColor})()"), 'Selected tab must stay visible without focus'
             leaf = 'document.querySelector(\'[role=treeitem][aria-label="Unused task"]\')'
             until(lambda: js(f"!!({leaf})"))
             assert js(f"({leaf}).getAttribute('data-folder')") == 'false'
@@ -212,6 +213,13 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             until(lambda: js("!!document.getElementById('work-description')"))
             text('Corrected inside the window')
             picture('edit-timer.png')
+            window.resize(375, 480)
+            until(lambda: js("innerWidth===375 && innerHeight===480"))
+            assert js("(()=>{const v=document.querySelector('[data-slot=scroll-area-viewport]').getBoundingClientRect(),task=document.querySelector('button[aria-label=Task]').getBoundingClientRect();return task.top>=v.top&&task.bottom<=v.bottom})()"), 'The compact editor must show Task without scrolling'
+            assert not js("!!document.querySelector('.app-content > footer')")
+            picture('compact-editor.png')
+            window.resize(600, 780)
+            until(lambda: js("innerWidth===600 && innerHeight===780"))
             click('Save changes')
             until(lambda: app.state['description'] == 'Corrected inside the window')
             assert app.state['start_time'] == started and app.state['task_id'] == 31
@@ -229,7 +237,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             click('Edit running timer')
             until(lambda: js("!!document.getElementById('work-description')"))
             assert js("parseFloat(getComputedStyle(document.querySelector('.app-header .current-project')).fontSize)") == 12
-            assert js("getComputedStyle(document.querySelector('.app-header .current-project')).color===getComputedStyle(document.querySelector('.app-content > footer span')).color")
+            assert not js("!!document.querySelector('.app-content > footer')"), 'Today controls must not take up editor space'
             choose('Project', 'Research')
             click('Save changes')
             until(lambda: app.state['project_id'] == 7)

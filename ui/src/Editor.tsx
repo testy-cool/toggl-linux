@@ -143,19 +143,19 @@ export function Editor({
       className="editor-frame min-h-0"
     >
       <FramePanel className="flex min-h-0 flex-col">
-        <FrameHeader>
+        <FrameHeader className="shrink-0">
           <FrameTitle>{title}</FrameTitle>
           <FrameDescription>{note}</FrameDescription>
         </FrameHeader>
         <form
-          className="flex min-h-0 flex-col"
+          className="flex min-h-0 flex-1 flex-col"
           onSubmit={(event) => {
             event.preventDefault();
             save();
           }}
         >
-          <ScrollArea className="min-h-0 flex-1">
-            <FieldGroup className="gap-4 py-3">
+          <ScrollArea type="auto" className="min-h-0 flex-1">
+            <FieldGroup className="gap-4 px-4 py-3">
               <Field>
                 <FieldLabel htmlFor="work-description">
                   {metadata ? "Task name" : "Description"}
@@ -268,7 +268,7 @@ export function Editor({
           </FrameFooter>
         </form>
         {d.mode === "new" && (
-          <div className="flex flex-wrap gap-2 pt-3">
+          <div className="flex shrink-0 flex-wrap gap-2 px-4 pb-2 pt-3">
             <Button
               variant="ghost"
               size="default"
