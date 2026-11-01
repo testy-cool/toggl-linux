@@ -49,6 +49,7 @@ export function WorkTree({
   data,
   today,
   openEntry,
+  retime,
   prepare,
   saveTask,
   query,
@@ -63,6 +64,7 @@ export function WorkTree({
   data: Snapshot;
   today: Today;
   openEntry: (entry: Entry) => void;
+  retime: (entry: Entry, field: "start" | "stop", time: string) => void;
   prepare: (work: Work) => void;
   saveTask: (work: Work) => void;
   query: string;
@@ -186,7 +188,7 @@ export function WorkTree({
               }}
             >
               {row ? (
-                <TimeEntryRow row={row} busy={busy} edit={openEntry} />
+                <TimeEntryRow row={row} busy={busy} edit={openEntry} retime={retime} />
               ) : group ? (
                 <>
                   <RowLabel

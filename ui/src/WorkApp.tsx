@@ -7,6 +7,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Item, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item";
 import { TimeEntryRow } from "./TimeEntryRow";
+import { TimeInput } from "./TimeInput";
 import { localDay, todayTotals, todayLabel, todayGroupLabel } from "./today";
 import {
   Empty,
@@ -33,6 +34,10 @@ import {
   pendingSource,
   rebaseSyncedDraft,
   isCurrentEntry,
+  localTime,
+  retimeCommand,
+  stopCommand,
+  timerKey,
 } from "./model";
 import type { Command, Draft, Entry, Snapshot, Work } from "./model";
 
@@ -52,6 +57,15 @@ export default function WorkApp() {
   const dailyAttempt = useRef("");
   const todayReading = useRef(false);
   const [loadingToday, setLoadingToday] = useState(false);
+  const latest = useRef<Snapshot | null>(null);
+  useEffect(() => {
+    latest.current = data;
+  }, [data]);
+  // A typed time saves when the field loses focus. Stop and the next typed time must survive that
+  // save; every other control stays disabled during it, as for any write.
+  const correcting = useRef(false);
+  const [savingTime, setSavingTime] = useState(false);
+  const heldBack = useRef<(() => Command | null)[]>([]);
   const draftRef = useRef<Draft | null>(null);
   useEffect(() => {
     draftRef.current = draft;
@@ -87,19 +101,34 @@ export default function WorkApp() {
     }
   }, []);
   const act = useCallback(
-    async (command: Command, closeDraft = false) => {
+    async function run(
+      command: Command,
+      closeDraft = false,
+      correction = false,
+      keepError = false,
+    ): Promise<void> {
       if (writing.current) return;
+      const next = () => {
+        while (heldBack.current.length) {
+          const held = heldBack.current.shift()!();
+          if (held) return void run(held, false, held.action !== "stop", true);
+        }
+        void poll();
+      };
       if (
         command.action === "edit-current" &&
         Object.keys(command.payload.changes as object).length === 0
       ) {
         setDraft(null);
+        next();
         return;
       }
       writing.current = true;
+      correcting.current = correction;
       epoch.current += 1;
       setBusy(true);
-      setError("");
+      setSavingTime(correction);
+      if (!keepError) setError("");
       try {
         const frozen = draftRef.current,
           source = frozen && pendingSource(frozen);
@@ -114,6 +143,9 @@ export default function WorkApp() {
             : command.payload,
         );
         if (mounted.current) {
+          latest.current = latest.current
+            ? { ...latest.current, ...result }
+            : result;
           setData((previous) =>
             previous ? { ...previous, ...result } : result,
           );
@@ -127,9 +159,11 @@ export default function WorkApp() {
         setError(String(failure instanceof Error ? failure.message : failure));
       } finally {
         writing.current = false;
+        correcting.current = false;
         epoch.current += 1;
         setBusy(false);
-        void poll();
+        setSavingTime(false);
+        next();
       }
     },
     [poll],
@@ -247,6 +281,32 @@ export default function WorkApp() {
       ),
     );
   }
+  function retime(entry: Entry | null, field: "start" | "stop", time: string) {
+    if (!data || (writing.current && !correcting.current)) return;
+    if (correcting.current) {
+      heldBack.current.push(() =>
+        retimeCommand(latest.current!, entry, field, time),
+      );
+      return;
+    }
+    try {
+      const command = retimeCommand(data, entry, field, time);
+      if (command) void act(command, false, true);
+      else if (entry) openEntry(entry);
+    } catch (failure) {
+      setError(String(failure));
+    }
+  }
+  function stopTimer() {
+    if (!data) return;
+    const clicked = data.state;
+    const build = () => stopCommand(latest.current!, clicked);
+    if (correcting.current) heldBack.current.push(build);
+    else {
+      const command = build();
+      if (command) void act(command);
+    }
+  }
   function saveDraft(asTask = false) {
     if (!draft) return;
     try {
@@ -361,21 +421,22 @@ export default function WorkApp() {
                       {projectName(data, data.state.project_id)}
                     </ItemDescription>
                   </Button>
+                  <label className="current-start">
+                    Started
+                    <TimeInput
+                      key={timerKey(data)}
+                      label="Started at"
+                      value={localTime(data.state.start_time).slice(11, 16)}
+                      onChange={(time) => retime(null, "start", time)}
+                    />
+                  </label>
                   <span className="elapsed" aria-label="Elapsed time">
                     {elapsed(data.state, now)}
                   </span>
                   <Button
                     variant="destructive"
-                    disabled={busy}
-                    onClick={() =>
-                      void act({
-                        action: "stop",
-                        payload: {
-                          expected: data.state,
-                          context: data.project_context,
-                        },
-                      })
-                    }
+                    disabled={busy && !savingTime}
+                    onClick={stopTimer}
                   >
                     <Square data-icon="inline-start" /> Stop
                   </Button>
@@ -479,6 +540,7 @@ export default function WorkApp() {
                     data={data}
                     today={totals!}
                     openEntry={openEntry}
+                    retime={retime}
                     prepare={(work) => setDraft(draftFor(data, "new", work))}
                     saveTask={(work) =>
                       setDraft(draftFor(data, "new-task", work))
@@ -518,6 +580,7 @@ export default function WorkApp() {
                             row={row}
                             busy={busy || !!draft}
                             edit={openEntry}
+                            retime={retime}
                             resume={(entry) =>
                               void act({
                                 action: "resume",

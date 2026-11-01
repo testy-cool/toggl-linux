@@ -58,6 +58,32 @@ class Bridge:
             self.close()
             return False
 
+    def _show_or_hide(self, message):
+        """Answer a tray click on the GTK thread. True when the window ends up in front."""
+        x, y = int(message['x']), int(message['y'])
+        outcome = []
+        done = threading.Event()
+
+        def decide():
+            native = self._window.native
+            # A window behind others is not what the click wants hidden, so only the active one toggles off.
+            if message.get('toggle') and self._visible and native.is_active():
+                self.close()
+                outcome.append(False)
+            else:
+                native.move(x, y)
+                native.show_all()
+                bring_to_front(native)
+                self._visible = True
+                outcome.append(True)
+            done.set()
+            return False
+
+        from gi.repository import GLib
+        GLib.idle_add(decide)
+        done.wait(5)
+        return bool(outcome and outcome[0])
+
     def _listen(self):
         try:
             for line in sys.stdin:
@@ -69,12 +95,8 @@ class Bridge:
                         continue
                     if not self._ready.wait(30):
                         continue
-                    if message.get('toggle') and self._visible:
-                        self.close()
+                    if not self._show_or_hide(message):
                         continue
-                    move_window(self._window, int(message['x']), int(message['y']))
-                    self._window.show()
-                    self._visible = True
                     if message.get('mode') == 'timer':
                         self._window.evaluate_js("window.dispatchEvent(new Event('toggl-edit-current'))")
                     elif message.get('mode') == 'today':
@@ -86,10 +108,32 @@ class Bridge:
             self._window.destroy()
 
 
+def _idle(call, *args):
+    from gi.repository import GLib
+    GLib.idle_add(lambda: call(*args) and False)
+
+
 def move_window(window, x, y):
     from gi.repository import GLib
     # pywebview's GTK move() adds monitor 0's origin; tray coordinates are absolute.
     GLib.idle_add(window.native.move, x, y)
+
+
+def bring_to_front(native):
+    """Raise from a background process: the window manager needs a fresh X timestamp to give it focus."""
+    import gi
+    try:
+        gi.require_version('GdkX11', '3.0')
+        from gi.repository import GdkX11
+        native.present_with_time(GdkX11.x11_get_server_time(native.get_window()))
+    except (ImportError, TypeError, ValueError):
+        native.present()
+
+
+def keep_off_taskbar(native):
+    # Only the tray opens and closes this window, so it should not add a taskbar or pager entry.
+    native.set_skip_taskbar_hint(True)
+    native.set_skip_pager_hint(True)
 
 
 def create_window(bridge, *, x=None, y=None, width=600, height=780):
@@ -107,8 +151,10 @@ def create_window(bridge, *, x=None, y=None, width=600, height=780):
     bridge._window = window
     bridge._visible = True
     window.events.closing += bridge._closing
+    window.events.before_show += lambda: keep_off_taskbar(window.native)
     if x is not None and y is not None:
         window.events.shown += lambda: move_window(window, x, y)
+    window.events.shown += lambda: _idle(bring_to_front, window.native)
     return window
 
 

@@ -185,8 +185,10 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             until(lambda: js("document.querySelector('[role=treeitem][aria-label=\"Improve navigation\"]').getAttribute('aria-expanded')==='true'"))
             assert not js("!!document.getElementById('work-description')")
             until(lambda: js("document.body.textContent.includes('Previous today session')"))
+            assert js("!!document.querySelector('input[aria-label=\"Start of Previous today session\"]')")
             click('Edit entry Previous today session')
             until(lambda: js("!!document.getElementById('work-description')"))
+            assert js("!!document.getElementById('work-start').value && !document.querySelector('input[type=datetime-local]')")
             click('Cancel')
             assert not app.state['tracking']
             code="Array.from(document.querySelectorAll('button')).find(b=>b.getAttribute('aria-label')==='More actions for Improve navigation')"
@@ -362,6 +364,33 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
                 assert update.call_args.args[1] == 701
                 assert update.call_args.args[2] == {'description':'Draft survives completed-entry sync'}
             assert not app.state['tracking'] and not app._load_pending()
+            click('New timer')
+            until(lambda: js("!!document.getElementById('work-description')"))
+            text('Typed start then Stop')
+            first = dict(cloud, id=702, start=datetime.now(timezone.utc).isoformat(), stop=None, description='Typed start then Stop')
+            with patch.object(app, 'start_entry', return_value=first):
+                click('Start timer')
+                until(lambda: app.state['tracking'] and app.state['entry_id'] == 702)
+            started = "document.querySelector('input[aria-label=\"Started at\"]')"
+            until(lambda: js(f'!!{started}'))
+            def type_start(value):
+                js(f"const input={started}; input.focus(); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,{json.dumps(value)}); input.dispatchEvent(new Event('input',{{bubbles:true}}));")
+                until(lambda: js(f'{started}.value') == value)
+            local_midnight = datetime.now(timezone.utc).astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+            type_start('00:01')
+            # Half-typed text stays with its timer: another timer starting must discard it.
+            app.state.update(entry_id=703, start_time=(local_midnight+timedelta(minutes=2)).isoformat())
+            until(lambda: js(f'{started}.value') == (local_midnight+timedelta(minutes=2)).strftime('%H:%M'))
+            def slow_update(_workspace, entry_id, _changes, **_kwargs):
+                time.sleep(0.4)
+                return dict(first, id=entry_id)
+            type_start('00:01')
+            with patch.object(app, 'update_entry', side_effect=slow_update) as update, \
+                 patch.object(app, 'stop_entry', return_value=dict(first, id=703, stop=datetime.now(timezone.utc).isoformat(), duration=60)) as stopped:
+                # Leaving the field and clicking Stop arrive together, as they do with a mouse.
+                js(f"{started}.dispatchEvent(new FocusEvent('focusout',{{bubbles:true}})); Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Stop').click()")
+                until(lambda: stopped.called and not app.state['tracking'])
+                assert update.call_count == 1 and update.call_args.args[1] == 703 and 'start' in update.call_args.args[2]
             click('New timer')
             until(lambda: js("!!document.getElementById('work-description')"))
             text('Offline interval before a new-work draft')

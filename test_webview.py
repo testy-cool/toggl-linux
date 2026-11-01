@@ -236,3 +236,58 @@ def test_cloud_time_corrections_send_consistent_duration_and_keep_timer_state(ru
     if running:
         assert app.state['start_time'] == start
         assert 'start' not in app.state and 'duration' not in app.state
+
+
+def _managed_bridge(active, visible):
+    bridge = Bridge(Path('/private-test'), managed=True)
+    bridge._window = MagicMock()
+    bridge._window.native.is_active.return_value = active
+    bridge._visible = visible
+    return bridge
+
+
+def _tray_click(bridge):
+    with patch.object(app.GLib, 'idle_add', side_effect=lambda fn, *args: fn(*args)):
+        return bridge._show_or_hide(dict(toggle=True, x=2000, y=40))
+
+
+def test_tray_click_brings_a_window_behind_others_to_the_front_instead_of_hiding_it():
+    bridge = _managed_bridge(active=False, visible=True)
+    assert _tray_click(bridge) is True
+    bridge._window.hide.assert_not_called()
+    bridge._window.native.present_with_time.assert_called_once()
+    bridge._window.native.move.assert_called_once_with(2000, 40)
+    assert bridge._visible
+
+
+def test_tray_click_hides_only_the_window_the_user_is_looking_at():
+    bridge = _managed_bridge(active=True, visible=True)
+    assert _tray_click(bridge) is False
+    bridge._window.hide.assert_called_once_with()
+    bridge._window.native.present_with_time.assert_not_called()
+    assert not bridge._visible
+
+
+def test_tray_click_reopens_a_hidden_window_in_front():
+    bridge = _managed_bridge(active=False, visible=False)
+    assert _tray_click(bridge) is True
+    bridge._window.native.show_all.assert_called_once_with()
+    bridge._window.native.present_with_time.assert_called_once()
+    assert bridge._visible
+
+
+def test_work_window_stays_off_the_taskbar_and_pager():
+    from types import SimpleNamespace
+    import toggl_webview as host
+    class Event:
+        def __init__(self): self.handlers = []
+        def __iadd__(self, fn): self.handlers.append(fn); return self
+    native = MagicMock()
+    window = SimpleNamespace(native=native, events=SimpleNamespace(closing=Event(), shown=Event(), before_show=Event()))
+    with patch.dict('sys.modules', {'webview': SimpleNamespace(create_window=lambda *a, **k: window)}), \
+         patch.object(host.ASSETS.__class__, 'is_file', return_value=True):
+        host.create_window(Bridge(Path('/private-test'), managed=True))
+    for handler in window.events.before_show.handlers:
+        handler()
+    native.set_skip_taskbar_hint.assert_called_once_with(True)
+    native.set_skip_pager_hint.assert_called_once_with(True)

@@ -32,6 +32,7 @@ import {
   timerMatches,
   timerTitle,
 } from "./model";
+import { DateTimeField } from "./TimeInput";
 import type { Draft, Snapshot } from "./model";
 
 export function Choice({
@@ -194,36 +195,22 @@ export function Editor({
                 )}
               </FieldGroup>
               {(d.mode === "current" || d.mode === "entry") && (
-                <Field>
-                  <FieldLabel htmlFor="work-start">Started at</FieldLabel>
-                  <Input
-                    id="work-start"
-                    type="datetime-local"
-                    step="1"
-                    value={d.start}
-                    disabled={busy}
-                    required
-                    onChange={(e) =>
-                      change({ ...d, start: e.target.value, reviewed: false })
-                    }
-                  />
-                </Field>
+                <DateTimeField
+                  id="work-start"
+                  label="Started at"
+                  value={d.start}
+                  disabled={busy}
+                  onChange={(start) => change({ ...d, start, reviewed: false })}
+                />
               )}
               {d.mode === "entry" && entryEnd(d.entry) && (
-                <Field>
-                  <FieldLabel htmlFor="work-stop">Stopped at</FieldLabel>
-                  <Input
-                    id="work-stop"
-                    type="datetime-local"
-                    step="1"
-                    value={d.stop}
-                    disabled={busy}
-                    required
-                    onChange={(e) =>
-                      change({ ...d, stop: e.target.value, reviewed: false })
-                    }
-                  />
-                </Field>
+                <DateTimeField
+                  id="work-stop"
+                  label="Stopped at"
+                  value={d.stop}
+                  disabled={busy}
+                  onChange={(stop) => change({ ...d, stop, reviewed: false })}
+                />
               )}
               {fullReview && (
                 <Field>

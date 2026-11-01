@@ -143,6 +143,12 @@ html, body, #root { height: 100%; overflow: hidden; }
 .work-time { min-width: 56px; flex-shrink: 0; text-align: end; font-size: 12px; line-height: 16px; font-variant-numeric: tabular-nums; }
 .tree-column-heading { text-align: end; color: var(--muted-foreground); font-size: 12px; line-height: 16px; }
 .interval-row { flex-wrap: nowrap; }
+.time-input { width: 68px; flex-shrink: 0; }
+.time-input [data-slot=input-group-addon] { display: none; }
+.interval-times { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.current-start { display: flex; align-items: center; gap: 6px; flex-shrink: 0; color: var(--muted-foreground); font-size: 12px; line-height: 16px; }
+.date-time-field { display: flex; align-items: center; gap: 8px; }
+.date-time-field [data-slot=input] { width: 124px; }
 .interval-row [data-slot=item-title] { white-space: normal; line-clamp: unset; display: flex; flex-wrap: wrap; }
 .today-group-title { width: 100%; justify-content: space-between; }
 [data-slot=alert-description] { overflow-wrap: anywhere; }
@@ -158,6 +164,7 @@ html, body, #root { height: 100%; overflow: hidden; }
 [data-slot=select-value] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 [data-slot=item-content] { min-width: 0; }
 @media (max-width: 460px) {
+  .current-timer { flex-wrap: wrap; }
   .app-header { padding-inline: 16px; }
   .app-content { padding-inline: 16px; }
   .project-filter { width: 135px; }
