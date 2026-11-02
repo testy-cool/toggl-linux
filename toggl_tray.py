@@ -23,6 +23,8 @@ if __name__ == "__main__":
 import toggl_task_tree
 import toggl_tasks
 import toggl_debug
+import toggl_project_colors
+import toggl_ui_preferences
 import requests
 from requests.auth import HTTPBasicAuth
 from PIL import Image
@@ -1326,25 +1328,16 @@ def _refresh_projects(force=False):
         _project_cache_lock.release()
 
 
-# Toggl's project palette; tasks without a project get a stable colour from it.
-TASK_COLORS = ("#0b83d9", "#9e5bd9", "#d94182", "#e36a00", "#bf7000", "#2da608", "#06a893",
-               "#c9806b", "#465bb3", "#990099", "#c7af14", "#566614", "#d92b2b", "#525266")
+# Default fallback palette; the selected theme supplies live project/task colors.
+TASK_COLORS = toggl_project_colors.PALETTES["gruvbox"]
 
 
 def _tracking_color():
-    """The running project's colour, or a colour derived from the task when there is no project."""
-    project_id = state.get("project_id")
-    project = next((p for p in _cached_projects() if isinstance(p, dict)
-                    and project_id is not None and str(p.get("id")) == str(project_id)
-                    and str(p.get("workspace_id")) == str(state.get("workspace_id"))), {})
-    color = project.get("color")
-    if isinstance(color, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", color):
-        return color
-    description = " ".join((state.get("description") or "").split())
-    if project_id is not None or not description:
-        return None
-    digest = hashlib.sha256(description.encode()).digest()
-    return TASK_COLORS[digest[0] % len(TASK_COLORS)]
+    """Use the same local theme palette as project dots, without account writes."""
+    with state_lock:
+        current = dict(state)
+    return toggl_project_colors.tracking_color(
+        _cached_projects(), current, toggl_ui_preferences.read_theme(sys.modules[__name__]))
 
 
 def _current_icon_path():

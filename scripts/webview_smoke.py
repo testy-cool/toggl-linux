@@ -170,6 +170,9 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
                 js(f"Array.from(document.querySelectorAll('[role=menuitemradio]')).find(e=>e.textContent.trim()==={json.dumps(label)}).click()")
                 until(lambda: js(f"document.documentElement.dataset.theme === {json.dumps(theme)}"))
                 assert control.snapshot(app)["ui_theme"] == theme
+                expected_dot = control.snapshot(app)["project_colors"]["6"]
+                rgb = "rgb(%s, %s, %s)" % tuple(int(expected_dot[i:i+2], 16) for i in (1, 3, 5))
+                until(lambda: js("getComputedStyle(document.querySelector('[data-project=true][data-project-key=\"project:6\"] .project-color')).color") == rgb)
                 assert json.loads((app.STATE_DIR / "appearance.json").read_text())["theme"] == theme
                 assert app.state == before_theme, "Theme changes must preserve the timer"
                 reload_react()
@@ -315,6 +318,13 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             until(lambda: app.state['tracking'] and app.state['task_id'] == 31)
             started = app.state['start_time']
             until(lambda: js("!!document.querySelector('[data-testid=current-timer]')"))
+            expected_color = control.snapshot(app)["project_colors"]["6"]
+            assert app._tracking_color() == expected_color
+            dot = js("getComputedStyle(document.querySelector('[data-project=true][data-project-key=\"project:6\"] .project-color')).color")
+            from PIL import Image, ImageColor
+            assert dot == "rgb(%s, %s, %s)" % ImageColor.getrgb(expected_color)
+            with Image.open(app._current_icon_path()) as icon:
+                assert icon.getpixel((app.ICON_SIZE//2, app.ICON_PADDING+2))[:3] == ImageColor.getrgb(expected_color)
             assert not js("!!document.querySelector('button[aria-label=\"Start Improve navigation\"]')"), 'Running work must not keep a redundant start control'
             assert js("document.querySelector('[data-running=true]').getAttribute('data-work-kind')==='task'"), 'Running work must retain its saved-task structure'
             app._task_cache['tasks'][0]['active'] = False
@@ -590,7 +600,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             with patch.object(app,'stop_entry',return_value={}):
                 click('Stop')
                 until(lambda: not app.state['tracking'])
-            print(json.dumps(dict(real_webkit=True, real_react=True, persistent_theme_picker=True, private_offline_start=True,
+            print(json.dumps(dict(real_webkit=True, real_react=True, persistent_theme_picker=True, matching_project_dot_and_tray=True, private_offline_start=True,
                                   empty_work_leaf=True, empty_project_leaf=True, inert_leaf_keyboard=True,
                                   daily_loading_states=True, folder_to_leaf_focus=True, bundled_inter=True, work_font_px=14,
                                   row_click_expands_without_start=True, grouped_saved_and_recent=True,

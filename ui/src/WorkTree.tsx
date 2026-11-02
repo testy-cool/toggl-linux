@@ -291,10 +291,10 @@ export function WorkTree({
   }, [tree, structure]);
 
   const items = tree.getItems();
-  const projectTones = new Map<string, number | "neutral">(
+  const projectTones = new Map<string, "base" | "alternate">(
     persistentGroups.map((group, index) => [
       `project:${group.id ?? "none"}`,
-      group.id == null ? "neutral" : index % 5,
+      index % 2 === 0 ? "base" : "alternate",
     ] as const),
   );
 
@@ -310,7 +310,7 @@ export function WorkTree({
           : 0;
         const savedTask = !!work && isSavedTaskWork(data, work);
         const hasEntries = !!work && !!node.children?.length;
-        const projectTone = projectTones.get(node.projectKey ?? "") ?? "neutral";
+        const projectTone = projectTones.get(node.projectKey ?? "") ?? "base";
         const nextItem = items[index + 1];
         const projectEnd = !nextItem || nodes[nextItem.getId()]?.projectKey !== node.projectKey;
         return (
@@ -383,7 +383,7 @@ export function WorkTree({
                         aria-hidden="true"
                         className="project-color"
                         fill="currentColor"
-                        style={{ color: group.color }}
+                        style={{ color: group.id == null ? undefined : data.project_colors?.[String(group.id)] ?? group.color }}
                       />
                       <span className="work-label">{group.name}</span>
                     </RowLabel>

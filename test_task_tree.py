@@ -206,7 +206,7 @@ def test_tray_icon_colour_follows_project_or_task(tmp_state_dir):
     projects=[dict(id=7,workspace_id='ws_123',name='DPF',color='#e28c1c',active=True)]
     with patch.object(app,'_cached_projects',return_value=projects):
         app.state.update(tracking=True,project_id=7,workspace_id='ws_123',description='x')
-        assert app._tracking_color()=='#e28c1c'
+        assert app._tracking_color()==app.TASK_COLORS[0]
         app.state.update(project_id=None,description='Stay Safe')
         first=app._tracking_color()
         assert first in app.TASK_COLORS and first==app._tracking_color()

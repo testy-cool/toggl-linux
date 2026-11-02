@@ -264,7 +264,8 @@ def test_theme_is_private_persistent_and_independent_of_timer_and_tree():
     before = dict(app.state)
     tree = toggl_ui_preferences.read(app)
     result = control.dispatch(app, "set-ui-theme", {"theme": "grok-night"})
-    assert result == {"ui_theme": "grok-night"}
+    assert result["ui_theme"] == "grok-night"
+    assert "project_colors" in result
     assert toggl_ui_preferences.read_theme(app) == "grok-night"
     assert control.snapshot(app)["ui_theme"] == "grok-night"
     assert dict(app.state) == before
@@ -282,7 +283,8 @@ def test_theme_writes_do_not_take_the_timer_lock():
         # A blocked network start may own this lock; appearance must still finish.
         with app.toggle_lock:
             result = pool.submit(control.dispatch, app, "set-ui-theme", {"theme": "grok-night"}).result(timeout=2)
-    assert result == {"ui_theme": "grok-night"}
+    assert result["ui_theme"] == "grok-night"
+    assert "project_colors" in result
 
 
 def test_theme_recovers_backup_and_defaults_invalid_values():
