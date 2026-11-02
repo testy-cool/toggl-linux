@@ -75,7 +75,9 @@ import type { Command, Draft, Entry, Snapshot, Work } from "./model";
 export default function WorkApp() {
   const [data, setData] = useState<Snapshot | null>(null);
   useEffect(() => {
-    document.documentElement.dataset.theme = data?.ui_theme ?? "gruvbox";
+    if (!data?.ui_theme) return;
+    document.documentElement.dataset.theme = data.ui_theme;
+    history.replaceState(null, "", `#theme=${data.ui_theme}`);
   }, [data?.ui_theme]);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [query, setQuery] = useState("");

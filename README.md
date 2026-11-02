@@ -323,6 +323,7 @@ The timer, queue, API credentials and sync remain in the Python tray process. A
 separate pywebview process talks only to its private control socket. Closing the
 window hides it, so reopening preserves search, scroll and any unfinished draft.
 The current timer stays visible while browsing; editing happens in the same window.
+
 Use the palette button in the header to switch between **Gruvbox** and
 **GrokNight**. GrokNight uses the [Grok themes palette](https://github.com/promptegrity/grok-themes):
 charcoal surfaces, pale text, violet accents, and amber focus and running cues.

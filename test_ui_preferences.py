@@ -1,6 +1,7 @@
 """Work-panel expansion persists privately without entering timer state."""
 import importlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -274,3 +275,21 @@ def test_theme_is_private_persistent_and_independent_of_timer_and_tree():
     assert toggl_ui_preferences.read_theme(app) == "grok-night"
     control.dispatch(app, "set-ui-theme", {"theme": "gruvbox"})
     assert toggl_ui_preferences.read_theme(app) == "gruvbox"
+
+
+def test_theme_writes_do_not_take_the_timer_lock():
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        # A blocked network start may own this lock; appearance must still finish.
+        with app.toggle_lock:
+            result = pool.submit(control.dispatch, app, "set-ui-theme", {"theme": "grok-night"}).result(timeout=2)
+    assert result == {"ui_theme": "grok-night"}
+
+
+def test_theme_recovers_backup_and_defaults_invalid_values():
+    path = app.STATE_DIR / "appearance.json"
+    assert toggl_ui_preferences.read_theme_from_dir(app.STATE_DIR) == "gruvbox"
+    app._atomic_write_text(path, '{"theme":"grok-night"}')
+    app._atomic_write_text(path, '{invalid')
+    assert toggl_ui_preferences.read_theme_from_dir(app.STATE_DIR) == "grok-night"
+    path.write_text('{"theme":"unknown"}')
+    assert toggl_ui_preferences.read_theme_from_dir(app.STATE_DIR) == "gruvbox"

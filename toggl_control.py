@@ -379,8 +379,7 @@ def _dispatch(app, action, payload):
         raise ControlError("Command payload must be an object")
     if action == 'set-ui-theme':
         try:
-            with app.toggle_lock:
-                return {"ui_theme": toggl_ui_preferences.write_theme(app, payload)}
+            return {"ui_theme": toggl_ui_preferences.write_theme(app, payload)}
         except ValueError as error:
             raise ControlError(str(error)) from error
     if action == "snapshot":
@@ -609,7 +608,7 @@ def start_server(app):
 
     previous_mask = os.umask(0o177)
     try:
-        # Every mutation uses toggle_lock; reads can wait on HTTP independently.
+        # Timer mutations use toggle_lock; appearance has its own file lock.
         class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
             pass
         server = Server(str(path), Handler)
