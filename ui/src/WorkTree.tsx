@@ -291,10 +291,10 @@ export function WorkTree({
   }, [tree, structure]);
 
   const items = tree.getItems();
-  const projectTones = new Map<string, "base" | "alternate">(
+  const projectTones = new Map<string, number | "neutral">(
     persistentGroups.map((group, index) => [
       `project:${group.id ?? "none"}`,
-      index % 2 === 0 ? "base" : "alternate",
+      group.id == null ? "neutral" : index % 5,
     ] as const),
   );
 
@@ -310,7 +310,7 @@ export function WorkTree({
           : 0;
         const savedTask = !!work && isSavedTaskWork(data, work);
         const hasEntries = !!work && !!node.children?.length;
-        const projectTone = projectTones.get(node.projectKey ?? "") ?? "base";
+        const projectTone = projectTones.get(node.projectKey ?? "") ?? "neutral";
         const nextItem = items[index + 1];
         const projectEnd = !nextItem || nodes[nextItem.getId()]?.projectKey !== node.projectKey;
         return (

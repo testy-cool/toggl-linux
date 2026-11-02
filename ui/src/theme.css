@@ -91,8 +91,19 @@
   --timer-surface: #ebdbb2;
   --timer-border: #7c6f64;
   --running-surface: #dfb855;
-  --project-band-alternate: #efe1b5;
-  --project-hover-surface: var(--accent);
+  /* Project category surfaces, mixed from this theme in OKLab. */
+  --project-surface-0: #d7dabb;
+  --project-hover-0: #c1ccb3;
+  --project-surface-1: #ebd4b9;
+  --project-hover-1: #e0c2b1;
+  --project-surface-2: #e5dcab;
+  --project-hover-2: #d7cf9a;
+  --project-surface-3: #ddddb4;
+  --project-hover-3: #cad1a9;
+  --project-surface-4: #f0cfa8;
+  --project-hover-4: #e8ba95;
+  --project-surface-neutral: #efe1b5;
+  --project-hover-neutral: #d5c4a1;
 }
 .dark {
   color-scheme: dark;
@@ -118,8 +129,19 @@
   --timer-surface: #32302f;
   --timer-border: #928374;
   --running-surface: #59431f;
-  --project-band-alternate: #383430;
-  --project-hover-surface: #5a4c3d;
+  /* Project category surfaces, mixed from this theme in OKLab. */
+  --project-surface-0: #3d4442;
+  --project-hover-0: #444d49;
+  --project-surface-1: #4f3e42;
+  --project-hover-1: #5a454a;
+  --project-surface-2: #484a31;
+  --project-hover-2: #525332;
+  --project-surface-3: #404a3c;
+  --project-hover-3: #475442;
+  --project-surface-4: #5a352f;
+  --project-hover-4: #683830;
+  --project-surface-neutral: #383430;
+  --project-hover-neutral: #5a4c3d;
 }
 @font-face {
   font-family: Inter;
@@ -152,18 +174,23 @@ html, body, #root { height: 100%; overflow: hidden; }
 .current-title { min-width: 0; font-size: 14px; line-height: 20px; }
 .current-project { min-width: 0; color: var(--muted-foreground); font-size: 12px; line-height: 16px; font-weight: 400; }
 .tree-row { display: flex; align-items: center; gap: 4px; min-width: 0; padding-inline-end: 8px; border-radius: var(--radius-md); }
-.project-band { --project-band-background: var(--background); background: var(--project-band-background); }
-.project-band[data-project-tone=alternate] { --project-band-background: var(--project-band-alternate); }
+.project-band { --project-band-background: var(--project-surface-neutral); --project-band-hover: var(--project-hover-neutral); background: var(--project-band-background); }
+.project-band[data-project-tone="0"] { --project-band-background: var(--project-surface-0); --project-band-hover: var(--project-hover-0); }
+.project-band[data-project-tone="1"] { --project-band-background: var(--project-surface-1); --project-band-hover: var(--project-hover-1); }
+.project-band[data-project-tone="2"] { --project-band-background: var(--project-surface-2); --project-band-hover: var(--project-hover-2); }
+.project-band[data-project-tone="3"] { --project-band-background: var(--project-surface-3); --project-band-hover: var(--project-hover-3); }
+.project-band[data-project-tone="4"] { --project-band-background: var(--project-surface-4); --project-band-hover: var(--project-hover-4); }
 .tree-row.project-band { border-radius: 0; }
 .tree-row.project-band[data-project=true] { border-start-start-radius: var(--radius-md); border-start-end-radius: var(--radius-md); }
 .tree-row.project-band[data-project-band-end] { border-end-start-radius: var(--radius-md); border-end-end-radius: var(--radius-md); }
 .tree-row.project-band [data-slot=tree-item-label] { background: transparent; }
 .tree-row[data-running=true] { background: var(--running-surface); }
 .tree-row[data-work=true]:hover,
-.tree-row[data-project=true]:hover { background: var(--project-hover-surface); }
+.tree-row[data-project=true]:hover { background: var(--project-band-hover); }
 .tree-row[data-project=true]:focus,
 .tree-row[data-work=true]:focus,
 .tree-row[data-interval=true]:focus { background: var(--accent); outline: 2px solid var(--ring); outline-offset: -2px; }
+.tree-row[data-running=true]:is(:hover, :focus) { background: var(--running-surface); }
 .tree-row[data-work=true] [data-slot=tree-item-label] { background: transparent; }
 .tree-row[data-project=true]:focus [data-slot=tree-item-label],
 .tree-row[data-work=true]:focus [data-slot=tree-item-label] { box-shadow: none; }
@@ -264,8 +291,19 @@ html, body, #root { height: 100%; overflow: hidden; }
   --timer-surface: #1c1c1c;
   --timer-border: #777777;
   --running-surface: #44351e;
-  --project-band-alternate: #242424;
-  --project-hover-surface: #44403a;
+  /* Project category surfaces, mixed from this theme in OKLab. */
+  --project-surface-0: #2b3445;
+  --project-hover-0: #384561;
+  --project-surface-1: #383245;
+  --project-hover-1: #4d4361;
+  --project-surface-2: #323c29;
+  --project-hover-2: #445334;
+  --project-surface-3: #2d3c46;
+  --project-hover-3: #3a5463;
+  --project-surface-4: #462b2f;
+  --project-hover-4: #62383e;
+  --project-surface-neutral: #242424;
+  --project-hover-neutral: #353535;
 }
 [data-slot=dropdown-menu-radio-item]:not([data-disabled]):is(:focus, [data-highlighted]) {
   background: var(--secondary);
