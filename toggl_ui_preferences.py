@@ -1,5 +1,6 @@
-"""Private, account-scoped preferences for the work panel's browsing state."""
+"""Private appearance and account-scoped browsing preferences for the work panel."""
 import json
+from pathlib import Path
 import threading
 
 import toggl_projects
@@ -9,6 +10,30 @@ FILE_NAME = "ui-preferences.json"
 MAX_SCOPES = 20
 MAX_IDS = 1000
 _lock = threading.RLock()
+
+
+def read_theme_from_dir(state_dir):
+    path = Path(state_dir) / "appearance.json"
+    for candidate in (path, path.with_suffix(path.suffix + ".bak")):
+        try:
+            data = json.loads(candidate.read_text())
+        except (UnicodeDecodeError, ValueError, OSError):
+            continue
+        theme = data.get("theme") if isinstance(data, dict) else None
+        return theme if theme in ("gruvbox", "grok-night") else "gruvbox"
+    return "gruvbox"
+
+
+def read_theme(app):
+    return read_theme_from_dir(app.STATE_DIR)
+
+
+def write_theme(app, payload):
+    if not isinstance(payload, dict) or set(payload) != {"theme"} or payload["theme"] not in ("gruvbox", "grok-night"):
+        raise ValueError("Choose Gruvbox or GrokNight")
+    with _lock:
+        app._atomic_write_text(app.STATE_DIR / "appearance.json", json.dumps(payload))
+    return payload["theme"]
 
 
 def _path(app):

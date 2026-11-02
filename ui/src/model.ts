@@ -46,6 +46,7 @@ export type Activity = {
   count: number;
 };
 export type Snapshot = {
+  ui_theme?: "gruvbox" | "grok-night";
   today_date?: string;
   today_fetched_at?: number | null;
   today_incomplete?: boolean;

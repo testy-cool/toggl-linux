@@ -68,6 +68,7 @@ def snapshot(app):
     result = {"state": current, "projects": app._cached_projects(), "tasks": app._cached_tasks(),
             "task_capability": toggl_tasks.capability(app), "entries": entries,
             "work_preferences": toggl_ui_preferences.read(app),
+            "ui_theme": toggl_ui_preferences.read_theme(app),
             "pending_count": len(app._load_pending()), "warning": warning,
             "project_context": toggl_projects.context(app), "projects_url": toggl_projects.projects_url(app),
             "current_pending": current_pending[0] if len(current_pending) == 1 else None,
@@ -358,7 +359,7 @@ def _resume_entry(app, selected):
 def dispatch(app, action, payload):
     if action in {'snapshot', 'work-snapshot'}:
         return _dispatch(app, action, payload)
-    known = {'set-api-base', 'project-create', 'project-update', 'task-create', 'task-update',
+    known = {'set-ui-theme', 'set-api-base', 'project-create', 'project-update', 'task-create', 'task-update',
              'save-work-preferences', 'sync', 'refresh', 'refresh-today', 'start', 'switch',
              'resume', 'stop', 'edit-current', 'edit-entry', 'hide-activity'}
     label = action if isinstance(action, str) and action in known else 'unknown'
@@ -376,6 +377,11 @@ def dispatch(app, action, payload):
 def _dispatch(app, action, payload):
     if not isinstance(payload, dict):
         raise ControlError("Command payload must be an object")
+    if action == 'set-ui-theme':
+        try:
+            return {"ui_theme": toggl_ui_preferences.write_theme(app, payload)}
+        except ValueError as error:
+            raise ControlError(str(error)) from error
     if action == "snapshot":
         return snapshot(app)
     if action == 'work-snapshot':
@@ -602,7 +608,7 @@ def start_server(app):
 
     previous_mask = os.umask(0o177)
     try:
-        # Every mutation uses toggle_lock; reads can wait on HTTP independently.
+        # Timer mutations use toggle_lock; appearance has its own file lock.
         class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
             pass
         server = Server(str(path), Handler)

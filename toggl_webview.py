@@ -7,11 +7,12 @@ import sys
 import threading
 
 import toggl_control
+import toggl_ui_preferences
 
 ASSETS = Path(__file__).resolve().parent / 'toggl_web_assets'
 ACTIONS = frozenset({'work-snapshot', 'refresh', 'refresh-today', 'sync', 'start', 'switch', 'resume', 'stop',
                      'edit-current', 'edit-entry', 'task-create', 'task-update',
-                     'project-create', 'project-update', 'hide-activity', 'save-work-preferences'})
+                     'project-create', 'project-update', 'hide-activity', 'set-ui-theme', 'save-work-preferences'})
 
 
 class Bridge:
@@ -143,11 +144,12 @@ def create_window(bridge, *, x=None, y=None, width=600, height=780):
         raise RuntimeError('The work interface is not built; run npm ci --prefix ui && npm run build --prefix ui')
     # Relative local content starts pywebview's static server at this asset directory,
     # never at the repository or the user-data folder.
-    window = webview.create_window('Toggl Work', str(index), js_api=bridge,
+    theme = toggl_ui_preferences.read_theme_from_dir(bridge._state_dir)
+    window = webview.create_window('Toggl Work', f'{index}#theme={theme}', js_api=bridge,
                                     width=width, height=height,
                                     min_size=(360, 480), resizable=True,
                                     frameless=True, easy_drag=False, hidden=False,
-                                    background_color='#282828', text_select=True)
+                                    background_color='#141414' if theme == 'grok-night' else '#282828', text_select=True)
     bridge._window = window
     bridge._visible = True
     window.events.closing += bridge._closing
