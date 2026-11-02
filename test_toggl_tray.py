@@ -1135,7 +1135,7 @@ class TestTrayIcon:
         }):
             toggl_tray._sync_cloud_state()
         assert toggl_tray.state["workspace_id"] == 200
-        assert toggl_tray._current_icon_path().endswith("project-123456.png")
+        assert toggl_tray._current_icon_path().endswith("project-83a598.png")
 
     @pytest.fixture(autouse=True)
     def isolate_icons(self, tmp_state_dir):
@@ -1149,13 +1149,13 @@ class TestTrayIcon:
     @patch.object(toggl_tray, "_api", return_value=[
         {"id": 7, "workspace_id": "ws_123", "name": "Example", "color": "#e28c1c", "active": True},
     ])
-    def test_saved_project_color_tints_running_icon_and_survives_offline_restart(self, mock_get):
+    def test_themed_project_color_tints_running_icon_and_survives_offline_restart(self, mock_get):
         from PIL import Image
         toggl_tray.state.update(tracking=True, project_id=7)
         toggl_tray._refresh_projects()
         path = toggl_tray._current_icon_path()
         with Image.open(path) as im:
-            assert im.getpixel((toggl_tray.ICON_SIZE // 2, toggl_tray.ICON_PADDING + 2)) == (226, 140, 28, 255)
+            assert im.getpixel((toggl_tray.ICON_SIZE // 2, toggl_tray.ICON_PADDING + 2)) == (131, 165, 152, 255)
             assert im.getpixel((0, 0))[3] == 0
         with patch.object(toggl_tray, "_project_cache", None), \
              patch.object(toggl_tray, "_api", side_effect=requests.ConnectionError):
@@ -1163,15 +1163,19 @@ class TestTrayIcon:
         mock_get.assert_called_once_with("GET", "/me/projects", token="tok")
 
     @pytest.mark.parametrize("project_id,color,tracking", [(None, "#ff0000", True), (7, "bad", True), (7, "#ff0000", False)])
-    def test_missing_invalid_or_stopped_project_uses_default_icon(self, project_id, color, tracking):
+    def test_icon_preserves_stopped_and_unassigned_fallbacks_with_invalid_raw_colors(self, project_id, color, tracking):
         toggl_tray.state.update(tracking=tracking, project_id=project_id)
         with patch.object(toggl_tray, "_api", return_value=[
             {"id": 7, "workspace_id": "ws_123", "name": "Example", "color": color},
         ]):
             toggl_tray._refresh_projects()
         toggl_tray._init_icons()
-        expected = toggl_tray._icon_path_active if tracking else toggl_tray._icon_path_inactive
-        assert toggl_tray._current_icon_path() == expected
+        if tracking and project_id is not None:
+            # Local display colors do not depend on the account's raw color validity.
+            assert toggl_tray._current_icon_path().endswith("project-83a598.png")
+        else:
+            expected = toggl_tray._icon_path_active if tracking else toggl_tray._icon_path_inactive
+            assert toggl_tray._current_icon_path() == expected
 
     @patch.object(toggl_tray, "_api", return_value=[])
     def test_project_refresh_respects_cache_account_and_request_budget(self, mock_get):

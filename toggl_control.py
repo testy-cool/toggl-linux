@@ -11,6 +11,7 @@ import toggl_tasks
 import toggl_debug
 import toggl_today
 import toggl_ui_preferences
+import toggl_project_colors
 from pathlib import Path
 
 MAX_MESSAGE = 2 * 1024 * 1024
@@ -65,10 +66,12 @@ def snapshot(app):
     warning = " · ".join(dict.fromkeys(message for message in warnings if message))
     freshness = toggl_today.status(app)
     freshness['today_incomplete'] = freshness['today_incomplete'] or bool(stale)
-    result = {"state": current, "projects": app._cached_projects(), "tasks": app._cached_tasks(),
+    projects, tasks = app._cached_projects(), app._cached_tasks()
+    appearance = toggl_project_colors.appearance(projects, tasks, current, toggl_ui_preferences.read_theme(app))
+    result = {"state": current, "projects": projects, "tasks": tasks,
             "task_capability": toggl_tasks.capability(app), "entries": entries,
             "work_preferences": toggl_ui_preferences.read(app),
-            "ui_theme": toggl_ui_preferences.read_theme(app),
+            **appearance,
             "pending_count": len(app._load_pending()), "warning": warning,
             "project_context": toggl_projects.context(app), "projects_url": toggl_projects.projects_url(app),
             "current_pending": current_pending[0] if len(current_pending) == 1 else None,
@@ -379,7 +382,12 @@ def _dispatch(app, action, payload):
         raise ControlError("Command payload must be an object")
     if action == 'set-ui-theme':
         try:
-            return {"ui_theme": toggl_ui_preferences.write_theme(app, payload)}
+            theme = toggl_ui_preferences.write_theme(app, payload)
+            with app.state_lock:
+                current = dict(app.state)
+            result = toggl_project_colors.appearance(app._cached_projects(), app._cached_tasks(), current, theme)
+            app.GLib.idle_add(app._update_tray_icon_once)
+            return result
         except ValueError as error:
             raise ControlError(str(error)) from error
     if action == "snapshot":
