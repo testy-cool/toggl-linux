@@ -4,27 +4,27 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-    --destructive-foreground: var(--color-red-800);
-    --success: var(--color-emerald-500);
-    --success-foreground: var(--color-emerald-900);
-    --info: var(--color-violet-500);
-    --info-foreground: var(--color-violet-900);
-    --warning: var(--color-yellow-500);
-    --warning-foreground: var(--color-yellow-900);
-    --invert: var(--color-zinc-900);
-    --invert-foreground: var(--color-zinc-50);
+    --destructive-foreground: #7c0005;
+    --success: #5f6500;
+    --success-foreground: #4a5000;
+    --info: #076678;
+    --info-foreground: #075a68;
+    --warning: #8f5700;
+    --warning-foreground: #7c4f00;
+    --invert: #3c3836;
+    --invert-foreground: #fbf1c7;
 }
 
 .dark {
-    --destructive-foreground: var(--color-red-600);
-    --success: var(--color-emerald-500);
-    --success-foreground: var(--color-emerald-600);
-    --info: var(--color-violet-500);
-    --info-foreground: var(--color-violet-600);
-    --warning: var(--color-yellow-500);
-    --warning-foreground: var(--color-yellow-600);
-    --invert: var(--color-zinc-700);
-    --invert-foreground: var(--color-zinc-50);
+    --destructive-foreground: #ffe0d7;
+    --success: #b8bb26;
+    --success-foreground: #b8bb26;
+    --info: #83a598;
+    --info-foreground: #83a598;
+    --warning: #fabd2f;
+    --warning-foreground: #fabd2f;
+    --invert: #ebdbb2;
+    --invert-foreground: #282828;
 }
 
 @theme inline {
@@ -65,49 +65,57 @@
     --color-invert-foreground: var(--invert-foreground);
 }
 
-/* Standard neutral theme: https://ui.shadcn.com/docs/installation/manual */
+/* Gruvbox light remains available as a coherent fallback; the app starts dark. */
 :root {
   color-scheme: light;
-  --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  --radius: 0.5rem;
+  --background: #fbf1c7;
+  --foreground: #100d0b;
+  --card: #f9f5d7;
+  --card-foreground: #3c3836;
+  --popover: #f9f5d7;
+  --popover-foreground: #3c3836;
+  --primary: #af3a03;
+  --primary-foreground: #fbf1c7;
+  --secondary: #ebdbb2;
+  --secondary-foreground: #3c3836;
+  --muted: #ebdbb2;
+  --muted-foreground: #665c54;
+  --accent: #d5c4a1;
+  --accent-foreground: #3c3836;
+  --destructive: #9d0006;
+  --border: #928374;
+  --input: #7c6f64;
+  --ring: #af3a03;
+  --app-header: #f2e5bc;
+  --timer-surface: #ebdbb2;
+  --timer-border: #7c6f64;
+  --running-surface: #f3dfb0;
 }
 .dark {
   color-scheme: dark;
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
+  --background: #282828;
+  --foreground: #ebdbb2;
+  --card: #32302f;
+  --card-foreground: #ebdbb2;
+  --popover: #3c3836;
+  --popover-foreground: #fbf1c7;
+  --primary: #fe8019;
+  --primary-foreground: #1d2021;
+  --secondary: #504945;
+  --secondary-foreground: #fbf1c7;
+  --muted: #3c3836;
+  --muted-foreground: #bdae93;
+  --accent: #3c3836;
+  --accent-foreground: #fbf1c7;
+  --destructive: #fb4934;
+  --border: #7c6f64;
+  --input: #928374;
+  --ring: #fabd2f;
+  --app-header: #1d2021;
+  --timer-surface: #32302f;
+  --timer-border: #928374;
+  --running-surface: #3c3028;
 }
 @font-face {
   font-family: Inter;
@@ -126,17 +134,19 @@
 }
 html, body, #root { height: 100%; overflow: hidden; }
 .app-shell { height: 100%; display: flex; flex-direction: column; width: 100%; }
-.app-header { display: flex; align-items: center; gap: 12px; padding: 4px 16px 0; flex-shrink: 0; }
-.app-mark { width: 20px; height: 20px; color: var(--muted-foreground); }
+.app-header { display: flex; align-items: center; gap: 12px; padding: 4px 16px 0; flex-shrink: 0; border-bottom: 1px solid var(--border); background: var(--app-header); }
+.app-mark { width: 20px; height: 20px; color: var(--primary); }
 .app-content { display: flex; flex: 1; flex-direction: column; gap: 8px; min-height: 0; padding: 8px 16px; }
 .elapsed { font-variant-numeric: tabular-nums; font-size: 16px; line-height: 20px; font-weight: 600; white-space: nowrap; }
-.current-timer { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; align-items: center; gap: 4px; min-width: 0; flex-shrink: 0; padding-block: 4px; }
+.current-timer { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; align-items: center; gap: 4px; min-width: 0; flex-shrink: 0; padding-block: 4px; border-color: var(--timer-border); background: var(--timer-surface); }
+.stop-action { color: var(--destructive-foreground); }
 .current-work { min-width: 0; }
 .current-work:focus-visible { border-radius: var(--radius-md); outline: 2px solid var(--ring); outline-offset: 2px; }
 .current-description { display: flex; width: 100%; min-width: 0; flex-direction: column; align-items: stretch; gap: 0; white-space: nowrap; line-clamp: unset; -webkit-line-clamp: unset; }
 .current-title { min-width: 0; font-size: 14px; line-height: 16px; }
 .current-project { min-width: 0; color: var(--muted-foreground); font-size: 12px; line-height: 16px; font-weight: 400; }
 .tree-row { display: flex; align-items: center; gap: 4px; min-width: 0; padding-inline-end: 8px; border-radius: var(--radius-md); }
+.tree-row[data-running=true] { background: var(--running-surface); }
 .tree-row[data-work=true]:hover { background: var(--accent); }
 .tree-row[data-work=true]:focus,
 .tree-row[data-interval=true]:focus { background: var(--accent); outline: 2px solid var(--ring); outline-offset: -2px; }
@@ -164,6 +174,7 @@ html, body, #root { height: 100%; overflow: hidden; }
 .interval-row [data-slot=item-title] { white-space: normal; line-clamp: unset; display: flex; flex-wrap: wrap; }
 .today-group-title { width: 100%; justify-content: space-between; }
 [data-slot=alert-description] { overflow-wrap: anywhere; }
+.alert-retry { grid-column: 2; justify-self: start; }
 .search-row { display: flex; align-items: end; gap: 12px; }
 .search-row > input { min-width: 0; flex: 1; }
 .project-filter { min-width: 0; width: 170px; }

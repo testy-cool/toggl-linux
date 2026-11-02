@@ -420,6 +420,7 @@ export default function WorkApp() {
           {draft && data?.state.tracking && (
             <Button
               variant="destructive"
+              className="stop-action"
               disabled={busy}
               aria-label="Stop timer and keep draft"
               onClick={() =>
@@ -459,6 +460,7 @@ export default function WorkApp() {
               <Button
                 variant="ghost"
                 size="default"
+                className="alert-retry"
                 onClick={() => {
                   setError("");
                   void poll();
@@ -527,7 +529,7 @@ export default function WorkApp() {
                   </span>
                   <Button
                     variant="destructive"
-                    className="current-stop"
+                    className="current-stop stop-action"
                     disabled={busy && !savingTime}
                     onClick={stopTimer}
                   >
