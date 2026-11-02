@@ -11,6 +11,20 @@ MAX_IDS = 1000
 _lock = threading.RLock()
 
 
+def read_theme(app):
+    data = app._load_json_with_backup(app.STATE_DIR / "appearance.json", {})
+    theme = data.get("theme") if isinstance(data, dict) else None
+    return theme if theme in ("gruvbox", "grok-night") else "gruvbox"
+
+
+def write_theme(app, payload):
+    if not isinstance(payload, dict) or set(payload) != {"theme"} or payload["theme"] not in ("gruvbox", "grok-night"):
+        raise ValueError("Choose Gruvbox or GrokNight")
+    with _lock:
+        app._atomic_write_text(app.STATE_DIR / "appearance.json", json.dumps(payload))
+    return payload["theme"]
+
+
 def _path(app):
     return app.STATE_DIR / FILE_NAME
 

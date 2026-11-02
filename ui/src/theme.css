@@ -229,3 +229,45 @@ html, body, #root { height: 100%; overflow: hidden; }
   .project-filter { width: 135px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; } }
+
+/* GrokNight palette matches the installed Ghostty theme from promptegrity/grok-themes. */
+.dark[data-theme="grok-night"] {
+  --background: #141414;
+  --foreground: #e1e1e1;
+  --card: #1c1c1c;
+  --card-foreground: #e1e1e1;
+  --popover: #242424;
+  --popover-foreground: #e1e1e1;
+  --primary: #bb9af7;
+  --primary-foreground: #141414;
+  --secondary: #353535;
+  --secondary-foreground: #e1e1e1;
+  --muted: #242424;
+  --muted-foreground: #c8c8c8;
+  --accent: #353535;
+  --accent-foreground: #e1e1e1;
+  --destructive: #f7768e;
+  --destructive-foreground: #ffced7;
+  --border: #6c6c6c;
+  --input: #777777;
+  --ring: #e0af68;
+  --success: #9ece6a;
+  --success-foreground: #9ece6a;
+  --info: #7aa2f7;
+  --info-foreground: #7aa2f7;
+  --warning: #e0af68;
+  --warning-foreground: #e0af68;
+  --invert: #e1e1e1;
+  --invert-foreground: #141414;
+  --app-header: #0a0a0a;
+  --timer-surface: #1c1c1c;
+  --timer-border: #777777;
+  --running-surface: #44351e;
+  --project-band-alternate: #242424;
+  --project-hover-surface: #44403a;
+}
+[data-slot=dropdown-menu-radio-item]:not([data-disabled]):is(:focus, [data-highlighted]) {
+  background: var(--secondary);
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}

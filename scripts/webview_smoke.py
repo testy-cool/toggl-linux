@@ -160,6 +160,17 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             assert bridge._ready.wait(20), 'JavaScript bridge never became ready'
             until(lambda: window.native.get_mapped())
             until(lambda: js("document.body.textContent.includes('Improve navigation')"))
+            before_theme = dict(app.state)
+            for label, theme in (("GrokNight", "grok-night"), ("Gruvbox", "gruvbox")):
+                click("Choose theme")
+                until(lambda: js("!!document.querySelector('[role=menuitemradio]')"))
+                js(f"Array.from(document.querySelectorAll('[role=menuitemradio]')).find(e=>e.textContent.trim()==={json.dumps(label)}).click()")
+                until(lambda: js(f"document.documentElement.dataset.theme === {json.dumps(theme)}"))
+                assert control.snapshot(app)["ui_theme"] == theme
+                assert json.loads((app.STATE_DIR / "appearance.json").read_text())["theme"] == theme
+                assert app.state == before_theme, "Theme changes must preserve the timer"
+            reload_react()
+            until(lambda: js("document.documentElement.dataset.theme === 'gruvbox'"))
             assert js("(()=>{const active=document.querySelector('[role=tab][data-state=active]'),inactive=document.querySelector('[role=tab][data-state=inactive]');return getComputedStyle(active).backgroundColor!==getComputedStyle(inactive).backgroundColor})()"), 'Selected tab must stay visible without focus'
             leaf = 'document.querySelector(\'[role=treeitem][aria-label="Unused task"]\')'
             until(lambda: js(f"!!({leaf})"))
@@ -576,7 +587,7 @@ with tempfile.TemporaryDirectory(prefix='toggl-webview-') as scratch:
             with patch.object(app,'stop_entry',return_value={}):
                 click('Stop')
                 until(lambda: not app.state['tracking'])
-            print(json.dumps(dict(real_webkit=True, real_react=True, private_offline_start=True,
+            print(json.dumps(dict(real_webkit=True, real_react=True, persistent_theme_picker=True, private_offline_start=True,
                                   empty_work_leaf=True, empty_project_leaf=True, inert_leaf_keyboard=True,
                                   daily_loading_states=True, folder_to_leaf_focus=True, bundled_inter=True, work_font_px=14,
                                   row_click_expands_without_start=True, grouped_saved_and_recent=True,

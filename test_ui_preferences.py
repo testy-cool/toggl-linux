@@ -257,3 +257,20 @@ def test_webview_can_only_write_preferences_through_the_fixed_socket():
         result = Bridge(Path("/private-test")).command("save-work-preferences", payload)
     assert result == expected
     request.assert_called_once_with(Path("/private-test"), "save-work-preferences", payload)
+
+
+def test_theme_is_private_persistent_and_independent_of_timer_and_tree():
+    before = dict(app.state)
+    tree = toggl_ui_preferences.read(app)
+    result = control.dispatch(app, "set-ui-theme", {"theme": "grok-night"})
+    assert result == {"ui_theme": "grok-night"}
+    assert toggl_ui_preferences.read_theme(app) == "grok-night"
+    assert control.snapshot(app)["ui_theme"] == "grok-night"
+    assert dict(app.state) == before
+    assert toggl_ui_preferences.read(app) == tree
+    assert (app.STATE_DIR / "appearance.json").stat().st_mode & 0o777 == 0o600
+    with pytest.raises(control.ControlError):
+        control.dispatch(app, "set-ui-theme", {"theme": "other"})
+    assert toggl_ui_preferences.read_theme(app) == "grok-night"
+    control.dispatch(app, "set-ui-theme", {"theme": "gruvbox"})
+    assert toggl_ui_preferences.read_theme(app) == "gruvbox"

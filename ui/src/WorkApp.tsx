@@ -4,6 +4,7 @@ import {
   ChevronDown,
   Clock3,
   Pencil,
+  Palette,
   RefreshCw,
   Square,
   X,
@@ -16,6 +17,8 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -71,6 +74,9 @@ import type { Command, Draft, Entry, Snapshot, Work } from "./model";
 
 export default function WorkApp() {
   const [data, setData] = useState<Snapshot | null>(null);
+  useEffect(() => {
+    document.documentElement.dataset.theme = data?.ui_theme ?? "gruvbox";
+  }, [data?.ui_theme]);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [query, setQuery] = useState("");
   const [project, setProject] = useState("all");
@@ -417,6 +423,20 @@ export default function WorkApp() {
               </span>
             )}
           </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" aria-label="Choose theme" disabled={!data || busy}>
+                <Palette />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuRadioGroup value={data?.ui_theme ?? "gruvbox"} onValueChange={(theme) => void act({action: "set-ui-theme", payload: {theme}})}>
+                <DropdownMenuRadioItem value="gruvbox">Gruvbox</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="grok-night">GrokNight</DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
           {draft && data?.state.tracking && (
             <Button
               variant="destructive"
