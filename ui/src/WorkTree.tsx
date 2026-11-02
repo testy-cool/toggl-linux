@@ -320,6 +320,7 @@ export function WorkTree({
                 aria-hidden="true"
                 role="presentation"
                 className="work-section-heading project-band"
+                data-section={node.section}
                 data-project-tone={projectTone}
                 data-project-key={node.projectKey}
               >
