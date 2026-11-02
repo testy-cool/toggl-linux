@@ -188,7 +188,9 @@ html, body, #root { height: 100%; overflow: hidden; }
 .search-row > input { min-width: 0; flex: 1; }
 .project-filter { min-width: 0; width: 170px; }
 .project-filter [data-slot=field-label] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-.work-list [data-radix-scroll-area-viewport] > div { display: block !important; min-width: 0; }
+/* Put the overlay scrollbar in the app gutter without narrowing task names. */
+.work-list { margin-inline-end: -12px; }
+.work-list [data-radix-scroll-area-viewport] > div { display: block !important; min-width: 0; padding-inline-end: 12px; }
 [data-slot=frame], [data-slot=frame-panel] { flex-shrink: 0; }
 .editor-frame[data-slot=frame], .editor-frame [data-slot=frame-panel] { flex: 1; min-height: 0; }
 [data-slot=select-trigger] { min-width: 0; }
