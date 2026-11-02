@@ -90,8 +90,9 @@
   --app-header: #f2e5bc;
   --timer-surface: #ebdbb2;
   --timer-border: #7c6f64;
-  --running-surface: #f3dfb0;
+  --running-surface: #dfb855;
   --project-band-alternate: #efe1b5;
+  --project-hover-surface: var(--accent);
 }
 .dark {
   color-scheme: dark;
@@ -116,8 +117,9 @@
   --app-header: #1d2021;
   --timer-surface: #32302f;
   --timer-border: #928374;
-  --running-surface: #3c3028;
+  --running-surface: #59431f;
   --project-band-alternate: #383430;
+  --project-hover-surface: #5a4c3d;
 }
 @font-face {
   font-family: Inter;
@@ -158,11 +160,12 @@ html, body, #root { height: 100%; overflow: hidden; }
 .tree-row.project-band [data-slot=tree-item-label] { background: transparent; }
 .tree-row[data-running=true] { background: var(--running-surface); }
 .tree-row[data-work=true]:hover,
-.tree-row[data-project=true]:hover { background: var(--secondary); }
+.tree-row[data-project=true]:hover { background: var(--project-hover-surface); }
 .tree-row[data-project=true]:focus,
 .tree-row[data-work=true]:focus,
 .tree-row[data-interval=true]:focus { background: var(--accent); outline: 2px solid var(--ring); outline-offset: -2px; }
 .tree-row[data-work=true] [data-slot=tree-item-label] { background: transparent; }
+.tree-row[data-project=true]:focus [data-slot=tree-item-label],
 .tree-row[data-work=true]:focus [data-slot=tree-item-label] { box-shadow: none; }
 .tree-row button:disabled { pointer-events: auto; }
 .project-heading { display: flex; flex: 1; min-width: 0; align-items: center; gap: 4px; }
