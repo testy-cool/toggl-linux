@@ -36,6 +36,7 @@ function isSavedTaskWork(data: Snapshot, work: Work) {
 
 type Node = {
   name: string;
+  projectKey?: string;
   children?: string[];
   group?: WorkGroup;
   work?: Work;
@@ -121,6 +122,7 @@ export function WorkTree({
       const mixed = saved.length > 0 && recent.length > 0;
       result[id] = {
         name: group.name,
+        projectKey: id,
         group,
         children: works.map((work) => work.key),
       };
@@ -133,10 +135,11 @@ export function WorkTree({
               : undefined;
         const rows = today.groups.get(timeKeyForWork(data, work))?.rows ?? [];
         const children = rows.map((row) => `interval:${work.key}:${row.key}`);
-        result[work.key] = { name: work.label, work, children, section };
+        result[work.key] = { name: work.label, projectKey: id, work, children, section };
         for (const row of rows)
           result[`interval:${work.key}:${row.key}`] = {
             name: `${clockRange(row)} · ${row.entry.description || work.label}`,
+            projectKey: id,
             row,
             parentLabel: work.label,
           };
@@ -287,9 +290,17 @@ export function WorkTree({
       tree.getItems()[0]?.setFocused();
   }, [tree, structure]);
 
+  const items = tree.getItems();
+  const projectTones = new Map<string, "base" | "alternate">(
+    persistentGroups.map((group, index) => [
+      `project:${group.id ?? "none"}`,
+      index % 2 === 0 ? "base" : "alternate",
+    ] as const),
+  );
+
   return (
     <Tree tree={tree} aria-label="Projects and work" className="project-tree">
-      {tree.getItems().map((item) => {
+      {items.map((item, index) => {
         const node = nodes[item.getId()];
         if (!node) return null;
         const { group, work, row } = node;
@@ -299,13 +310,18 @@ export function WorkTree({
           : 0;
         const savedTask = !!work && isSavedTaskWork(data, work);
         const hasEntries = !!work && !!node.children?.length;
+        const projectTone = projectTones.get(node.projectKey ?? "") ?? "base";
+        const nextItem = items[index + 1];
+        const projectEnd = !nextItem || nodes[nextItem.getId()]?.projectKey !== node.projectKey;
         return (
           <Fragment key={item.getId()}>
             {node.section && (
               <div
                 aria-hidden="true"
                 role="presentation"
-                className="work-section-heading"
+                className="work-section-heading project-band"
+                data-project-tone={projectTone}
+                data-project-key={node.projectKey}
               >
                 {node.section}
               </div>
@@ -316,7 +332,10 @@ export function WorkTree({
               className={group ? "mt-2 first:mt-0" : undefined}
             >
               <div
-                className="tree-row"
+                className="tree-row project-band"
+                data-project-tone={projectTone}
+                data-project-key={node.projectKey}
+                data-project-band-end={projectEnd || undefined}
                 data-project={!!group || undefined}
                 data-work={!!work || undefined}
                 data-work-kind={
